@@ -1,0 +1,9 @@
+# core 的运行时依赖：没有，一条都没有。
+#
+# 红线 R6 —— magpie/core/** 只用标准库。本文件刻意保持零条目：它存在的意义，
+# 是让"core 到底有没有偷偷多一个依赖"有一个 `pip install -r` 就能看完的答案，
+# 而不是只能靠通读源码。同一条线由 `python check.py lint` 的 R6 规则自动守着
+# （扫描 magpie/core/** 的顶层 import 是否 ⊆ 标准库），两者互为对照。
+#
+# 新依赖的归宿是 pyproject.toml 的 extras（api / api-yaml / traffic / dev），
+# 且只能在 parser / api 内部 lazy import，不得进入 core 顶层。

@@ -8,28 +8,37 @@
 数据层已经落地并且是可验证的：事实层（append-only 的 `contributions`）、缓存层（`recompute`
 可全量重建的 `entities/observations/relations`）、身份层（`entity_alias` / merge 事件）、
 工作层与审计层，都在 `schema/001_init.sql` 里；事务型操作（undo / redo / rekey / merge /
-unmerge / compact）在 `core/ops.py`。
+unmerge / compact）在 `magpie/core/ops.py`。
 
 ```
-core/store.py       唯一写入口 + recompute + 不变量检查 + 快照等价
-core/ops.py         事务型状态迁移 T1–T5（含 dry-run）
-core/migrate.py     schema 版本化与迁移 runner
-core/confidence.py  §8.2 反多数票置信度
-core/manual.py      INV-12 唯一 manual 写入口（单写队列）
-schema/001_init.sql 全部 DDL + 触发器 + 视图
-schema/002_*.sql    收窄 undo_incomplete（redo 的 blocked 状态合法化）
-core/tests/         不变量测试（84 passed）
-bench/test_perf.py  性能契约（MAGPIE_PERF_STRICT=1）
+magpie/core/store.py       唯一写入口 + recompute + 不变量检查 + 快照等价
+magpie/core/ops.py         事务型状态迁移 T1–T5（含 dry-run）
+magpie/core/migrate.py     schema 版本化与迁移 runner
+magpie/core/confidence.py  §8.2 反多数票置信度
+magpie/core/manual.py      INV-12 唯一 manual 写入口（单写队列）
+magpie/core/tests/         不变量测试（84 passed）
+magpie/cli.py              命令行入口骨架（命令实现在 2.2 / 2.5）
+schema/001_init.sql        全部 DDL + 触发器 + 视图
+schema/002_*.sql           收窄 undo_incomplete（redo 的 blocked 状态合法化）
+bench/test_perf.py         性能契约（MAGPIE_PERF_STRICT=1）
 ```
 
-CLI / API / GUI / 解析器尚未开工 —— 见 `Magpie-项目计划书.md` 的路线图。
+`magpie/core/` **只用标准库**（红线 R6）；对外依赖一律进 `pyproject.toml` 的
+extras（`api` / `api-yaml` / `traffic` / `dev`）。工具本身**不主动发起任何网络
+请求**（红线 R7）。两条红线都由 `python check.py` 自动守着，不靠自觉。
+
+API / GUI / 解析器尚未开工 —— 见 `Magpie-项目计划书.md` 的路线图。
 
 ## 一条命令验证
 
 ```bash
-python check.py          # 单元测试 + 两个设计验证脚本
+python check.py          # 静态红线 + 单元测试 + 两个设计验证脚本
+python check.py lint     # 只跑静态红线（秒级，可单独触发）
 python check.py bench    # 严格性能契约（单独触发，不埋进"跑全部"）
 ```
+
+工程解释器是**当前 `python`（3.9.1）**——`check.py` 的子进程一律用
+`sys.executable`，所以你用哪个解释器跑它，测试就跑在哪个解释器上。
 
 ## 文档
 
