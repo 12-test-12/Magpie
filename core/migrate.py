@@ -1,0 +1,150 @@
+"""schema 版本化与迁移 runner（v3.2-r4 · 债 #7）。
+
+**没有迁移机制时会出什么事**：`schema/001_init.sql` 是唯一的，第一次要改 schema
+（加一个 kind 的字段、加一张表）时，没有任何东西能回答"这个库现在是第几版、
+该不该升级、升到一半失败怎么办"。越晚引入越贵，所以现在引入。
+
+设计（尽量小，够用即可）:
+
+* `schema_migrations(version, name, checksum, applied_at)` —— 已应用版本的事实记录。
+* 迁移 = 一个有编号的 `.sql` 文件，**只增不改**。已应用迁移的文件内容被改动
+  → 校验和不匹配 → 直接报错（这是最容易犯也最难发现的错误：改了 001 却以为
+  新库和老库结构一样）。
+* 基线采纳: 由旧版 `init_db`（直接 `executescript`）建出来的库没有 registry，
+  但有 `contributions` 表 —— 视为已应用 001，补记一行，不重跑 SQL。
+* 升级前自动快照（`store.online_backup`）—— 迁移失败时人还有退路。
+
+**不做什么**（避免过度设计）: 不做 down-migration（自用工具，回退靠快照）、
+不做跨版本跳跃（顺序执行，逐个 apply）。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+
+SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
+
+
+@dataclass(frozen=True)
+class Migration:
+    version: int
+    name: str
+    path: Path
+
+
+# 迁移清单：**只追加，不修改已有条目**。
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "init", SCHEMA_DIR / "001_init.sql"),
+)
+
+
+class MigrationError(RuntimeError):
+    """schema 版本不一致 / 迁移失败。"""
+
+
+_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    checksum   TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+)
+"""
+
+# 旧版 init_db 建出来的库靠这张表识别（"基线已应用"的判据）
+_BASELINE_TABLE = "contributions"
+
+
+def checksum(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+
+
+def ensure_registry(conn: sqlite3.Connection) -> None:
+    conn.execute(_REGISTRY_DDL)
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def applied(conn: sqlite3.Connection) -> dict[int, tuple[str, str]]:
+    """{version: (name, checksum)}；registry 不存在时返回空表。"""
+    ensure_registry(conn)
+    return {int(r[0]): (str(r[1]), str(r[2]))
+            for r in conn.execute("SELECT version, name, checksum FROM schema_migrations")}
+
+
+def current_version(conn: sqlite3.Connection) -> int:
+    rows = applied(conn)
+    return max(rows) if rows else 0
+
+
+def pending(conn: sqlite3.Connection) -> list[Migration]:
+    done = applied(conn)
+    return [m for m in MIGRATIONS if m.version not in done]
+
+
+def migrate(conn: sqlite3.Connection, *, snapshot: bool = False,
+            actor: str = "cli") -> list[dict]:
+    """把库升到最新版本，返回本次应用的迁移列表（幂等：无事可做返回 []）。"""
+    from .store import InvariantError, log_activity, now, online_backup
+
+    ensure_registry(conn)
+    done = applied(conn)
+
+    # --- 基线采纳: 老库没有 registry，但 001 早已生效 ---
+    if not done and _table_exists(conn, _BASELINE_TABLE):
+        base = MIGRATIONS[0]
+        conn.execute(
+            "INSERT INTO schema_migrations(version, name, checksum, applied_at)"
+            " VALUES (?,?,?,?)",
+            (base.version, base.name, checksum(base.path), now()),
+        )
+        done = applied(conn)
+
+    # --- 已应用迁移的校验和必须与文件一致（只增不改） ---
+    by_version = {m.version: m for m in MIGRATIONS}
+    for version, (name, recorded) in sorted(done.items()):
+        m = by_version.get(version)
+        if m is None:
+            raise MigrationError(
+                f"数据库里有未知迁移 v{version}（{name}）—— 程序版本低于数据库版本，拒绝继续")
+        actual = checksum(m.path)
+        if actual != recorded:
+            raise MigrationError(
+                f"迁移 v{version}（{name}）的文件已被修改（校验和 {recorded[:12]} → "
+                f"{actual[:12]}）。已应用的迁移不可修改，请新增一个迁移文件。")
+
+    todo = [m for m in MIGRATIONS if m.version not in done]
+    if not todo:
+        return []
+
+    snapshot_path = None
+    if snapshot:
+        try:
+            snapshot_path = str(online_backup(conn, tag=f"premigrate-v{todo[-1].version}"))
+        except Exception as exc:                       # noqa: BLE001
+            raise MigrationError(f"迁移前快照失败，已中止迁移: {exc}") from exc
+
+    results: list[dict] = []
+    for m in todo:
+        try:
+            conn.executescript(m.path.read_text(encoding="utf-8"))
+        except Exception as exc:                       # noqa: BLE001
+            raise MigrationError(f"迁移 v{m.version}（{m.name}）执行失败: {exc}") from exc
+        conn.execute(
+            "INSERT INTO schema_migrations(version, name, checksum, applied_at)"
+            " VALUES (?,?,?,?)", (m.version, m.name, checksum(m.path), now()),
+        )
+        results.append({"version": m.version, "name": m.name})
+
+    log_activity(conn, actor=actor, action="schema.migrate", target_kind="schema",
+                 detail={"applied": results, "snapshot": snapshot_path})
+    assert len(applied(conn)) >= len(MIGRATIONS)
+    return results

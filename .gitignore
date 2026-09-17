@@ -1,0 +1,35 @@
+# 注意: gitignore 里 `#` 只有**行首**才是注释。行尾的 `# 说明` 是模式的一部分，
+# 会静默失配 —— 本文件第一版就踩了这个坑（`.multica/   # 注释` 什么都没忽略）。
+
+# --- Python 运行产物 ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- 数据库与归档 ---
+# 绝不入库: 可能含真实资产数据与凭据哈希
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+raw/
+reports/
+
+# --- 迁移 / rekey 快照 ---
+# 可重新生成，且可能含数据副本
+*.snapshot.*.db
+*.rekey.*.db
+*.premigrate-*.db
+snapshots/
+
+# --- 智能体运行时状态（不是项目内容）---
+# 运行时会把临时文件落在工作目录，且已实测发生过
+.multica/
+.claude/
+description.md
+reply.md
