@@ -52,6 +52,23 @@ class NormalizeError(ValueError):
     """归一化失败。**必须是可读的** —— 它会被写进坏行报告给人看，而不是堆栈。"""
 
 
+def _require_no_homoglyphs(text: str, what: str) -> None:
+    """全角/兼容字符（同形字）一律拒绝 —— 域名 / 路径 / 产品名共用这一道守卫。
+
+    判定用 NFKC ≠ NFC：兼容字符（全角 `ｅｘａｍｐｌｅ`、连字 `ﬁ`）在这里现形，
+    而真正的 CJK / IDN 字符不受影响（`例子.中国` 该走 punycode 照走）。
+
+    为什么必须拒绝而不是顺手 NFKC 折叠：折叠会让两个**视觉相同**的输入变成
+    同一个 key。同形字是钓鱼与数据投毒的经典载体，在这个库里表现为"某个攻击者
+    登记的资产和真实资产合并成了一个实体"。宁可让人显式写成 ASCII / punycode。
+
+    ⚠️ 这道守卫看不见 NFKC 稳定的非 ASCII 数字（阿拉伯-印度数字 `٣`），
+    所以数字**正则也必须是 ASCII 的**（`[0-9]` 而不是 `\\d`）—— 两者缺一不可。
+    """
+    if unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFC", text):
+        raise NormalizeError(f"{what}含全角/兼容字符（疑似同形字）：{text!r}")
+
+
 # ---------------------------------------------------------------------------
 # 域名
 # ---------------------------------------------------------------------------
@@ -97,11 +114,7 @@ def normalize_domain(raw: object, *, require_dot: bool = True) -> str:
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
         raise NormalizeError("域名含控制字符")
 
-    # 全角/兼容字符（`ｅｘａｍｐｌｅ.com`、`㍿`）一律拒绝。
-    # 它们是**同形字**的经典载体：静默折叠成 ASCII 会让两个视觉相同的域名
-    # 变成同一个 key，而不是两个。真要收录就让人显式写 punycode。
-    if unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFC", text):
-        raise NormalizeError(f"域名含全角/兼容字符（疑似同形字）：{text!r}")
+    _require_no_homoglyphs(text, "域名")
 
     bad = next((ch for ch in text if ch in _HOSTILE_CHARS), None)
     if bad is not None:
@@ -116,26 +129,35 @@ def normalize_domain(raw: object, *, require_dot: bool = True) -> str:
     if text.startswith(".") or ".." in text:
         raise NormalizeError(f"域名含空标签：{text!r}")
 
+    source = text                    # punycode 之前的形态，只用于错误信息
     text = _to_ascii(text).lower()
+    # 非 ASCII 输入报错时补上原形：`example.com:٣٤` 的标签会变成 `xn--com:-ofgg`，
+    # 只给 punycode 的话，读坏行报告的人没法拿它去 grep 原始文件。
+    origin = f"（原始输入 {source!r}）" if not source.isascii() else ""
 
     if len(text) > MAX_DOMAIN_LENGTH:
-        raise NormalizeError(f"域名超过 {MAX_DOMAIN_LENGTH} 字节：{len(text)}")
+        raise NormalizeError(f"域名超过 {MAX_DOMAIN_LENGTH} 字节：{len(text)}{origin}")
     if require_dot and "." not in text:
-        raise NormalizeError(f"单标签不是完整域名（require_dot=True）：{text!r}")
+        raise NormalizeError(f"单标签不是完整域名（require_dot=True）：{text!r}{origin}")
     for label in text.split("."):
         if not label:
-            raise NormalizeError(f"域名含空标签：{text!r}")
+            raise NormalizeError(f"域名含空标签：{text!r}{origin}")
         if len(label) > MAX_LABEL_LENGTH:
-            raise NormalizeError(f"标签超过 {MAX_LABEL_LENGTH} 字节：{label!r}")
+            raise NormalizeError(f"标签超过 {MAX_LABEL_LENGTH} 字节：{label!r}{origin}")
         if not _LABEL_RE.match(label):
-            raise NormalizeError(f"标签不合法（连字符位置 / 字符集）：{label!r}")
+            raise NormalizeError(f"标签不合法（连字符位置 / 字符集）：{label!r}{origin}")
     return text
 
 
 def _strip_port(text: str) -> str:
-    """去掉 `host:port`。只认"冒号右边全是数字"这一种，避免误伤 IPv6。"""
+    """去掉 `host:port`。只认"冒号右边全是 **ASCII** 数字"这一种，避免误伤 IPv6。
+
+    `isascii()` 不是多余的：`str.isdigit()` 是 Unicode 感知的，`int("٣") == 3`，
+    于是 `example.com:٣٤` 会被当成"带端口的域名"**静默**剥掉一段谁也不认识的
+    东西。剥不掉时它留在标签里，由字符集校验报一条可读的错误。
+    """
     head, sep, tail = text.rpartition(":")
-    if sep and head and tail.isdigit() and ":" not in head:
+    if sep and head and tail.isascii() and tail.isdigit() and ":" not in head:
         return head
     return text
 
@@ -226,12 +248,16 @@ def try_cidr(raw: object, **kw: object) -> str | None:
 # ---------------------------------------------------------------------------
 
 #: 会**变**的路径段。顺序即优先级：先判最能确定的（UUID 比纯数字更具体）。
+#: 数字类一律写成 `[0-9]` 而**不是** `\d` —— `\d` 在 str 上是 Unicode 感知的，
+#: 全角 `１２３` 与阿拉伯-印度数字 `٣٤٥` 都算 `\d`，会被静默折成 `{id}`，
+#: 于是两条不同的路径变成一条。ASCII 之外的东西**保持字面量**（它可能是真实
+#: 路由的一部分），全角那部分则由 `_require_no_homoglyphs` 提前拦掉。
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
                       r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{16,}$")
-_DATE_COMPACT_RE = re.compile(r"^\d{8}$")
-_ISODATE_RE = re.compile(r"^\d{4}-\d{2}(-\d{2})?$")
-_NUMERIC_RE = re.compile(r"^\d{1,20}$")
+_DATE_COMPACT_RE = re.compile(r"^[0-9]{8}$")
+_ISODATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$")
+_NUMERIC_RE = re.compile(r"^[0-9]{1,20}$")
 
 #: `/user/123` 与 `/user/abc` **不得**折叠成同一模板 —— 前者是 id，后者是字面量
 #: 路径（往往是真实路由）。这条规则就是那件事的落点：只有**匹配到的**段被替换。
@@ -254,6 +280,7 @@ def path_template(path: object, *, keep_query: bool = False) -> str:
         raise NormalizeError("路径含 NUL 字节")
     if not text.startswith("/"):
         raise NormalizeError(f"路径必须以 / 开头：{text!r}")
+    _require_no_homoglyphs(text, "路径")
 
     if not keep_query:
         text = text.split("#", 1)[0].split("?", 1)[0]
@@ -292,8 +319,8 @@ def _fold_segment(segment: str) -> str:
 
 #: `1.24.0-rc1+build7` → release `1.24.0`、prerelease `rc1`、build `build7`
 _VERSION_RE = re.compile(
-    r"^[vV]?(?P<release>\d+(?:\.\d+)*)"
-    r"(?:[-_.]?(?P<pre>alpha|beta|rc|pre|preview|dev)[-_.]?(\d*))?"
+    r"^[vV]?(?P<release>[0-9]+(?:\.[0-9]+)*)"
+    r"(?:[-_.]?(?P<pre>alpha|beta|rc|pre|preview|dev)[-_.]?([0-9]*))?"
     r"(?:\+(?P<build>[0-9A-Za-z.\-]+))?$")
 
 #: 预发布的排序权重（SemVer §11）：数字段先于一切，`alpha < beta < rc < 正式版`。
@@ -303,15 +330,20 @@ _NO_PRERELEASE_RANK = 99
 
 
 def version_tuple(text: object) -> tuple[int, ...]:
-    """`1.24` → `(1, 24, 0)`（补齐到三位）。**预发布不在这一维**。
+    """`1.24` → `(1, 24, 0)`（**短的补齐到三位**）。**预发布不在这一维**。
+
+    补齐是**加法，不是截断**：短的补零，长的**原样保留**。`1.2.3.4` 截成
+    `1.2.3` 会让两个不同的版本得到同一个元组 —— 那不是"少显示一段"，是把
+    它们合并成同一个实体，而且没有任何信号。nginx 的 `1.24.0.1` 就是四段。
 
     返回的是纯数字元组，可以直接 `sorted()`，但**长度不同的两个版本不能直接比**：
     `(1,) < (1, 0)` 在 Python 里为真，语义上却相等。要比大小请用
     `compare_version` —— 它按位补齐，并单独处理预发布维度。
     """
     release, _, _ = _split_version(text)
-    padded = list(release[:3]) + [0] * max(0, 3 - len(release))
-    return tuple(padded)
+    if len(release) < 3:
+        release = release + (0,) * (3 - len(release))
+    return release
 
 
 def prerelease_tuple(text: object) -> tuple[int, int]:
@@ -405,9 +437,13 @@ def product_name(raw: object) -> str:
     """
     if not isinstance(raw, str):
         raise NormalizeError(f"产品名必须是字符串，收到 {type(raw).__name__}")
-    text = _PRODUCT_NOISE_RE.sub(" ", raw.strip()).lower()
+    text = _PRODUCT_NOISE_RE.sub(" ", raw.strip())
     if not text:
         raise NormalizeError("空产品名")
     if "\x00" in text:
         raise NormalizeError("产品名含 NUL 字节")
+    # 守卫在 `.lower()` **之前**：`ＮＧＩＮＸ` 小写后是 `ｎｇｉｎｘ`，一个永远
+    # 撞不上 `nginx` 的幽灵产品 —— 别名表救不了它，只有拒绝能。
+    _require_no_homoglyphs(text, "产品名")
+    text = text.lower()
     return _PRODUCT_ALIASES.get(text, text)

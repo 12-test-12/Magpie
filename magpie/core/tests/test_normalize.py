@@ -188,7 +188,9 @@ def test_version_padding_makes_1_0_equal_to_1_0_0():
 
 def test_version_tuple_and_prerelease_tuple():
     assert normalize.version_tuple("1.24") == (1, 24, 0)
-    assert normalize.version_tuple("v2.1.3.4") == (2, 1, 3)
+    # 前导 `v` 剥掉；**四段不截断**（这条断言原先写的是 (2, 1, 3)，
+    # 它把"截断"这个 bug 当成期望值固定了下来 —— 见下面的反例网）。
+    assert normalize.version_tuple("v2.1.3.4") == (2, 1, 3, 4)
     assert normalize.prerelease_tuple("1.0.0")[0] > normalize.prerelease_tuple("1.0.0-rc1")[0]
 
 
@@ -244,6 +246,99 @@ def test_product_name_keeps_unknown_names_verbatim_but_lowercased():
 # ---------------------------------------------------------------------------
 # 职责边界 / 零依赖
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 反例网 · 一轮审核补的五处「静默」
+# ---------------------------------------------------------------------------
+# 共同点是**同一类错误**：一个畸形的 key 不进错误报告，而是被悄悄改写成**另一个
+# 合法 key**。前者会被人看见并修掉，后者只会让两个不同的东西在库里合并成一个，
+# 而且没有任何信号。所以下面每一条都先是红的，再修的。
+#
+# 根因有两处，都是 Python 把「数字」做得比 ASCII 宽：
+#   * `re` 的 `\d` 在 str 上是 **Unicode 感知**的 —— 全角 `１`、阿拉伯-印度数字
+#     `٣` 全都算 `\d`；
+#   * `int()` / `str.isdigit()` 同样接受它们（`int("１") == 1`）。
+# 于是「全角数字」这一路绕过了域名的同形字守卫（那道守卫靠 NFKC≠NFC，而
+# `٣` 的 NFKC 等于自身，压根不触发）。
+
+
+def test_version_tuple_never_truncates_long_versions():
+    """**绝不静默丢弃**：`1.2.3.4` 是nginx 的常见第四段，不能被截成 `1.2.3`。
+
+    截断的代价不是"少显示一段"，而是 `1.2.3.4` 与 `1.2.3` 得到**同一个元组**
+    —— 两个不同的版本从此是同一个实体。这与 `compare_version` 直接打架：
+    后者说它们不同（-1），前者说它们相同。
+    """
+    assert normalize.version_tuple("1.2.3.4") == (1, 2, 3, 4)
+    assert normalize.version_tuple("1.24.0.1") == (1, 24, 0, 1)
+    assert normalize.version_tuple("1.2.3.4.5") == (1, 2, 3, 4, 5)
+    assert normalize.version_tuple("1.2.3.4") != normalize.version_tuple("1.2.3")
+    # 与比较器保持一致：元组不同 ⇔ 比较结果非 0
+    assert normalize.compare_version("1.2.3", "1.2.3.4") == -1
+    assert normalize.compare_version("1.2.3.4", "1.2.3.4") == 0
+
+
+def test_version_tuple_still_pads_short_versions():
+    """补齐三位是**加法**：短的补零，长的原样 —— 不是"切成三位"。"""
+    assert normalize.version_tuple("1.24") == (1, 24, 0)
+    assert normalize.version_tuple("2") == (2, 0, 0)
+
+
+def test_version_digits_are_ascii_only():
+    """全角数字不是版本数字 —— `１.２` 与 `1.2` 视觉相同、key 必须不同。
+
+    要么拒绝，要么保留差异；**绝不能**两者折叠成同一个元组。
+    """
+    with pytest.raises(NormalizeError):
+        normalize.version_tuple("１.２")
+    with pytest.raises(NormalizeError):
+        normalize.version_tuple("1.2.3-rc１")
+    assert normalize.version_tuple("1.2") == (1, 2, 0)
+
+
+def test_path_template_rejects_fullwidth_digits():
+    """路径里的全角数字不做静默折叠 —— 与域名的同形字守卫同一条规矩。"""
+    with pytest.raises(NormalizeError):
+        normalize.path_template("/user/１２３")
+    with pytest.raises(NormalizeError):
+        normalize.path_template("/blog/２０２６０１０１")
+
+
+def test_path_template_does_not_fold_non_ascii_digits():
+    """NFKC 稳定的非 ASCII 数字（阿拉伯-印度数字）绕过同形字守卫，但**不得被当成 id**。
+
+    这类数字全角化的那道守卫看不见（NFKC 等于自身），只能靠正则里的 `[0-9]` 拦住。
+    """
+    assert normalize.path_template("/user/٣٤٥") == "/user/٣٤٥"
+    assert normalize.path_template("/user/٣٤٥") != "/user/{id}"
+
+
+def test_product_name_rejects_fullwidth():
+    """`ＮＧＩＮＸ` 不得变成 `ｎｇｉｎｘ` —— 那是一个永远撞不上 `nginx` 的幽灵产品。"""
+    with pytest.raises(NormalizeError):
+        normalize.product_name("ＮＧＩＮＸ")
+    with pytest.raises(NormalizeError):
+        normalize.product_name("Ａｐａｃｈｅ httpd")
+    assert normalize.product_name("NGINX") == "nginx"
+
+
+def test_domain_port_must_be_ascii_digits():
+    """端口只认 ASCII 数字：`example.com:٣٤` 不是"带端口的域名"，是畸形输入。"""
+    assert normalize.normalize_domain("example.com:8443") == "example.com"
+    with pytest.raises(NormalizeError):
+        normalize.normalize_domain("example.com:٣٤")
+
+
+def test_domain_error_message_quotes_the_original_input():
+    """报错必须带上**原形**，不能只有 punycode。
+
+    `example.com:٣٤` 的坏标签是 `xn--com:-ofgg` —— 拿这个去 grep 原始文件什么
+    也搜不到，坏行报告就废了。「可读错误」是交付标准，可读的前提是能对上输入。
+    """
+    with pytest.raises(NormalizeError) as exc:
+        normalize.normalize_domain("example.com:٣٤")
+    assert "example.com:٣٤" in str(exc.value)
 
 
 def test_normalize_does_not_touch_the_database_or_the_write_entry():
