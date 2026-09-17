@@ -24,7 +24,7 @@ v3 里有一节从"计划"变成了"错误的现状描述"——**照它排期�
 | §3.4 DDL：`entities` / `observations` / `relations` 三张 upsert 主表 + `UNIQUE(entity_id,type,value)` | **这份 DDL 已经被 `v3.2-design.md` 整体取代**。实际模型是**五层分离 + append-only 贡献流**：数据行是缓存，贡献流才是事实；`contributions` 无 UPDATE 无 DELETE | **§3 改为"权威来源 + 现状"**，不再复制 DDL |
 | §12 迁移与版本：`schema_migrations` + `PRAGMA user_version` | 已实现：`core/migrate.py` + `schema_migrations(version, name, checksum, applied_at)` | §12 标注**已实现**并补校验和纪律 |
 | §13 阶段 0「三根钉子」（建表 / 起服务 / 格式摸底） | 三根钉子里**只有数据层那一根被真正钉了**，而且钉得比 v3 设想深得多（不变量、undo/redo、身份迁移、性能契约） | **§13 路线图按真实状态重排** |
-| §9 提到的性能目标没有实测依据 | 现在有：`bench/test_perf.py` 实测 **45 us/row**、增长**线性**，`MAGPIE_PERF_STRICT=1` 是它的可执行形式 | §9 换成**实测数字** |
+| §9 提到的性能目标没有实测依据 | 现在有：`bench/test_perf.py` 实测 **约 45 us/row**、增长**线性**，`MAGPIE_PERF_STRICT=1` 是它的可执行形式 | §9 换成**实测数字** |
 
 **还有一个必须点名的教训**（它决定了本版怎么维护）：
 
@@ -579,28 +579,29 @@ n8n 的画布是**编辑器**（画流程 → 执行）；Magpie 的数据图谱
 
 | 命令 | 结果 |
 |---|---|
-| `python check.py` | 79 passed + 23/23 + 27/27 |
+| `python check.py` | 84 passed + 23/23 + 27/27 |
 | `MAGPIE_PERF_STRICT=1 python check.py bench` | 3 passed |
 
 全量 recompute（`bench/test_perf.py`）：
 
 ```
-N=1000: 0.044s   N=2000: 0.093s   N=4000: 0.191s   比值 = 2.10x, 2.05x（线性基准 2.00x）
-45 us/row @N=2000     delta(K=500) = 0.067s @N=4000
+N=1000: 0.039-0.048s   N=2000: 0.082-0.100s   N=4000: 0.169-0.193s
+比值 ≈ 1.9-2.3x（线性基准 2.00x）   约 45 us/row @N=2000（多次运行 42-50）
+delta(K=500) = 0.052-0.067s @N=4000
 ```
 
-对照 §9.2：1M 行 ≤ 60s 即 ≤ 60 us/row → 当前 **45 us/row 达标**；
-单 job undo（K≤5000）≤ 1.5s → 当前 K=500 用 **0.067s 达标**。
+对照 §9.2：1M 行 ≤ 60s 即 ≤ 60 us/row → 当前 **约 45 us/row 达标**；
+单 job undo（K≤5000）≤ 1.5s → 当前 K=500 用 **≤0.07s 达标**。
 
 > `bench/test_perf.py` 自己记录的旧基线是 N=4000 全量 **9.05s**（近似 O(N²)，
-> 外推 1M 需 ~78 分钟）。现在同一规模 **0.191s**，约 **47 倍**提速，增长曲线已是线性。
+> 外推 1M 需 ~78 分钟）。现在同一规模 0.169-0.193s，约 **47-53 倍**提速，增长曲线已是线性。
 
 ### 9.2 契约（可验收的承诺）
 
 | 指标 | 目标 | 现在 |
 |---|---|---|
-| 1M 行全量 recompute | ≤ 60s（≤ 60 us/row） | ✅ 45 us/row @N=2000（线性外推） |
-| 单 job undo（K ≤ 5000） | ≤ 1.5s | ✅ 0.067s @K=500 |
+| 1M 行全量 recompute | ≤ 60s（≤ 60 us/row） | ✅ 约 45 us/row @N=2000（多次运行 42–50，线性外推） |
+| 单 job undo（K ≤ 5000） | ≤ 1.5s | ✅ ≤0.07s @K=500 |
 | core 仅标准库 | 硬约束 | ✅ |
 | `magpie app` RSS | < 120MB | ⬜ 服务未建 |
 | 冷启动 | < 1s | ⬜ |
@@ -698,7 +699,7 @@ N=1000: 0.044s   N=2000: 0.093s   N=4000: 0.191s   比值 = 2.10x, 2.05x（线�
 
 事实层 / 缓存层 / 身份层 / 工作层 / 审计层五层分离；`undo / redo / rekey / merge /
 unmerge / compact` 六个事务型操作（全部支持 dry-run）；INV-01…17 全绿；
-1000 条随机序列回归网；性能契约达标；迁移机制；**79 passed**。
+1000 条随机序列回归网；性能契约达标；迁移机制；**84 passed**。
 
 **验收**：`python check.py` + `python check.py bench` 全绿。
 

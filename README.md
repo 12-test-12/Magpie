@@ -17,7 +17,8 @@ core/migrate.py     schema 版本化与迁移 runner
 core/confidence.py  §8.2 反多数票置信度
 core/manual.py      INV-12 唯一 manual 写入口（单写队列）
 schema/001_init.sql 全部 DDL + 触发器 + 视图
-core/tests/         不变量测试（79 passed）
+schema/002_*.sql    收窄 undo_incomplete（redo 的 blocked 状态合法化）
+core/tests/         不变量测试（84 passed）
 bench/test_perf.py  性能契约（MAGPIE_PERF_STRICT=1）
 ```
 
