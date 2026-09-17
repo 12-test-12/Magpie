@@ -511,16 +511,19 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             purge_report = purge_eligible(conn)
             for orphan in purge_report["orphan_subjects"]:
                 kind, raw = orphan.split(":", 1)
-                item_id, created = _open_inbox(
+                # `created` 有意弃用: 无论这条 open 项是新建的还是**复用**已存在的，
+                # 它都是"undo 打开的"，redo 都必须关掉它（否则 redo 之后残留一个
+                # 语义已经不成立的孤儿项）。旧写法 `if created or True` 是恒真的
+                # 死条件，读起来像有分支、实际没有。
+                item_id, _ = _open_inbox(
                     conn, project_id=int(job["project_id"]), kind="orphan_subject",
                     subject_kind=kind, subject_id=int(raw),
                     values=[], sources=[], job_id=job_id,
                     payload={"reason": "no_contribution_ever"})
-                if created or True:
-                    # 标记"这条 open 项是 undo 打开的"，redo 会关闭它
-                    conn.execute(
-                        "UPDATE inbox_items SET opened_by_undo_job_id=?"
-                        " WHERE id=? AND opened_by_undo_job_id IS NULL", (job_id, item_id))
+                # 标记"这条 open 项是 undo 打开的"，redo 会关闭它
+                conn.execute(
+                    "UPDATE inbox_items SET opened_by_undo_job_id=?"
+                    " WHERE id=? AND opened_by_undo_job_id IS NULL", (job_id, item_id))
             apply_purge(conn, purge_report["purge"], actor=actor, job_id=job_id)
             for item in purge_report["retained"]:
                 log_activity(conn, actor=actor, action="gc.retained",
@@ -882,15 +885,22 @@ def merge(conn: sqlite3.Connection, *, project_id: int, survivor_key: str,
     with transaction(conn, dry_run=dry_run):
         job_id = _identity_job(conn, project_id, "merge", job_id, actor)
         survivor_id = entity_for_key(conn, project_id, survivor_key)
-        member_ids = [entity_for_key(conn, project_id, k) for k in member_keys]
-        if survivor_id not in member_ids:
-            member_ids = [survivor_id, *member_ids]
+        # key → entity 一次性配对（v3.2-r4 修正）。
+        # 旧实现在 member_ids 前面**插入** survivor，再用 `zip(member_keys, member_ids)`
+        # 取配对 —— 两个列表长度不同、错位一格，member_key 会指到**另一个** member 的
+        # entity 上。（今天不可达: 下面的 `existing is None` 对数上来讲永远为假，
+        # 见下方注释。）配对必须由同一次解析产生，不能靠两个列表的下标对齐。
+        member_pairs = [(k, entity_for_key(conn, project_id, k)) for k in member_keys]
+        member_ids = sorted({survivor_id, *(eid for _, eid in member_pairs)})
 
         before_facts = _fact_layer_digest(conn)
         event_id = _merge_inside(conn, project_id=project_id, survivor_id=survivor_id,
                                 member_ids=member_ids, job_id=job_id,
                                 reason="manual_merge", actor=actor)
-        for k, eid in zip(member_keys, member_ids):
+        # 这里对 `existing` 的判断实际上不会命中: 上面 `entity_for_key(k)` 用的正是
+        # 同一条"生效 alias"查询，能解析出 entity 就说明 alias 已存在。保留它是为了让
+        # "alias 已经指向别处" 这种情况显式地不覆盖（而不是留一个静默的写入）。
+        for k, eid in member_pairs:
             if eid == survivor_id:
                 continue
             existing = conn.execute(

@@ -181,10 +181,15 @@ def test_display_key_contract_rekey_never_renames_the_entity(db):
 
 def test_schema_migrations_records_version_and_is_idempotent(db):
     from core import migrate as migrate_mod
-    assert migrate_mod.current_version(db) == 1
-    row = q1(db, "SELECT version, name, checksum FROM schema_migrations WHERE version=1")
-    assert row["name"] == "init"
-    assert row["checksum"] == migrate_mod.checksum(migrate_mod.MIGRATIONS[0].path)
+    # 断言**每一条**迁移都被登记、且校验和与文件一致 —— 不再写死"当前是第几版"，
+    # 否则每加一条迁移都要改这个测试（而"加迁移"正是这个机制存在的理由）。
+    for m in migrate_mod.MIGRATIONS:
+        row = q1(db, "SELECT name, checksum FROM schema_migrations WHERE version=?",
+                 m.version)
+        assert row is not None, f"迁移 v{m.version} 没有被登记"
+        assert row["name"] == m.name
+        assert row["checksum"] == migrate_mod.checksum(m.path)
+    assert migrate_mod.current_version(db) == migrate_mod.MIGRATIONS[-1].version
     assert migrate_mod.migrate(db) == []                          # 幂等
     assert migrate_mod.pending(db) == []
 
@@ -198,9 +203,14 @@ def test_migrations_adopts_a_legacy_database_without_rerunning_sql():
             (REPO_ROOT / "schema" / "001_init.sql").read_text(encoding="utf-8"))
         assert migrate_mod.applied(conn) == {}
         store.log_activity(conn, actor="x", action="job.start")
-        assert migrate_mod.migrate(conn) == []                    # ← 不重跑 001
-        assert migrate_mod.current_version(conn) == 1
-        assert conn.execute("SELECT COUNT(*) FROM activity_log").fetchone()[0] == 1
+        # ← 001 不重跑（采纳为基线）: 只补 v1 之后的迁移
+        assert [m["version"] for m in migrate_mod.migrate(conn)] == \
+            [m.version for m in migrate_mod.MIGRATIONS if m.version > 1]
+        assert migrate_mod.current_version(conn) == migrate_mod.MIGRATIONS[-1].version
+        # 旧库里的历史行还在（说明没有被重建），且只多了一条本次迁移的审计行
+        assert [r["action"] for r in conn.execute(
+            "SELECT action FROM activity_log ORDER BY id")] == \
+            ["job.start", "schema.migrate"]
     finally:
         conn.close()
 

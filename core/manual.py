@@ -69,6 +69,15 @@ class ManualWriter:
                 ).fetchone()
                 if row is None:
                     merged = sorted(add_set - remove_set)
+                    if not merged:
+                        # 纯撤销（且撤销对象本来就不存在）→ **不建行**。
+                        # `manual_fields` 的**存在性本身**就是 manual ownership 的
+                        # 判据（`store.manual_owned`）。建一条 keys_json='[]' 的空行
+                        # 等于凭空造出人工作业锚点：该 subject 从此不会被 GC 回收，
+                        # 也不会被 coverage 判定为 inactive —— "解除保护"反而变成了
+                        # "永久保护"。没有 key 就没有行。
+                        return {"keys": [], "version": 0, "attempts": attempt + 1,
+                                "created": False}
                     try:
                         self.conn.execute(
                             "INSERT INTO manual_fields(project_id, subject_kind, subject_id,"

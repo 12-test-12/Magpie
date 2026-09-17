@@ -37,6 +37,9 @@ class Migration:
 # 迁移清单：**只追加，不修改已有条目**。
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "init", SCHEMA_DIR / "001_init.sql"),
+    # 收窄 undo_incomplete: redo 的 blocked（部分成功）状态是合法的。
+    # 详情与代价见 schema/002_redo_blocked_state.sql 的文件头。
+    Migration(2, "redo_blocked_state", SCHEMA_DIR / "002_redo_blocked_state.sql"),
 )
 
 

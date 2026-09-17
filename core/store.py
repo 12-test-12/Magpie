@@ -623,7 +623,8 @@ def _recompute_subjects(conn: sqlite3.Connection, subjects: Sequence[tuple[str, 
                         *, owners: "set[int] | None" = None) -> None:
     """重算给定 subject 集合的缓存列（**批量实现**，见 recompute_subset）。
 
-    历史: v3.2-r2 的实现是逐 subject 调用 `_recompute_observation` 等，
+    历史: v3.2-r2 的实现是逐 subject 调用一组 `_recompute_observation` /
+    `_recompute_relation` / `_recompute_entity`（v3.2-r4 已删除，见 `recompute_subset`），
     每个 observation 触发约 10 条 SQL，其中 `confidence.score_field` 每次都对
     `v_field_owner` / `v_field_conflicts` 全表聚合视图求值 —— 整体 O(N²)。
     实测 N=8000 全量重算 39.8s，直接击穿 §9.2 的 "100 万行 ≤ 60s"（外推约 78 分钟）。
@@ -825,105 +826,6 @@ def _chunks(items: Sequence[int], size: int) -> Iterator[list[int]]:
 def _relation_confidence(conn: sqlite3.Connection, rel_id: int) -> str:
     from .confidence import score_relation
     return score_relation(conn, rel_id)
-
-
-def _active_agg(conn: sqlite3.Connection, kind: str, sid: int) -> sqlite3.Row:
-    return conn.execute(
-        """
-        SELECT COUNT(*)                        AS n,
-               COUNT(DISTINCT source_id)       AS sources,
-               COUNT(DISTINCT job_id)          AS jobs,
-               COALESCE(SUM(job_count + compacted_job_count), 0) AS logical_jobs,
-               MAX(CASE authorship WHEN 'manual' THEN 1 ELSE 0 END) AS manual,
-               MAX(observed_at)                AS observed_at,
-               MIN(observed_at_min)            AS observed_at_min
-          FROM v_active_contributions
-         WHERE subject_kind=? AND subject_id=?
-        """,
-        (kind, sid),
-    ).fetchone()
-
-
-def _best_authorship(authorship: str | None) -> str:
-    return "manual" if authorship == "manual" else "tool"
-
-
-def _recompute_observation(conn: sqlite3.Connection, obs_id: int) -> None:
-    agg = _active_agg(conn, "observation", obs_id)
-    obs = conn.execute(
-        "SELECT * FROM observations WHERE id=?", (obs_id,)
-    ).fetchone()
-    if obs is None:
-        return
-    is_current = 1 if int(agg["n"]) > 0 else 0
-    origin = "manual" if int(agg["manual"] or 0) else obs["origin"]
-    confidence, conflict = _observation_confidence(conn, obs)
-    conn.execute(
-        "UPDATE observations SET is_current=?, confidence=?, source_count=?, job_count=?,"
-        " logical_job_count=?, origin=?, observed_at=?, observed_at_min=?,"
-        " observed_at_source=?, observed_at_accuracy=?, observed_at_precision=?"
-        " WHERE id=?",
-        (is_current, confidence, int(agg["sources"] or 0), int(agg["jobs"] or 0),
-         int(agg["logical_jobs"] or 0), origin,
-         agg["observed_at"] if is_current else None,
-         agg["observed_at_min"] if is_current else None,
-         _best_time_field(conn, "observation", obs_id, "observed_at_source"),
-         _best_time_field(conn, "observation", obs_id, "observed_at_accuracy"),
-         _best_time_field(conn, "observation", obs_id, "observed_at_precision"),
-         obs_id),
-    )
-
-
-def _best_time_field(conn: sqlite3.Connection, kind: str, sid: int, column: str) -> str | None:
-    if column not in ("observed_at_source", "observed_at_accuracy", "observed_at_precision"):
-        raise InvariantError("unsafe column")
-    row = conn.execute(
-        f"SELECT {column} AS v FROM v_active_contributions"
-        " WHERE subject_kind=? AND subject_id=?"
-        " ORDER BY observed_at DESC, id DESC LIMIT 1",
-        (kind, sid),
-    ).fetchone()
-    return None if row is None else row["v"]
-
-
-def _observation_confidence(conn: sqlite3.Connection, obs: sqlite3.Row) -> tuple[str, bool]:
-    """审阅点 17 + v3.2-r2: confidence 不是多数票，且主体是 entity。
-
-    score = agreement × evidence_quality × authority × temporal
-    agreement 在 (entity, field_namespace, semantic_field, value) 上计算 ——
-    不是 subject 全局投票，也不是 observation 行（那样永远看不到同字段多值冲突）。
-    """
-    from .confidence import score_field  # 延迟导入，避免环
-
-    # INV-16: 归属事实就是缓存的 entity_id（触发器保证一致）
-    return score_field(conn, "entity", int(obs["entity_id"]),
-                       str(obs["field_namespace"]), str(obs["semantic_field"]),
-                       str(obs["value"]))
-
-
-def _recompute_relation(conn: sqlite3.Connection, rel_id: int) -> None:
-    agg = _active_agg(conn, "relation", rel_id)
-    rel = conn.execute("SELECT * FROM relations WHERE id=?", (rel_id,)).fetchone()
-    if rel is None:
-        return
-    from .confidence import score_relation
-
-    confidence = score_relation(conn, rel_id)
-    conn.execute(
-        "UPDATE relations SET is_current=?, confidence=?, source_count=?, job_count=?"
-        " WHERE id=?",
-        (1 if int(agg["n"]) > 0 else 0,
-         confidence if int(agg["n"]) > 0 else "none",
-         int(agg["sources"] or 0), int(agg["jobs"] or 0), rel_id),
-    )
-
-
-def _recompute_entity(conn: sqlite3.Connection, entity_id: int) -> None:
-    agg = _active_agg(conn, "entity", entity_id)
-    conn.execute(
-        "UPDATE entities SET is_current=? WHERE id=?",
-        (1 if int(agg["n"]) > 0 else 0, entity_id),
-    )
 
 
 def recompute(conn: sqlite3.Connection, delta: Sequence[tuple[str, int]] | None = None) -> dict[str, int]:
@@ -1138,17 +1040,34 @@ def display_key(conn: sqlite3.Connection, entity_id: int) -> str | None:
 # GC / purge eligibility（P0-B，审阅点 4）
 # ---------------------------------------------------------------------------
 
+def _has_manual_keys(raw: Any) -> bool:
+    """`manual_fields.keys_json` 是否是一个**非空**数组。
+
+    不导入 `core.manual._load_keys`（那会造成 manual ← store 的循环导入），
+    也不因为它解析失败就判 False —— 宁可保守地保留对象，也不误删。
+    """
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return True
+    return isinstance(data, list) and len(data) > 0
+
+
 def manual_owned(conn: sqlite3.Connection, kind: str, sid: int) -> bool:
     """manual ownership **只由活事实 + 人工作业层推导**。
 
     v3.2-r3 修正: 不再读缓存列 `observations.origin`。该列在贡献被抑制之后不会回退，
     于是"人工贡献被 undo 之后实体被永久锚定、永不回收" —— 这是缓存冒充事实。
+
+    v3.2-r4 修正: `manual_fields` 必须是**非空**的字段集合才算锚点。空行不是人工状态
+    （人没有保护任何字段），把它当锚点会让"清空最后一次保护"变成"永久保护"。
     """
-    if conn.execute(
-        "SELECT 1 FROM manual_fields WHERE subject_kind=? AND subject_id=?",
+    for row in conn.execute(
+        "SELECT keys_json FROM manual_fields WHERE subject_kind=? AND subject_id=?",
         (kind, sid),
-    ).fetchone():
-        return True
+    ):
+        if _has_manual_keys(row["keys_json"]):
+            return True
     if kind == "entity":
         if conn.execute("SELECT 1 FROM entity_layout WHERE entity_id=?", (sid,)).fetchone():
             return True

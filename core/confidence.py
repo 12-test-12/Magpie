@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .store import is_within
+from .store import InvariantError, is_within
 
 QUALITY_WEIGHT = {"high": 3.0, "medium": 1.6, "low": 0.6}
 
@@ -131,10 +131,14 @@ class FieldScoreBatch:
     内存: 与活跃 field 贡献数同阶（每行 1 个元组）。100 万行约 100–200MB，
     超出 §2.1 的 120MB 红线 —— 因此对外只经由 `recompute_subset()` 使用，
     由调用方按批控制驻留规模。
+
+    `owners` 是**扫描窗口**，不是过滤器（v3.2-r4 修正）: 窗口外的 owner 从未被
+    索引，`score()` 对它们只能返回 "none" —— 那会和"真的没有活贡献"混淆。
+    因此窗口外的查询一律 `InvariantError` 报错，而不是给一个看起来合法的答案。
     """
 
     __slots__ = ("_by_value", "_field_values", "_quality", "_authority",
-                 "_manual", "_unknown", "_recent")
+                 "_manual", "_unknown", "_recent", "_owners")
 
     def __init__(self, conn: sqlite3.Connection,
                  owners: "set[int] | None" = None) -> None:
@@ -147,6 +151,7 @@ class FieldScoreBatch:
                         的全库扫描代价，"增量"就名存实亡。
         """
         if owners is not None:
+            self._owners = frozenset(int(o) for o in owners)
             if not owners:
                 self._by_value = {}
                 self._field_values = {}
@@ -161,6 +166,7 @@ class FieldScoreBatch:
             owner_filter = f" AND c.owner_entity_id IN ({placeholders})"
             params: list[Any] = id_list
         else:
+            self._owners = None                # 全库窗口：任何 owner 都在窗口内
             owner_filter = ""
             params = []
 
@@ -193,6 +199,10 @@ class FieldScoreBatch:
         # 时间项只需要两个稀疏集合，不保留整行（省内存）
         unknown_accuracy: set[tuple[int, str, str, str]] = set()
         recent: set[tuple[int, str, str, str]] = set()
+        # source_id → authority term。**必须记忆化**：`_authority()` 是一次查询，
+        # 逐行调用等于把"一次扫描"重新变回 N 次往返 —— 那正是本类要消灭的东西。
+        # 实测（60 行活跃 field 贡献）: 逐行调用 = 61 条 SQL，记忆化后 = 1 条。
+        authority_by_source: dict[int, float] = {}
         for r in rows:
             key = (int(r["owner_id"]), str(r["ns"]), str(r["field"]), str(r["val"]))
             by_value.setdefault(key, []).append(int(r["source_id"]))
@@ -205,7 +215,11 @@ class FieldScoreBatch:
                 q = QUALITY_WEIGHT["low"] * 0.5      # 与 _quality_term 的缺失分支一致
             if q > quality.get(key, -1.0):
                 quality[key] = q
-            a = _authority(conn, int(r["source_id"]))
+            source_id = int(r["source_id"])
+            a = authority_by_source.get(source_id)
+            if a is None:
+                a = _authority(conn, source_id)
+                authority_by_source[source_id] = a
             if a > authority.get(key, -1.0):
                 authority[key] = a
             if str(r["accuracy"] or "") == "unknown":
@@ -223,8 +237,18 @@ class FieldScoreBatch:
 
     def score(self, entity_id: int, field_namespace: str, semantic_field: str,
               value: str) -> tuple[str, bool]:
-        """与 `score_field(conn, 'entity', entity_id, ns, field, value)` 等价。"""
-        key = (int(entity_id), str(field_namespace), str(semantic_field), str(value))
+        """与 `score_field(conn, 'entity', entity_id, ns, field, value)` 等价。
+
+        前置条件（v3.2-r4 起强制）: 若构造时传了 `owners`，`entity_id` 必须**在
+        窗口内**。窗口外的实体没有被扫描过，它的空索引与"确实没有活贡献"在返回值
+        上无法区分 —— 静默返回 "none" 就是让缓存撒谎。这里直接报错。
+        """
+        owner = int(entity_id)
+        if self._owners is not None and owner not in self._owners:
+            raise InvariantError(
+                f"FieldScoreBatch: owner entity {owner} 不在扫描窗口内"
+                f"（窗口 {len(self._owners)} 个 owner）—— 无法给出与 score_field 等价的答案")
+        key = (owner, str(field_namespace), str(semantic_field), str(value))
         sources = self._by_value.get(key)
         if not sources:
             return "none", False
