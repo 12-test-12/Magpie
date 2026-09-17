@@ -23,7 +23,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema" / "001_init.sql"
+# schema/ 在仓库根，不在包内（随 2.1 包布局迁移加深了一层）。
+SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schema" / "001_init.sql"
 
 FIELD_NAMESPACES = ("entity_field", "observation_field")
 SUBJECT_KINDS = ("entity", "observation", "relation")

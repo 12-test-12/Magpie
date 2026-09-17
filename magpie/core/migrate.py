@@ -24,7 +24,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
+# schema/ 在仓库根，不在包内（随 2.1 包布局迁移加深了一层）。
+SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schema"
 
 
 @dataclass(frozen=True)

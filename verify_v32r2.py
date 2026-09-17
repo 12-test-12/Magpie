@@ -15,8 +15,8 @@ import sys
 
 sys.path.insert(0, ".")
 
-from core import ops, store                                        # noqa: E402
-from core.store import (                                           # noqa: E402
+from magpie.core import ops, store                                        # noqa: E402
+from magpie.core.store import (                                           # noqa: E402
     InvariantError, active_contribution_ids, connect, effective_equivalent,
     history_monotone, init_db, integrity_check, scope_hash, snapshot_effective,
     snapshot_history,

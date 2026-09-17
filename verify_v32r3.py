@@ -18,9 +18,9 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
-from core import manual as manual_mod                            # noqa: E402
-from core import ops, store                                      # noqa: E402
-from core.store import (                                         # noqa: E402
+from magpie.core import manual as manual_mod                            # noqa: E402
+from magpie.core import ops, store                                      # noqa: E402
+from magpie.core.store import (                                         # noqa: E402
     connect, days_ago, effective_equivalent, hours_since, init_db, integrity_check,
     is_within, parse_time, reset_clock, set_clock, snapshot_effective,
 )
@@ -188,7 +188,7 @@ j = job(conn, pid, scope)
 o = obs(conn, pid, j, ev, key="host:s")
 store.recompute(conn)
 seid = store.entity_for_key(conn, pid, "host:s")
-from core.confidence import score_field                             # noqa: E402
+from magpie.core.confidence import score_field                             # noqa: E402
 conf, _ = score_field(conn, "entity", seid, "observation_field", "tech", "nginx")
 check("⑤a sources 目录表驱动 authority_term（verified=1.5）",
       store.source_authority(conn, 1) == "verified" and conf in ("high", "medium"), conf)

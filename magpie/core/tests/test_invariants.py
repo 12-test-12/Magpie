@@ -1,7 +1,7 @@
 """v3.2 不变量测试（第一批代码，不含 GUI / API / CLI）。
 
 pytest 是唯一依赖；装了 hypothesis 会自动启用随机序列属性测试。
-运行:  python -m pytest core/tests -q
+运行:  python -m pytest magpie/core/tests -q
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from core import manual as manual_mod                        # noqa: E402
-from core import ops, store                                   # noqa: E402
-from core.store import (                                      # noqa: E402
+from magpie.core import manual as manual_mod                        # noqa: E402
+from magpie.core import ops, store                                   # noqa: E402
+from magpie.core.store import (                                      # noqa: E402
     InvariantError, active_contribution_ids, assert_integrity, audit_strictly_grew,
     connect, days_ago, domain_equivalent, effective_equivalent, history_monotone,
     hours_since, init_db, integrity_check, is_within, parse_time, phantom_cache_rows,
@@ -730,7 +730,7 @@ def test_full_and_delta_recompute_are_column_equal(db):
 
 def test_single_high_quality_source_beats_many_weak_ones(db):
     """P-17a / P-17b（v3.2-r3: authority 来自真实的 sources 目录表）。"""
-    from core.confidence import discretize, score_field
+    from magpie.core.confidence import discretize, score_field
 
     env = Env(db)
     j = env.job()
@@ -1029,7 +1029,7 @@ def test_sources_catalog_feeds_authority_term(db):
     obs = env.obs(j, key="host:src", field="tech", value="nginx", source_id=1)
     store.recompute(db)
     eid = env.entity_id("host:src")
-    from core.confidence import score_field
+    from magpie.core.confidence import score_field
     verified, _ = score_field(db, "entity", eid, "observation_field", "tech", "nginx")
     assert verified in ("high", "medium"), verified      # verified=1.5 起作用了
     assert store.source_authority(db, 1) == "verified"

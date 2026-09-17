@@ -17,12 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from core import ops, store
-from core.manual import ManualWriter
-from core.store import InvariantError, connect, init_db, integrity_check
+from magpie.core import ops, store
+from magpie.core.manual import ManualWriter
+from magpie.core.store import InvariantError, connect, init_db, integrity_check
 from test_invariants import Env, qv
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture()
@@ -47,7 +47,7 @@ def test_field_score_batch_matches_score_field_in_both_windows(db):
       · owners=None      全库窗口
       · owners={...}     增量窗口（生产里每次 delta recompute 都走这条）
     """
-    from core.confidence import FieldScoreBatch, score_field
+    from magpie.core.confidence import FieldScoreBatch, score_field
 
     env = Env(db)
     store.register_source(db, source_id=2, name="httpx", authority_level="unverified")
@@ -103,7 +103,7 @@ def test_field_score_batch_does_not_query_per_row(db):
     "一次扫描 + 内存索引"退化成 N 次往返，bench 里那类性能债会重新长回来。
     判据不看具体条数，看**是否随行数增长**。
     """
-    from core.confidence import FieldScoreBatch
+    from magpie.core.confidence import FieldScoreBatch
 
     def scan_count(n_obs: int) -> int:
         conn = connect(":memory:")
@@ -234,7 +234,7 @@ def test_migration_002_relaxes_undo_incomplete_on_an_upgraded_legacy_db():
     这是"迁移 runner"第一次真的被用来改一条已有规则 —— 所以顺手验证:
     升级路径产出的视图与新建库的视图**行为一致**。
     """
-    from core import migrate as migrate_mod
+    from magpie.core import migrate as migrate_mod
 
     legacy = connect(":memory:")
     try:

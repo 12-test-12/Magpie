@@ -37,7 +37,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core import ops, store  # noqa: E402
+from magpie.core import ops, store  # noqa: E402
 
 STRICT = os.environ.get("MAGPIE_PERF_STRICT") == "1"
 

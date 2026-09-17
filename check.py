@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 UNIT = [
-    ["python", "-m", "pytest", "core/tests", "-q"],
+    ["python", "-m", "pytest", "magpie/core/tests", "-q"],
     ["python", "verify_v32r2.py"],
     ["python", "verify_v32r3.py"],
 ]

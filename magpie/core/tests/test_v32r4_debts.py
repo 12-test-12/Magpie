@@ -6,7 +6,7 @@
     #4 rekey 缺 Online Backup 快照        → store.online_backup + rekey 接线
     #5 canonical key 展示优先级未定       → store.display_key 定死口径
     #6 parser 定义版本化 / 回滚未定义     → parser_history + rollback_parser
-    #7 无迁移机制                        → core/migrate.py + schema_migrations
+    #7 无迁移机制                        → magpie/core/migrate.py + schema_migrations
     #8 没有 git                          → 不在测试范围内（工程前提，见 check.py）
 
 纪律: 每一笔先写反例（确认它在修之前是红的）再修到绿。这些用例是那一步的存档。
@@ -19,14 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from core import ops, store
-from core.store import (
+from magpie.core import ops, store
+from magpie.core.store import (
     InvariantError, connect, effective_equivalent, init_db, integrity_check,
     snapshot_effective,
 )
 from test_invariants import Env, q1, qv
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture()
@@ -45,7 +45,7 @@ def db() -> sqlite3.Connection:
 def test_no_module_bypasses_the_contribution_write_entry():
     """`INSERT INTO contributions` 只允许出现在 store.py。
 
-    compact 曾是唯一违规者（`core/ops.py` 里一段裸 INSERT 直写合成行）。
+    compact 曾是唯一违规者（`magpie/core/ops.py` 里一段裸 INSERT 直写合成行）。
     这条 lint 测试是"写入口唯一性"唯一可自动验证的形式 ——
     没有它，下一个图省事的写点会再次悄悄出现。
     """
@@ -180,7 +180,7 @@ def test_display_key_contract_rekey_never_renames_the_entity(db):
 # ---------------------------------------------------------------------------
 
 def test_schema_migrations_records_version_and_is_idempotent(db):
-    from core import migrate as migrate_mod
+    from magpie.core import migrate as migrate_mod
     # 断言**每一条**迁移都被登记、且校验和与文件一致 —— 不再写死"当前是第几版"，
     # 否则每加一条迁移都要改这个测试（而"加迁移"正是这个机制存在的理由）。
     for m in migrate_mod.MIGRATIONS:
@@ -196,7 +196,7 @@ def test_schema_migrations_records_version_and_is_idempotent(db):
 
 def test_migrations_adopts_a_legacy_database_without_rerunning_sql():
     """旧 init_db 建出来的库（没有 registry）必须被采纳为 v1，不重跑 001。"""
-    from core import migrate as migrate_mod
+    from magpie.core import migrate as migrate_mod
     conn = connect(":memory:")
     try:
         conn.executescript(
@@ -217,7 +217,7 @@ def test_migrations_adopts_a_legacy_database_without_rerunning_sql():
 
 def test_migrations_refuse_a_modified_applied_migration(db, tmp_path, monkeypatch):
     """已应用的迁移文件被改动 → 报错，而不是让人以为新老库结构一样。"""
-    from core import migrate as migrate_mod
+    from magpie.core import migrate as migrate_mod
     forged = tmp_path / "001_init.sql"
     forged.write_text("-- 有人偷偷改了已应用的迁移\n", encoding="utf-8")
     monkeypatch.setattr(migrate_mod, "MIGRATIONS",
