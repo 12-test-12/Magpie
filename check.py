@@ -1,9 +1,14 @@
 """一条命令跑全绿（阶段 0 的可重复入口；2.1 起把静态红线也收了进来）。
 
-    python check.py          # 静态红线 + 单元测试 + 两个设计验证脚本
-    python check.py lint     # 只跑静态红线（秒级）
-    python check.py bench    # 严格性能契约（MAGPIE_PERF_STRICT=1）
-    python check.py all      # 上面全部
+    py -3.13 check.py          # 静态红线 + 单元测试 + 两个设计验证脚本
+    py -3.13 check.py lint     # 只跑静态红线（秒级）
+    py -3.13 check.py bench    # 严格性能契约（MAGPIE_PERF_STRICT=1）
+    py -3.13 check.py all      # 上面全部
+
+**一律用 `py -3.13` 显式调用，不要依赖 PATH 顺序** —— 已在运行的进程可能继承
+改动前的 PATH，`python` 不一定等于 3.13（本机实测：`python` → 3.9.1，
+`py -3.13` → 3.13.15）。check.py 自己也拦这件事：解释器低于 `pyproject.toml`
+声明的 `requires-python` 下限时**直接拒绝执行**，而不是给一个无意义的绿。
 
 为什么 `bench` 必须能**单独**触发: `MAGPIE_PERF_STRICT=1` 是 §9.2 性能承诺
 唯一可验证的形式（1M 行 ≤ 60s、单 job undo ≤ 1.5s）。把它埋进"跑全部"里，
@@ -14,31 +19,44 @@
 为了验一条 import 规则去等半分钟。
 
 为什么子进程一律 `sys.executable`（坑 2）: 写死 `"python"` 会按 PATH 解析，
-于是在 3.13 里执行 `py -3.13 check.py`，测试却跑在 3.9 上 —— 表面全绿，实际
-验的是另一个解释器。本工程已明确钉在 3.9（见 2.1 决策 1），所以这条尤其重要：
-**它是"你跑哪个解释器，测试就跑在哪个解释器上"的唯一保证**。没有它，3.9 这个
-选择会随环境变化悄悄退化，而没人会发现。`C2` 规则把这条纪律变成断言。
+于是在 `py -3.13 check.py` 之下，测试却跑在 PATH 上的 3.9 上 —— 表面全绿，实际
+验的是另一个解释器。**它是"你跑哪个解释器，测试就跑在哪个解释器上"的唯一
+保证**，也是本节所有"已在 3.13 上验证"结论成立的前提。`C2` 规则把这条纪律
+变成了断言。
 
-静态红线一览（`python check.py lint`）:
-    C2  子进程一律 sys.executable，不得把字面量解释器名当可执行名（坑 2）
-    C3  全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
-    R6  magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
-    R7  零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
-    P39 保持 3.9 可移植：无 match / tomllib / dataclass slots 等 3.10+ 运行时特性
+静态红线一览（`py -3.13 check.py lint`）:
+    C2    子进程一律 sys.executable，不得把字面量解释器名当可执行名（坑 2）
+    C3    全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
+    R6    magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
+    R7    零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
+    FLOOR 不超出声明下限的语法 / 标准库 API / 运行时求值
 
-关于 P39 为什么值得有: 现有代码能把"解释器升级成本压到零"，靠的是
-`from __future__ import annotations` 这条早期纪律。既然现在选择留在 3.9，就要把
-那条纪律变成断言 —— 否则第一个写出 `match` 的人，会让未来某次升级重新变贵。
-这是留在 3.9 这个决策唯一需要付的保险费。
+关于 FLOOR: 下限取自 `pyproject.toml` 的 `requires-python`（**唯一事实来源**，
+check.py 直接读它，不再另写一份 —— 两处各写一个版本号，迟早会分叉）。判定分三层，
+因为**一层不够**：
+
+  1. 语法层 —— `ast.parse(feature_version=下限)`，由解释器自己的语法表说了算，
+     不手工维护"哪些语法是新的"；
+  2. 标准库 API 层 —— 语法表管不到新增的 API，另列一份小清单（`_NEW_APIS`）；
+  3. 运行时求值层 —— `isinstance(x, int | str)`、`X = int | str`、缺
+     `from __future__ import annotations` 时注解里的 `X | Y`：**语法在任何
+     版本都合法**，前两层都看不见它们，只有在旧解释器上求值才炸。
+
+于是 `match` / `tomllib`（≤3.11）放行，PEP 695 泛型 / `type` 语句 /
+`itertools.batched`（3.12+）被拦下，而上面第 3 类写法同样被拦下。
+
+⚠️ 第 3 层是**补回来**的一次退化修复：2.1 早先的 `P39` 规则覆盖过它，改写成
+FLOOR 时只保留了前两层，使它静默失效了一段时间。删规则时请逐条对照 P39 的
+覆盖面，别只对照它的名字。
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 import sys
-import sysconfig
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -59,6 +77,25 @@ USAGE = __doc__
 
 _PARSE_CACHE: dict = {}
 _STDLIB_CACHE = None
+
+
+def _declared_floor():
+    """从 `pyproject.toml` 的 `requires-python` 读语言下限，返回 (3, 11) 这样的元组。
+
+    刻意只做**定点匹配**，不引入 TOML 解析器：check.py 只带 pytest 这一个 dev
+    依赖，而 `tomllib` 在 3.11 以下不存在。为一个字段塞一个自制 TOML 解析器不
+    划算，读不到就返回 () 让调用方**响亮地失败** —— 宁可报错，也不要静默用一
+    个猜出来的下限去判定全仓代码。
+    """
+    try:
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    match = re.search(r'^requires-python\s*=\s*"[^"]*>=\s*(\d+)\.(\d+)"',
+                      text, re.MULTILINE)
+    if not match:
+        return ()
+    return (int(match.group(1)), int(match.group(2)))
 
 
 def _iter_sources():
@@ -115,28 +152,14 @@ def _command_head_literals(tree):
 def _stdlib_names() -> set:
     """当前解释器的标准库顶层模块名。
 
-    刻意**不用** `sys.stdlib_module_names` —— 那是 3.10+ 才有的，而本工程钉在
-    3.9。改为从解释器自己的 stdlib 目录枚举，任何版本都对；3.10+ 上也取并集，
-    免得只靠目录枚举漏掉什么。
+    `sys.stdlib_module_names` 是 3.10+ 才有的 —— 而 `main()` 已经拒绝在下限
+    以下的解释器上运行（下限 ≥ 3.11），所以这里可以直接用，不必再兜底枚举
+    stdlib 目录。这正是"把下限守在前面"换来的简化。
     """
     global _STDLIB_CACHE
-    if _STDLIB_CACHE is not None:
-        return _STDLIB_CACHE
-    names = set(sys.builtin_module_names)
-    names.update(getattr(sys, "stdlib_module_names", ()))
-    for base in (sysconfig.get_paths()["stdlib"], str(Path(sys.base_prefix) / "Lib")):
-        root = Path(base)
-        if not root.is_dir():
-            continue
-        for entry in root.iterdir():
-            if entry.name in ("site-packages", "__pycache__", "lib-dynload"):
-                continue
-            if entry.suffix == ".py" and entry.stem != "__init__":
-                names.add(entry.stem)
-            elif entry.is_dir() and (entry / "__init__.py").exists():
-                names.add(entry.name)
-    _STDLIB_CACHE = names
-    return names
+    if _STDLIB_CACHE is None:
+        _STDLIB_CACHE = set(sys.stdlib_module_names)
+    return _STDLIB_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +367,32 @@ def _rule_r7() -> list:
 
 
 # ---------------------------------------------------------------------------
-# P39 · 保持 3.9 可移植（本决策的配套保险）
+# FLOOR · 不超出声明下限的语法与标准库 API
 # ---------------------------------------------------------------------------
 
-_PY310_DATACLASS_KWARGS = {"slots", "kw_only", "match_args", "weakref_slot"}
+# `feature_version` 管得住**语法**，管不住**标准库新增的 API** —— 后者只能列
+# 清单。这里刻意只收"这个项目真有可能用上、且一旦用上会在旧解释器上直接炸"
+# 的那些，不追求穷尽：一个短清单能被认真读完，一份穷尽清单只会被跳过。
+# 值是该 API 的引入版本，写进报错信息里，省得再去查。
+_NEW_APIS = {
+    "itertools.batched": "3.12",
+    "typing.override": "3.12",
+    "typing.TypeAliasType": "3.12",
+    "typing.ReadOnly": "3.13",
+    "sys.last_exc": "3.12",
+    "copy.replace": "3.13",
+    "collections.abc.Buffer": "3.12",
+    "os.path.isjunction": "3.12",
+    "os.path.splitroot": "3.12",
+    "os.path.isreserved": "3.13",
+    "pathlib.Path.walk": "3.12",
+    "pathlib.Path.full_match": "3.13",
+}
+
+
+# 运行时求值的 PEP 604 检测（`isinstance(x, int | str)` / `X = int | str`）。
+# 为什么单列一层：这些写法的**语法**在任何版本都合法，`feature_version` 压根
+# 看不见它们 —— 它们是在旧解释器上**求值**时才炸。
 _BUILTIN_TYPE_NAMES = {"int", "str", "bytes", "bytearray", "float", "bool", "complex",
                        "list", "dict", "set", "frozenset", "tuple", "object", "type"}
 
@@ -359,10 +404,10 @@ def _has_bitor(node) -> bool:
 
 
 def _bitor_touches_a_builtin_type(node) -> bool:
-    """`int | str` 会真的在 3.9 上求值；`flags | others` 不会。
+    """`int | str` 会真的求值；`flags | others` 不会。
 
-    用"操作数里出现内置类型名"把两者分开 —— 是启发式，但对现有代码零误报，
-    而对真正危险的那种写法（`X = int | str`）是准的。
+    用"操作数里出现内建类型名"把两者分开 —— 是启发式，但对现有代码零误报，
+    而对真正危险的那种写法是准的。
     """
     for n in ast.walk(node):
         if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
@@ -383,71 +428,134 @@ def _annotation_nodes(tree):
             yield node.returns
 
 
-def _py39_violations(tree, rel: Path, has_future_annotations: bool) -> list:
-    bad = []
-    match_node = getattr(ast, "Match", None)      # 3.9 上不存在这个节点
+def _has_future_annotations(tree) -> bool:
+    return any(
+        isinstance(n, ast.ImportFrom) and n.module == "__future__"
+        and any(a.name == "annotations" for a in n.names)
+        for n in tree.body)
 
+
+def _pep604_runtime_violations(tree, rel: Path) -> list:
+    """`X | Y` 在**运行时被求值**的位置 —— 注解位置由 future import 赦免。
+
+    3.9 上 `int | str` 求值即 TypeError；10 岁的老解释器上跑不了的就是这种。
+    """
+    bad = []
     for node in ast.walk(tree):
-        if match_node is not None and isinstance(node, match_node):
-            bad.append(_v(rel, node.lineno,
-                          "match 语句是 3.10+ 语法 —— 3.9 上直接 SyntaxError"))
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.split(".")[0] == "tomllib":
-                    bad.append(_v(rel, node.lineno,
-                                  "tomllib 是 3.11+ —— 读 TOML 请用 tomli（走 extras）"
-                                  "或自己解析"))
-        elif isinstance(node, ast.ImportFrom) and not node.level \
-                and (node.module or "").split(".")[0] == "tomllib":
-            bad.append(_v(rel, node.lineno,
-                          "tomllib 是 3.11+ —— 读 TOML 请用 tomli（走 extras）或自己解析"))
         if isinstance(node, ast.Call):
             func = node.func
             name = (func.attr if isinstance(func, ast.Attribute)
                     else getattr(func, "id", ""))
-            if name in ("dataclass", "field"):
-                for kw in node.keywords:
-                    if kw.arg in _PY310_DATACLASS_KWARGS:
-                        bad.append(_v(rel, kw.value.lineno,
-                                      f"{name}({kw.arg}=…) 是 3.10+ 的参数 —— "
-                                      f"3.9 上直接 TypeError"))
             if name in ("isinstance", "issubclass"):
                 for arg in node.args[1:]:
                     if _has_bitor(arg):
                         bad.append(_v(rel, arg.lineno,
                                       f"{name}() 的实参里出现 `X | Y` —— 这是**运行时求值**的 "
-                                      f"PEP 604，3.9 上会 TypeError（注解位置才安全）"))
+                                      f"PEP 604，旧解释器上会直接 TypeError"))
+        if isinstance(node, ast.Assign) and _bitor_touches_a_builtin_type(node.value):
+            bad.append(_v(rel, node.value.lineno,
+                          "赋值里出现内建类型名的 `X | Y` —— 运行时求值，旧解释器上 TypeError"))
 
-    if not has_future_annotations:
+    if not _has_future_annotations(tree):
         for annotation in _annotation_nodes(tree):
             if _has_bitor(annotation):
                 bad.append(_v(rel, annotation.lineno,
                               "注解里出现 `X | Y`，但本文件缺 "
-                              "`from __future__ import annotations` —— 3.9 上导入即 TypeError"))
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _bitor_touches_a_builtin_type(node.value):
-            bad.append(_v(rel, node.value.lineno,
-                          "赋值里出现内置类型名的 `X | Y` —— 运行时求值，3.9 上 TypeError"
-                          "（注解位置才由 `from __future__ import annotations` 兜住）"))
+                              "`from __future__ import annotations` —— 旧解释器上导入即 TypeError"))
     return bad
 
 
-def _rule_p39() -> list:
+def _qualified_bindings(tree) -> dict:
+    """本地名 → 全限定名。`import os` → {"os": "os"}；`import a.b as c` → {"c": "a.b"}；
+    `from pathlib import Path` → {"Path": "pathlib.Path"}。"""
+    bindings = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                bindings[alias.asname or root] = alias.name if alias.asname else root
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return bindings
+
+
+def _dotted(node):
+    """还原 `os.path.isjunction` / `Path("x").walk` 这样的链；认不出就返回 None。
+
+    刻意只做这一层浅解析：把 `Call` 的 `func` 当作它的"类型"
+    （`Path("x").walk` → `pathlib.Path.walk`）。再深就是数据流分析，不划算。
+    **已知边界**：新 API 挂在变量上时漏检（`p = Path(x); p.walk()`）——
+    这类只能靠 code review，规则不假装能覆盖。
+    """
+    parts = []
+    while True:
+        if isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        elif isinstance(node, ast.Name):
+            parts.append(node.id)
+            return ".".join(reversed(parts))
+        else:
+            return None
+
+
+def _rule_floor() -> list:
+    floor = _declared_floor()
+    if not floor:
+        return ["读不到 pyproject.toml 的 requires-python —— FLOOR 规则无从判定"]
     bad = []
     for path, rel in _iter_sources():
-        tree, syntax_error = _parse(path, rel)
-        if tree is None:
-            # 3.9 的解析器根本读不懂 match/case —— 解析失败本身就是最直接的证据。
-            bad.append(_v(rel, syntax_error.lineno or 0,
-                          f"3.9 无法解析：{syntax_error.msg} —— 若为 match/case 等 3.10+ "
-                          f"语法请改写，否则是真实语法错误"))
+        source = path.read_text(encoding="utf-8")
+
+        # 语法层：让解释器自己的语法表来判，不手工维护"哪些语法是新的"。
+        try:
+            ast.parse(source, filename=rel.as_posix(), feature_version=floor)
+        except SyntaxError as exc:
+            # 失败有两种可能：真的用了更新的语法，或者文件本身就写坏了。
+            # 用本解释器的默认语法再解一次就能分辨 —— 别把普通语法错误也说成
+            # "超出下限"，那会把人引到错的方向上去。
+            try:
+                ast.parse(source, filename=rel.as_posix())
+            except SyntaxError as plain:
+                bad.append(_v(rel, plain.lineno or 0, f"语法错误：{plain.msg}"))
+            else:
+                bad.append(_v(rel, exc.lineno or 0,
+                              f"语法超出声明下限 {floor[0]}.{floor[1]}：{exc.msg} "
+                              f"—— 要么改写，要么在确认过上限之后把 requires-python 抬上去"))
             continue
-        has_future = any(
-            isinstance(n, ast.ImportFrom) and n.module == "__future__"
-            and any(a.name == "annotations" for a in n.names)
-            for n in tree.body)
-        bad.extend(_py39_violations(tree, rel, has_future))
+
+        tree, _ = _parse(path, rel)
+        if tree is None:
+            continue
+
+        bindings = _qualified_bindings(tree)
+        for node in ast.walk(tree):
+            # API 层：属性链形态（itertools.batched(…) / Path.walk(…) / os.path.isjunction）
+            if isinstance(node, ast.Attribute):
+                dotted = _dotted(node)
+                if dotted:
+                    head, _, tail = dotted.partition(".")
+                    full = f"{bindings.get(head, head)}.{tail}" if tail else dotted
+                    if full in _NEW_APIS:
+                        bad.append(_v(rel, node.lineno,
+                                      f"{full} 是 {_NEW_APIS[full]}+ 的 API，"
+                                      f"超出声明下限 {floor[0]}.{floor[1]}"))
+            # API 层：from X import Y 直接绑定（你不可能不 import 就用上它）
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+                for alias in node.names:
+                    full = f"{node.module}.{alias.name}"
+                    if full in _NEW_APIS:
+                        bad.append(_v(rel, node.lineno,
+                                      f"from {node.module} import {alias.name} —— "
+                                      f"{full} 是 {_NEW_APIS[full]}+ 的 API，"
+                                      f"超出声明下限 {floor[0]}.{floor[1]}"))
+
+        # 运行时层：语法合法、到旧解释器上**求值**时才炸的 PEP 604。语法表看不见
+        # 它们，API 清单也收不住它们 —— 只能单独看"求值位置"。
+        bad.extend(_pep604_runtime_violations(tree, rel))
     return bad
 
 
@@ -461,8 +569,9 @@ RULES = (
     ("R6", "magpie/core/** 顶层 import ⊆ 标准库", _rule_r6),
     ("R7", "零出站网络（socket 连接点 / urllib.request / requests / Python httpx 库）",
      _rule_r7),
-    ("P39", "保持 3.9 可移植（无 match / tomllib / dataclass slots / 运行时 PEP 604）",
-     _rule_p39),
+    ("FLOOR", "不超出声明下限（pyproject.toml 的 requires-python）的语法 / 标准库 API / "
+              "运行时求值",
+     _rule_floor),
 )
 
 
@@ -508,6 +617,20 @@ def main(argv: list) -> int:
         return 0
     if what not in ("lint", "unit", "bench", "all"):
         print(f"未知参数 {what!r}\n\n{USAGE}")
+        return 1
+
+    # 下限守卫 —— 这一条比 C2 更靠前，因为它挡的是"整轮验证跑错了运行时"。
+    # 在 3.9 上跑出来的 84 passed，对"这段代码在 3.11+ 上对不对"什么也没证明。
+    floor = _declared_floor()
+    if not floor:
+        print("!! pyproject.toml 里读不到 requires-python —— 无法判定语言下限，拒绝执行。",
+              flush=True)
+        return 1
+    if sys.version_info[:2] < floor:
+        print(f"!! 解释器 {sys.version.split()[0]} 低于 pyproject.toml 声明的下限 "
+              f"{floor[0]}.{floor[1]} —— 在它上面跑出来的绿是假的，拒绝执行。", flush=True)
+        print(f"   当前解释器: {sys.executable}", flush=True)
+        print(f"   请显式用工程解释器调用: py -3.13 check.py ...", flush=True)
         return 1
 
     # 把解释器打出来：换解释器时，它让"这次到底验的是谁"一眼可见。
