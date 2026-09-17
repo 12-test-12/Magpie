@@ -1,0 +1,12 @@
+app.example.com
+api.example.com
+dev-api.example.com
+mail.example.com
+cdn.example.com
+static.example.com
+vpn.example.com
+blog.example.com
+shop.example.com
+admin.example.com
+test.example.com
+old.example.com

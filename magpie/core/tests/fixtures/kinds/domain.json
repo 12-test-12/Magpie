@@ -1,0 +1,58 @@
+{
+  "kind": "domain",
+  "lens": "assets",
+  "identity_rule": "主机的注册域名字面量：小写、去尾点、去端口、IDN→punycode 之后的整串（normalize.normalize_domain）。同一域名的大小写/尾点写法是同一个实体；单标签（localhost）默认不成实体。",
+  "golden": [
+    "domainlist/1",
+    "httpx/1"
+  ],
+  "examples": [
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "Example.COM."
+      ],
+      "key": "example.com",
+      "why": "大小写与尾点不改变身份"
+    },
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "api.example.com:8443"
+      ],
+      "key": "api.example.com",
+      "why": "端口不是域名身份的一部分"
+    },
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "例子.中国"
+      ],
+      "key": "xn--fsqu00a.xn--fiqs8s",
+      "why": "IDN 折成 punycode（否则同一域名会有两种写法）"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "localhost"
+      ],
+      "why": "单标签不是完整域名（require_dot 默认开）"
+    },
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "ｅｘａｍｐｌｅ.com"
+      ],
+      "why": "全角字符是同形字载体，必须拒绝而不是静默折叠"
+    },
+    {
+      "rule": "domainlist.accepts",
+      "args": [
+        "203.0.113.10"
+      ],
+      "why": "IP 字面量是 ip 的活，不是 domain 的 —— 注意 normalize_domain 本身接受它（四个标签都合法），拒绝发生在解析器的身份边界上"
+    }
+  ]
+}

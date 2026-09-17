@@ -1,0 +1,104 @@
+{
+  "tool": "domainlist",
+  "format_version": "1",
+  "input": "input.txt",
+  "bad_lines": [
+    {
+      "line": 8,
+      "reason": "这一行是 IP，不是域名（domainlist 只收域名）"
+    },
+    {
+      "line": 9,
+      "reason": "不是合法域名（或不是完整域名）"
+    },
+    {
+      "line": 10,
+      "reason": "不是合法域名（或不是完整域名）"
+    },
+    {
+      "line": 11,
+      "reason": "不是合法域名（或不是完整域名）"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "example.com",
+      "display": "example.com"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "app.example.com"
+      ],
+      "dst": [
+        "domain",
+        "example.com"
+      ],
+      "rel": "member_of"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "example.com",
+      "display": "example.com"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "api.example.com"
+      ],
+      "dst": [
+        "domain",
+        "example.com"
+      ],
+      "rel": "member_of"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "dev-api.example.com",
+      "display": "dev-api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "example.com",
+      "display": "example.com"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "dev-api.example.com"
+      ],
+      "dst": [
+        "domain",
+        "example.com"
+      ],
+      "rel": "member_of"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "example.com",
+      "display": "example.com"
+    }
+  ]
+}

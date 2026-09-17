@@ -1,0 +1,11 @@
+# subfinder 输出样例。注释行与坏行都**刻意存在** —— 真实清单里两者都会出现，
+# 而"坏行必须走可读报告而不是抛堆栈"这条验收标准需要一个稳定的输入来固定它。
+app.example.com
+API.Example.COM.
+dev-api.example.com
+example.com
+app.example.com
+203.0.113.10
+- leading hyphen
+not_a_domain..example.com
+localhost

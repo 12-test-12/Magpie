@@ -1,0 +1,40 @@
+{
+  "kind": "host",
+  "lens": "assets",
+  "identity_rule": "通用主机端点：来源没有把「域名 / IP / 服务」分得更细时，用它的原始主机串作为 key。它是 ops.add_relation 的兜底 kind —— 关系端点没有被显式的 RawEntity 建过时落到这里。",
+  "golden": [],
+  "examples": [
+    {
+      "rule": "identity.literal",
+      "args": [
+        "host:anchor"
+      ],
+      "key": "host:anchor",
+      "why": "名称级兜底：key 就是调用方给的串，不做任何折叠"
+    },
+    {
+      "rule": "identity.literal",
+      "args": [
+        "legacy-box"
+      ],
+      "key": "legacy-box",
+      "why": "没有点、没有端口的主机名同样成立 —— 它不是域名，不适用 domain 的标签规则"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "identity.literal",
+      "args": [
+        ""
+      ],
+      "why": "空 key 不是实体"
+    },
+    {
+      "rule": "identity.literal",
+      "args": [
+        7
+      ],
+      "why": "key 必须是字符串 —— 自增 id 绝不允许混进身份"
+    }
+  ]
+}

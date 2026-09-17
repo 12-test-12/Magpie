@@ -50,7 +50,10 @@ def _build(n_obs: int, n_entities: int = 20):
     store.init_db(conn)
     pid = ops.create_project(conn, "perf", {"include": ["*.example.com"], "exclude": []})
     store.register_source(conn, source_id=1, name="nmap", authority_level="verified")
-    store.register_parser(conn, "nmap@1", profile_id="nmap", version="1")
+    # 名称级登记：这个性能夹具手里没有 nmap 解析器的实现，只有一个名字，
+    # 所以按 2.4 的语义显式标注 UNHASHED（见 store.UNHASHED_PARSER）。
+    store.register_parser(conn, "nmap@1", profile_id="nmap", version="1",
+                          definition_hash=store.UNHASHED_PARSER)
     ops.set_parser(conn, pid, "nmap@1")
     rf = ops.add_raw_file(conn, project_id=pid, locator_uri="file:///raw/p.txt",
                           content="x\n", storage_state="present")

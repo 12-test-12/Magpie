@@ -11,8 +11,12 @@
 声明的 `requires-python` 下限时**直接拒绝执行**，而不是给一个无意义的绿。
 
 为什么 `bench` 必须能**单独**触发: `MAGPIE_PERF_STRICT=1` 是 §9.2 性能承诺
-唯一可验证的形式（1M 行 ≤ 60s、单 job undo ≤ 1.5s）。把它埋进"跑全部"里，
-它就再也无法被单独质问"现在到底达不达标"。
+唯一可验证的形式（1M 行 ≤ 60s、单 job undo ≤ 1.5s、导入 10 万观测 < 60s）。
+把它埋进"跑全部"里，它就再也无法被单独质问"现在到底达不达标"。
+
+`bench` 里那条导入契约（`bench/test_perf_ingest.py`）真跑一次 10 万观测的导入，
+约 55s —— 比另外两条贵得多。这是刻意的：性能承诺的代价不该被藏起来，
+而且它只在 `bench` / `all` 里跑，不影响秒级的 `lint` 与分钟级的 `unit`。
 
 为什么 `lint` 也必须能**单独**触发: 静态红线是秒级的，单元测试是分钟级的。
 红线只有在"改一行就能立刻验"的时候才会真的被用起来；混在一起的结果是没人
@@ -25,11 +29,27 @@
 变成了断言。
 
 静态红线一览（`py -3.13 check.py lint`）:
-    C2    子进程一律 sys.executable，不得把字面量解释器名当可执行名（坑 2）
-    C3    全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
-    R6    magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
-    R7    零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
-    FLOOR 不超出声明下限的语法 / 标准库 API / 运行时求值
+    C2        子进程一律 sys.executable，不得把字面量解释器名当可执行名（坑 2）
+    C3        全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
+    R6        magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
+    R7        零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
+    PARSE-RO  magpie/core/parsers/** 不得 import 写入口（解析器只读文件）
+    PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
+    FLOOR     不超出声明下限的语法 / 标准库 API / 运行时求值
+
+关于 PARSE-RO / PARSE-NORM（2.4 的两条硬线）:
+
+  **PARSE-RO** —— 解析器一旦能 import `ops` / `store`，"一切入口走管线"就没了，
+  而那是 R1"写入口唯一"的全部价值。顺带禁掉 `sqlite3`：解析器读的是**文件**。
+
+  **PARSE-NORM** —— 计划书 §3.6 要防的是 `Nginx` / `nginx` / `NGINX/1.24` 三种
+  写法同时入库。防它的唯一办法是"同一件事只有一种写法"这个入口**真的只有一个**，
+  所以这里禁掉的不是某个函数名，而是**重新实现归一化的能力**：`re` / `ipaddress` /
+  `idna` / `unicodedata` 一律不许 import，`.lower()` / `.casefold()` 不许调 ——
+  项目里只有 `normalize.py` 有资格做这些事。
+
+  两条规则都有**反例自检**（`_selftest_parse_rules`）：没有自检的静态规则很可能是
+  "碰巧永远不报"，那和没写没有区别。
 
 关于 FLOOR: 下限取自 `pyproject.toml` 的 `requires-python`（**唯一事实来源**，
 check.py 直接读它，不再另写一份 —— 两处各写一个版本号，迟早会分叉）。判定分三层，
@@ -66,7 +86,13 @@ UNIT = [
     [sys.executable, "verify_v32r2.py"],
     [sys.executable, "verify_v32r3.py"],
 ]
-BENCH = [[sys.executable, "-m", "pytest", "bench/test_perf.py", "-q"]]
+BENCH = [
+    [sys.executable, "-m", "pytest", "bench/test_perf.py", "-q"],
+    # 2.4 兑现的契约项：单文件解析吞吐（10 万行 < 10s 量级，实测约 5s）
+    [sys.executable, "-m", "pytest", "bench/test_perf_parse.py", "-q"],
+    # 2.5 兑现的契约项：导入 10 万观测 < 60s（实跑一次完整导入，约 55s）
+    [sys.executable, "-m", "pytest", "bench/test_perf_ingest.py", "-q"],
+]
 
 USAGE = __doc__
 
@@ -373,6 +399,147 @@ def _rule_r7() -> list:
 
 
 # ---------------------------------------------------------------------------
+# PARSE-RO / PARSE-NORM · 解析器的两条硬线（2.4）
+# ---------------------------------------------------------------------------
+
+#: 解析器包。用 parts 前缀而不是字符串前缀：`parsers_bridge.py`（2.5 的过渡实现）
+#: **不在**这个包内，它不适用这两条规则 —— 它本来就是为了先跑通管线而生的临时实现。
+_PARSER_PACKAGE = ("magpie", "core", "parsers")
+
+#: 解析器不得触碰的东西：两个写入口 + sqlite3。
+#: 按**导入名的最后一段**判定，于是 `import magpie.core.ops`、`from .. import ops`、
+#: `from ..store import x` 三种写法会被同一条规则抓住。
+_PARSER_FORBIDDEN_MODULES = {"ops", "store", "sqlite3"}
+
+#: 内联归一化的两种形态：靠这些模块自己动手，或直接调这些字符串方法。
+_NORM_FORBIDDEN_MODULES = {"re", "ipaddress", "idna", "unicodedata"}
+_NORM_FORBIDDEN_METHODS = {"lower", "casefold"}
+
+
+def _is_parser_module(rel) -> bool:
+    return tuple(rel.parts[:3]) == _PARSER_PACKAGE
+
+
+def _import_names(tree):
+    """产出 (解析用的模块名, 行号)。
+
+    相对导入拼成带点的形态：`from ..store import x` → `..store`，
+    `from .. import ops` → `..ops`。调用方只看**最后一段**，两种形态因此等价。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level + (node.module or "")
+            if node.module is None:                 # `from .. import ops`
+                for alias in node.names:
+                    yield prefix + alias.name, node.lineno
+            else:
+                yield prefix, node.lineno
+
+
+def _defines_a_parser(tree) -> bool:
+    """本模块有没有定义一个具体的解析器（`class X(Parser)`）。
+
+    PARSE-NORM 只对**格式解析器**生效：`base.py`（契约本身）与 `__init__.py`
+    （包的说明）不产出任何记录，也就没有归一化可内联。
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            if any(isinstance(b, ast.Name) and b.id == "Parser" for b in node.bases):
+                return True
+    return False
+
+
+def _parse_ro_problems(rel, tree) -> list:
+    bad = []
+    for module, lineno in _import_names(tree):
+        if module.split(".")[-1] in _PARSER_FORBIDDEN_MODULES:
+            bad.append(_v(rel, lineno,
+                          f"import {module!r} —— PARSE-RO：解析器只读文件，"
+                          f"写入是 ingest 的职责（R1 的全部价值靠这条守着）"))
+    return bad
+
+
+def _parse_norm_problems(rel, tree) -> list:
+    bad = []
+    for module, lineno in _import_names(tree):
+        if module.split(".")[-1] in _NORM_FORBIDDEN_MODULES:
+            bad.append(_v(rel, lineno,
+                          f"import {module!r} —— PARSE-NORM：归一化只能调 "
+                          f"magpie/core/normalize.py，不得自己动手（否则 "
+                          f"`Nginx` / `nginx` / `NGINX/1.24` 会同时入库）"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _NORM_FORBIDDEN_METHODS:
+                bad.append(_v(rel, node.lineno,
+                              f".{node.func.attr}() —— PARSE-NORM：大小写折叠是"
+                              f"归一化的活，请调 normalize.py"))
+    return bad
+
+
+def _selftest_parse_rules() -> list:
+    """反例自检：该报的报、不该报的不报。"""
+    problems = []
+
+    ro_proof = "from .. import ops\n"
+    ro_control = "from .. import normalize\n"
+    if not _parse_ro_problems(Path("magpie/core/parsers/x.py"),
+                              ast.parse(ro_proof)):
+        problems.append("PARSE-RO 自检失败：反例 `from .. import ops` 未被检出")
+    if _parse_ro_problems(Path("magpie/core/parsers/x.py"), ast.parse(ro_control)):
+        problems.append("PARSE-NORM/RO 自检失败：`from .. import normalize` 被误报")
+
+    if not _parse_ro_problems(Path("magpie/core/parsers/x.py"),
+                              ast.parse("import sqlite3\n")):
+        problems.append("PARSE-RO 自检失败：`import sqlite3` 未被检出")
+
+    norm_proof = 'def f(x):\n    return x.lower()\n'
+    if not _parse_norm_problems(Path("magpie/core/parsers/x.py"),
+                                ast.parse(norm_proof)):
+        problems.append("PARSE-NORM 自检失败：反例 `.lower()` 未被检出")
+    if not _parse_norm_problems(Path("magpie/core/parsers/x.py"),
+                                ast.parse("import ipaddress\n")):
+        problems.append("PARSE-NORM 自检失败：反例 `import ipaddress` 未被检出")
+    norm_control = ("from .. import normalize\n\n"
+                    "def f(x):\n    return normalize.normalize_domain(x)\n")
+    if _parse_norm_problems(Path("magpie/core/parsers/x.py"),
+                            ast.parse(norm_control)):
+        problems.append("PARSE-NORM 自检失败：规范的归一化调用被误报")
+    return problems
+
+
+def _rule_parse_ro() -> list:
+    bad = _selftest_parse_rules()
+    for path, rel in _iter_sources():
+        if not _is_parser_module(rel):
+            continue
+        tree, _ = _parse(path, rel)
+        if tree is not None:
+            bad.extend(_parse_ro_problems(rel, tree))
+    return bad
+
+
+def _rule_parse_norm() -> list:
+    bad = []
+    for path, rel in _iter_sources():
+        if not _is_parser_module(rel):
+            continue
+        tree, _ = _parse(path, rel)
+        if tree is None:
+            continue
+        if not _defines_a_parser(tree):
+            continue
+        if not any(m.split(".")[-1] == "normalize"
+                   for m, _ in _import_names(tree)):
+            bad.append(_v(rel, 1, "解析器没有 import normalize —— PARSE-NORM："
+                                  "归一化必须走唯一入口，不得内联"))
+        bad.extend(_parse_norm_problems(rel, tree))
+    return bad
+
+
+# ---------------------------------------------------------------------------
 # FLOOR · 不超出声明下限的语法与标准库 API
 # ---------------------------------------------------------------------------
 
@@ -575,6 +742,10 @@ RULES = (
     ("R6", "magpie/core/** 顶层 import ⊆ 标准库", _rule_r6),
     ("R7", "零出站网络（socket 连接点 / urllib.request / requests / Python httpx 库）",
      _rule_r7),
+    ("PARSE-RO", "magpie/core/parsers/** 不得 import 写入口（ops / store / sqlite3）",
+     _rule_parse_ro),
+    ("PARSE-NORM", "解析器只调用 normalize.py，不得内联自己的归一化",
+     _rule_parse_norm),
     ("FLOOR", "不超出声明下限（pyproject.toml 的 requires-python）的语法 / 标准库 API / "
               "运行时求值",
      _rule_floor),

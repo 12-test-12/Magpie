@@ -1,0 +1,59 @@
+{
+  "kind": "product",
+  "lens": "services",
+  "identity_rule": "产品名[@版本]：产品名走 normalize.product_name（别名表折叠：Apache httpd / apache2 → httpd），版本走 normalize.version_tuple。**带版本与不带版本是两个实体** ——「哪些还在用 Nginx 1.18」问的是后者。",
+  "golden": [
+    "httpx/1"
+  ],
+  "examples": [
+    {
+      "rule": "httpx.product_key",
+      "args": [
+        "nginx",
+        "1.24.0"
+      ],
+      "key": "nginx@1.24.0",
+      "why": "带版本"
+    },
+    {
+      "rule": "httpx.product_key",
+      "args": [
+        "nginx",
+        ""
+      ],
+      "key": "nginx",
+      "why": "不带版本 = 另一个实体，不是「版本未知的 nginx」"
+    },
+    {
+      "rule": "normalize.product_name",
+      "args": [
+        "Apache httpd"
+      ],
+      "key": "httpd",
+      "why": "厂商前缀折叠 —— 否则 Apache/httpd/apache2 会是三个产品"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.product_name",
+      "args": [
+        ""
+      ],
+      "why": "空产品名不成实体"
+    },
+    {
+      "rule": "normalize.product_name",
+      "args": [
+        "   "
+      ],
+      "why": "只有空白同样不成实体"
+    },
+    {
+      "rule": "normalize.version_tuple",
+      "args": [
+        "CloudFront"
+      ],
+      "why": "不是可解析的版本号 → httpx.split_tech 会把它当成产品名的一部分，而不是版本"
+    }
+  ]
+}

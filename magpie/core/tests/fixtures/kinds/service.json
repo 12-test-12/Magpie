@@ -1,0 +1,57 @@
+{
+  "kind": "service",
+  "lens": "services",
+  "identity_rule": "host:port（无端口时退化为 host:scheme）。**同一主机上的 80 与 443 是两个服务** —— 它们的标题、状态码、中间件可以完全不同，合并会丢掉这个区别。",
+  "golden": [
+    "httpx/1"
+  ],
+  "examples": [
+    {
+      "rule": "httpx.service_key",
+      "args": [
+        "app.example.com",
+        "443",
+        "https"
+      ],
+      "key": "app.example.com:443",
+      "why": "端口在 key 里"
+    },
+    {
+      "rule": "httpx.service_key",
+      "args": [
+        "app.example.com",
+        "8443",
+        "https"
+      ],
+      "key": "app.example.com:8443",
+      "why": "同一主机的另一个端口 = 另一个服务"
+    },
+    {
+      "rule": "httpx.service_key",
+      "args": [
+        "bare.example.com",
+        null,
+        "http"
+      ],
+      "key": "bare.example.com:http",
+      "why": "httpx 没给端口时退化为 scheme，绝不退化成裸 host（否则会与 domain/ip 撞 key）"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "not a domain"
+      ],
+      "why": "host 不合法时整行进坏行报告 —— 绝不会出现一个 host 是任意文本的 service"
+    },
+    {
+      "rule": "normalize.normalize_domain",
+      "args": [
+        "localhost"
+      ],
+      "why": "单标签 host 不成实体，于是也不会产生它的 service"
+    }
+  ],
+  "rejects_note": "service_key 自己是**全函数**（任何字符串都能拼出 key），拒绝发生在它上游：host 先过 normalize.normalize_domain。把反例挂在真正会说「不」的地方，夹具才不是摆设。"
+}

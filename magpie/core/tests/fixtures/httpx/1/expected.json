@@ -1,0 +1,533 @@
+{
+  "tool": "httpx",
+  "format_version": "1",
+  "input": "input.jsonl",
+  "bad_lines": [],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.10",
+      "display": "203.0.113.10"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "app.example.com"
+      ],
+      "dst": [
+        "ip",
+        "203.0.113.10"
+      ],
+      "rel": "resolves_to"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https://app.example.com:443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "port",
+      "value": "443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "status_code",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "content_length",
+      "value": 5213
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "content_type",
+      "value": "text/html"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "final_url",
+      "value": "https://app.example.com/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "favicon",
+      "value": 11632344941598964306
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "webserver",
+      "value": "nginx"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "tls_version",
+      "value": "tls13"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "tls_cipher",
+      "value": "TLS_AES_128_GCM_SHA256"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "domain",
+        "app.example.com"
+      ],
+      "field": "title",
+      "value": "Acme Console"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "domain",
+        "app.example.com"
+      ],
+      "field": "cname",
+      "value": "app.cdn.example.net"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "vue",
+      "display": "vue",
+      "attrs": {
+        "family": "vue",
+        "version": null
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:443"
+      ],
+      "dst": [
+        "product",
+        "vue"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "nginx@1.24.0",
+      "display": "nginx",
+      "subtitle": "1.24.0",
+      "attrs": {
+        "family": "nginx",
+        "version": "1.24.0"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:443"
+      ],
+      "dst": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "mail.example.com",
+      "display": "mail.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.13",
+      "display": "203.0.113.13"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "mail.example.com"
+      ],
+      "dst": [
+        "ip",
+        "203.0.113.13"
+      ],
+      "rel": "resolves_to"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "2001:db8::1",
+      "display": "2001:db8::1"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "mail.example.com"
+      ],
+      "dst": [
+        "ip",
+        "2001:db8::1"
+      ],
+      "rel": "resolves_to"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "mail.example.com:80",
+      "display": "mail.example.com:80",
+      "subtitle": "http://mail.example.com:80"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "port",
+      "value": "80"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "status_code",
+      "value": 301
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "content_length",
+      "value": 0
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "content_type",
+      "value": "text/html"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "field": "webserver",
+      "value": "httpd"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "domain",
+        "mail.example.com"
+      ],
+      "field": "title",
+      "value": "Roundcube Webmail"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "domain",
+        "mail.example.com"
+      ],
+      "field": "cname",
+      "value": "mail.example.com.cdn.example.net"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "httpd@2.4.57",
+      "display": "httpd",
+      "subtitle": "2.4.57",
+      "attrs": {
+        "family": "httpd",
+        "version": "2.4.57"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "dst": [
+        "product",
+        "httpd@2.4.57"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "php@8.1.2",
+      "display": "php",
+      "subtitle": "8.1.2",
+      "attrs": {
+        "family": "php",
+        "version": "8.1.2"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "mail.example.com:80"
+      ],
+      "dst": [
+        "product",
+        "php@8.1.2"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "vpn.example.com",
+      "display": "vpn.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.16",
+      "display": "203.0.113.16"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "domain",
+        "vpn.example.com"
+      ],
+      "dst": [
+        "ip",
+        "203.0.113.16"
+      ],
+      "rel": "resolves_to"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "vpn.example.com:443",
+      "display": "vpn.example.com:443",
+      "subtitle": "https://vpn.example.com:443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "vpn.example.com:443"
+      ],
+      "field": "port",
+      "value": "443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "vpn.example.com:443"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "vpn.example.com:443"
+      ],
+      "field": "failed",
+      "value": "true"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "bare.example.com",
+      "display": "bare.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "bare.example.com:http",
+      "display": "bare.example.com:http",
+      "subtitle": "http://bare.example.com"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "bare.example.com:http"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "bare.example.com:http"
+      ],
+      "field": "status_code",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "bare.example.com:http"
+      ],
+      "field": "body_hash",
+      "value": "9f86d081884c7d659a2feaa0c55ad015"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "bare.example.com:http"
+      ],
+      "field": "webserver",
+      "value": "nginx"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "bare.example.com:http"
+      ],
+      "field": "webserver_version",
+      "value": "1.24.0"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8443",
+      "display": "app.example.com:8443",
+      "subtitle": "https://app.example.com:8443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:8443"
+      ],
+      "field": "port",
+      "value": "8443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:8443"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:8443"
+      ],
+      "field": "status_code",
+      "value": 200
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "nginx@1.24.0",
+      "display": "nginx",
+      "subtitle": "1.24.0",
+      "attrs": {
+        "family": "nginx",
+        "version": "1.24.0"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:8443"
+      ],
+      "dst": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "rel": "runs"
+    }
+  ]
+}

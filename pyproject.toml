@@ -41,4 +41,4 @@ magpie = "magpie.cli:main"
 # 显式列出，关掉 setuptools 的 flat-layout 自动发现：仓库根还躺着 check.py、
 # verify_*.py、generate_docx.py，自动发现会把它们也当成顶层模块并直接报错。
 # magpie/core/tests/ 刻意**不**打包 —— 它是回归网，不是运行时的一部分。
-packages = ["magpie", "magpie.core"]
+packages = ["magpie", "magpie.core", "magpie.core.parsers"]

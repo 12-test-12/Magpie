@@ -162,16 +162,13 @@ class FieldScoreBatch:
                 self._recent = set()
                 return
             id_list = sorted(int(o) for o in owners)
-            placeholders = ",".join("?" for _ in id_list)
-            owner_filter = f" AND c.owner_entity_id IN ({placeholders})"
-            params: list[Any] = id_list
         else:
             self._owners = None                # 全库窗口：任何 owner 都在窗口内
-            owner_filter = ""
-            params = []
+            id_list = []
 
-        from .store import is_within
-        rows = conn.execute(
+        from .store import bind_batch_size, is_within
+
+        base_sql = (
             "SELECT c.owner_entity_id       AS owner_id,"
             "       c.field_namespace        AS ns,"
             "       c.semantic_field         AS field,"
@@ -187,9 +184,24 @@ class FieldScoreBatch:
             " WHERE c.contribution_kind = 'field'"
             "   AND c.owner_entity_id IS NOT NULL"
             "   AND c.field_value IS NOT NULL"
-            f"{owner_filter}",
-            params,
-        ).fetchall()
+        )
+
+        # 窗口内的 owner 必须**分块**绑定：SQLite 的变量上限（32766；旧版 999）
+        # 与 owner 数无关，而一次 delta 可以覆盖上万个 owner（10 万观测的导入就是
+        # 这样）。旧实现一次性绑定全部 owner，超过上限即 `too many SQL variables`。
+        # 分块大小由连接自己决定（`store.bind_batch_size`），累加器共用，
+        # 逐列语义与单次扫描完全一致。
+        if self._owners is None:
+            row_batches: list[list[sqlite3.Row]] = [conn.execute(base_sql).fetchall()]
+        else:
+            step = bind_batch_size(conn)
+            row_batches = []
+            for start in range(0, len(id_list), step):
+                chunk = id_list[start:start + step]
+                marks = ",".join("?" for _ in chunk)
+                row_batches.append(
+                    conn.execute(base_sql + f"   AND c.owner_entity_id IN ({marks})",
+                                 chunk).fetchall())
 
         by_value: dict[tuple[int, str, str, str], list[int]] = {}
         field_values: dict[tuple[int, str, str], set[str]] = {}
@@ -203,7 +215,7 @@ class FieldScoreBatch:
         # 逐行调用等于把"一次扫描"重新变回 N 次往返 —— 那正是本类要消灭的东西。
         # 实测（60 行活跃 field 贡献）: 逐行调用 = 61 条 SQL，记忆化后 = 1 条。
         authority_by_source: dict[int, float] = {}
-        for r in rows:
+        for r in (row for batch_rows in row_batches for row in batch_rows):
             key = (int(r["owner_id"]), str(r["ns"]), str(r["field"]), str(r["val"]))
             by_value.setdefault(key, []).append(int(r["source_id"]))
             field_values.setdefault(key[:3], set()).add(str(r["val"]))

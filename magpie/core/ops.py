@@ -16,6 +16,7 @@ from typing import Any, Iterable, Sequence
 
 from . import store
 from .store import (
+    UNHASHED_PARSER,
     InvariantError,
     NewContribution,
     add_contribution,
@@ -56,7 +57,9 @@ def create_project(conn: sqlite3.Connection, name: str, scope: dict[str, Any]) -
     h = scope_hash(scope)
     fingerprint_value = scope.get("parser_fingerprint")
     if fingerprint_value is not None:
-        register_parser(conn, str(fingerprint_value))
+        # 名称级登记：scope 上的 fingerprint 是**一个名字**，这里没有任何实现
+        # 可 hash，所以显式标注 UNHASHED（同期必交项 B 的语义分界）。
+        register_parser(conn, str(fingerprint_value), definition_hash=UNHASHED_PARSER)
     cur = conn.execute(
         "INSERT INTO projects(name, scope, scope_version, scope_hash, parser_fingerprint)"
         " VALUES (?,?,1,?,?)",
@@ -87,7 +90,7 @@ def update_scope(conn: sqlite3.Connection, project_id: int, scope: dict[str, Any
     h = scope_hash(scope)
     fingerprint_value = scope.get("parser_fingerprint")
     if fingerprint_value is not None:
-        register_parser(conn, str(fingerprint_value))
+        register_parser(conn, str(fingerprint_value), definition_hash=UNHASHED_PARSER)
     conn.execute(
         "UPDATE projects SET scope=?, scope_version=?, scope_hash=?, parser_fingerprint=?"
         " WHERE id=?",
@@ -105,6 +108,7 @@ def update_scope(conn: sqlite3.Connection, project_id: int, scope: dict[str, Any
 
 def set_parser(conn: sqlite3.Connection, project_id: int, fingerprint: str, *,
                profile_id: str | None = None, version: str | None = None,
+               definition_hash: str = UNHASHED_PARSER,
                actor: str = "cli", reason: str = "parser_change") -> dict[str, Any]:
     """切换项目当前 parser 指纹（**事实操作**，v3.2-r2 落库）。
 
@@ -116,7 +120,10 @@ def set_parser(conn: sqlite3.Connection, project_id: int, fingerprint: str, *,
     row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     if row is None:
         raise InvariantError(f"project {project_id} not found")
-    register_parser(conn, fingerprint, profile_id=profile_id, version=version, actor=actor)
+    # 默认是 UNHASHED（调用方通常只有一个名字）；手里真有实现时传进来，
+    # 它会**回填**到一个原本只登记了名字的行上（见 store.register_parser）。
+    register_parser(conn, fingerprint, profile_id=profile_id, version=version,
+                    definition_hash=definition_hash, actor=actor)
     scope = json.loads(str(row["scope"]))
     scope["parser_fingerprint"] = fingerprint
     if profile_id is not None:
@@ -203,7 +210,13 @@ def start_job(conn: sqlite3.Connection, *, project_id: int, kind: str,
     if proj is None:
         raise InvariantError(f"project {project_id} not found")
     if parser_fingerprint is not None:
-        register_parser(conn, parser_fingerprint, actor=actor)
+        # job 只是**快照**一个名字，实现 hash 该由真正跑解析的那条路先登记好
+        # （`ingest` 就是在 start_job 之前登记完整的 —— 顺序反了 definition_hash
+        # 会永久留空，那正是 v3.2 §16.4 第 2 条记录的病）。
+        # 这里显式标 UNHASHED：轮到这里才第一次出现的 fingerprint 意味着没有
+        # 实现参与，而不是"实现没有 hash"。
+        register_parser(conn, parser_fingerprint, definition_hash=UNHASHED_PARSER,
+                        actor=actor)
     cur = conn.execute(
         "INSERT INTO jobs(project_id, kind, state, coverage, coverage_scope,"
         " scope_version, scope_hash, parser_fingerprint, actor, started_at)"

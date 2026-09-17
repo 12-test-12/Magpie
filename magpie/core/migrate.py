@@ -41,6 +41,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 收窄 undo_incomplete: redo 的 blocked（部分成功）状态是合法的。
     # 详情与代价见 schema/002_redo_blocked_state.sql 的文件头。
     Migration(2, "redo_blocked_state", SCHEMA_DIR / "002_redo_blocked_state.sql"),
+    # 资源类型登记表 + 关系受控词表 + definition_hash 的 DB 级兜底（2.4 同期必交项 A/B）。
+    # 词表落成"表 + 拒绝触发器"而不是字面量 CHECK 的理由见该文件头。
+    Migration(3, "kind_registry", SCHEMA_DIR / "003_kind_registry.sql"),
 )
 
 

@@ -571,6 +571,16 @@ def materialize(conn: sqlite3.Connection) -> None:
       observation 行 ← subject_id 对应的事实里最早的一条（owner / namespace / field / value）
       relation   行 ← subject_id 对应的事实里最早的一条（owner=src / dst_id / rel）
       entity 行由 new_entity 建立（key 只在创建时出现，故不由 materialize 生成）
+
+    性能（2026-09-17 修正）: 「subject_id 对应事实里最早的一条」原本写成**相关子查询**
+    `c.id = (SELECT MIN(c2.id) … WHERE c2.subject_id = c.subject_id)`。
+    `contributions` 上没有 `(contribution_kind, subject_id)` 索引，于是该子查询退化成
+    每行一次**全表扫描** —— 整体 O(N²)。观测那半条恰好能借 `ix_contrib_subject`
+    （subject_kind, subject_id）走索引，relation 这半条不能：实测 20 万贡献时
+    `materialize` 单独耗时 **102s**（同一时刻写路径只要 21s），10 万观测的导入
+    直接击穿 §9.2 的 60s 契约。
+    改成先按 subject_id 一次性 GROUP BY 求 MIN、再等值连接 —— 同样的 MIN、同样
+    的行集，但只有一次扫描 + 一次分组，不再是 N 次扫描。
     """
     # 1) observation 行: 以事实里的 observation id 为身份（不再用 (entity, field, value) 猜）
     conn.execute(
@@ -587,12 +597,14 @@ def materialize(conn: sqlite3.Connection) -> None:
                c.observed_at, c.observed_at_min, c.observed_at_source,
                c.observed_at_accuracy, c.observed_at_precision, c.created_at
           FROM contributions c
+          JOIN (SELECT subject_id, MIN(id) AS first_id
+                  FROM contributions
+                 WHERE subject_kind = 'observation'
+                 GROUP BY subject_id) m
+            ON m.first_id = c.id
          WHERE c.subject_kind = 'observation'
            AND c.contribution_kind = 'field'
            AND c.owner_entity_id IS NOT NULL
-           AND c.id = (SELECT MIN(c2.id) FROM contributions c2
-                        WHERE c2.subject_kind='observation'
-                          AND c2.subject_id = c.subject_id)
            AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.id = c.subject_id)
         """
     )
@@ -605,11 +617,13 @@ def materialize(conn: sqlite3.Connection) -> None:
                CAST(json_extract(c.field_value, '$.dst_id') AS INTEGER),
                c.relation_kind, 0, 'none', 0, 0, c.created_at
           FROM contributions c
+          JOIN (SELECT subject_id, MIN(id) AS first_id
+                  FROM contributions
+                 WHERE contribution_kind = 'relation'
+                 GROUP BY subject_id) m
+            ON m.first_id = c.id
          WHERE c.contribution_kind = 'relation'
            AND c.owner_entity_id IS NOT NULL
-           AND c.id = (SELECT MIN(c2.id) FROM contributions c2
-                        WHERE c2.contribution_kind='relation'
-                          AND c2.subject_id = c.subject_id)
            AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.id = c.subject_id)
         """
     )
@@ -667,6 +681,29 @@ def _owners_of(conn: sqlite3.Connection,
 # SQLite 默认变量上限 32766（旧版 999）。按块绑定，避免 "too many SQL variables"。
 _BATCH = 20000
 
+#: 绑定变量上限的兜底值：读不到连接上限时用它（见 `bind_batch_size`）。
+_BIND_FALLBACK = 900
+
+
+def bind_batch_size(conn: sqlite3.Connection, *, reserve: int = 0) -> int:
+    """本次 **连接** 真正允许的分块大小（按绑定变量数算，留 `reserve` 个余量）。
+
+    为什么不能只写死 `_BATCH`：SQLite 的 `SQLITE_MAX_VARIABLE_NUMBER` 是
+    **编译期**决定的，可以是 999（老版本）也可以是 32766。写死一个数只对其中
+    一种编译参数成立，另一种会在某个规模上突然 `too many SQL variables`。
+    而它又是可查的 —— `SQLITE_LIMIT_VARIABLE_NUMBER` 就是答案。
+
+    调用方（`recompute_subset` / `FieldScoreBatch`）用它决定 `IN (...)` 的
+    分块大小，于是"多大算太大"这件事只有一个事实来源：连接自己。
+    """
+    try:
+        limit = int(conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER))
+    except (AttributeError, sqlite3.NotSupportedError):     # pragma: no cover
+        return _BIND_FALLBACK
+    if limit <= 0:
+        return _BIND_FALLBACK
+    return max(1, min(_BATCH, limit - max(0, int(reserve))))
+
 
 def recompute_subset(conn: sqlite3.Connection, subjects: Sequence[tuple[str, int]],
                      *, owners: "set[int] | None" = None) -> None:
@@ -712,9 +749,16 @@ def recompute_subset(conn: sqlite3.Connection, subjects: Sequence[tuple[str, int
             touched |= want_ent
         batch = FieldScoreBatch(conn, owners=touched)
 
+    step = bind_batch_size(conn)
+
     # ---- observation ----
     if want_obs:
-        for chunk in _chunks(sorted(want_obs), _BATCH):
+        # 聚合查询必须与重置 UPDATE **同样分块**：两者都按 subject 绑变量，而
+        # SQLite 的变量上限（32766；旧版 999）与集合大小无关。旧实现只在重置时
+        # 分块、聚合时一次性绑定全部 subject —— 于是「一次 delta 覆盖 > 3 万个
+        # subject」会抛 `too many SQL variables`（2.5 的首个大文件导入正好踩到：
+        # 10 万观测 → 崩溃）。改成同一循环内分块，SQL 与逐行语义完全不变。
+        for chunk in _chunks(sorted(want_obs), step):
             marks = ",".join("?" for _ in chunk)
             conn.execute(
                 f"UPDATE observations"
@@ -725,98 +769,99 @@ def recompute_subset(conn: sqlite3.Connection, subjects: Sequence[tuple[str, int
                 f" WHERE id IN ({marks})",
                 chunk,
             )
-        agg_sql = (
-            "SELECT o.id                          AS sid,"
-            "       o.entity_id                   AS entity_id,"
-            "       o.field_namespace             AS ns,"
-            "       o.semantic_field              AS field,"
-            "       o.value                       AS val,"
-            "       o.origin                      AS origin,"
-            "       COUNT(*)                      AS n,"
-            "       COUNT(DISTINCT c.source_id)   AS sources,"
-            "       COUNT(DISTINCT c.job_id)      AS jobs,"
-            "       COALESCE(SUM(c.job_count + c.compacted_job_count), 0) AS logical_jobs,"
-            "       MAX(CASE c.authorship WHEN 'manual' THEN 1 ELSE 0 END) AS manual,"
-            "       MAX(c.observed_at)            AS observed_at,"
-            "       MIN(c.observed_at_min)        AS observed_at_min,"
-            "       (SELECT c2.observed_at_source FROM v_active_contributions c2"
-            "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
-            "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_source,"
-            "       (SELECT c2.observed_at_accuracy FROM v_active_contributions c2"
-            "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
-            "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_accuracy,"
-            "       (SELECT c2.observed_at_precision FROM v_active_contributions c2"
-            "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
-            "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_precision"
-            "  FROM observations o"
-            "  JOIN v_active_contributions c"
-            "    ON c.subject_kind='observation' AND c.subject_id=o.id"
-            f" WHERE o.id IN ({','.join('?' for _ in range(len(want_obs)))})"
-            " GROUP BY o.id"
-        )
-        for row in conn.execute(agg_sql, sorted(want_obs)):
-            n = int(row["n"])
-            conf, _ = batch.score(int(row["entity_id"]), str(row["ns"]),
-                                  str(row["field"]), str(row["val"]))
-            origin = "manual" if int(row["manual"] or 0) else str(row["origin"])
-            conn.execute(
-                "UPDATE observations SET is_current=?, confidence=?, source_count=?,"
-                " job_count=?, logical_job_count=?, origin=?, observed_at=?,"
-                " observed_at_min=?, observed_at_source=?, observed_at_accuracy=?,"
-                " observed_at_precision=? WHERE id=?",
-                (1 if n > 0 else 0, conf, int(row["sources"] or 0), int(row["jobs"] or 0),
-                 int(row["logical_jobs"] or 0), origin,
-                 row["observed_at"], row["observed_at_min"], row["t_source"],
-                 row["t_accuracy"], row["t_precision"], int(row["sid"])),
+            agg_sql = (
+                "SELECT o.id                          AS sid,"
+                "       o.entity_id                   AS entity_id,"
+                "       o.field_namespace             AS ns,"
+                "       o.semantic_field              AS field,"
+                "       o.value                       AS val,"
+                "       o.origin                      AS origin,"
+                "       COUNT(*)                      AS n,"
+                "       COUNT(DISTINCT c.source_id)   AS sources,"
+                "       COUNT(DISTINCT c.job_id)      AS jobs,"
+                "       COALESCE(SUM(c.job_count + c.compacted_job_count), 0) AS logical_jobs,"
+                "       MAX(CASE c.authorship WHEN 'manual' THEN 1 ELSE 0 END) AS manual,"
+                "       MAX(c.observed_at)            AS observed_at,"
+                "       MIN(c.observed_at_min)        AS observed_at_min,"
+                "       (SELECT c2.observed_at_source FROM v_active_contributions c2"
+                "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
+                "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_source,"
+                "       (SELECT c2.observed_at_accuracy FROM v_active_contributions c2"
+                "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
+                "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_accuracy,"
+                "       (SELECT c2.observed_at_precision FROM v_active_contributions c2"
+                "         WHERE c2.subject_kind='observation' AND c2.subject_id=o.id"
+                "         ORDER BY c2.observed_at DESC, c2.id DESC LIMIT 1) AS t_precision"
+                "  FROM observations o"
+                "  JOIN v_active_contributions c"
+                "    ON c.subject_kind='observation' AND c.subject_id=o.id"
+                f" WHERE o.id IN ({marks})"
+                " GROUP BY o.id"
             )
+            for row in conn.execute(agg_sql, chunk):
+                n = int(row["n"])
+                conf, _ = batch.score(int(row["entity_id"]), str(row["ns"]),
+                                      str(row["field"]), str(row["val"]))
+                origin = "manual" if int(row["manual"] or 0) else str(row["origin"])
+                conn.execute(
+                    "UPDATE observations SET is_current=?, confidence=?, source_count=?,"
+                    " job_count=?, logical_job_count=?, origin=?, observed_at=?,"
+                    " observed_at_min=?, observed_at_source=?, observed_at_accuracy=?,"
+                    " observed_at_precision=? WHERE id=?",
+                    (1 if n > 0 else 0, conf, int(row["sources"] or 0),
+                     int(row["jobs"] or 0),
+                     int(row["logical_jobs"] or 0), origin,
+                     row["observed_at"], row["observed_at_min"], row["t_source"],
+                     row["t_accuracy"], row["t_precision"], int(row["sid"])),
+                )
 
     # ---- relation ----
     if want_rel:
-        for chunk in _chunks(sorted(want_rel), _BATCH):
+        for chunk in _chunks(sorted(want_rel), step):
             marks = ",".join("?" for _ in chunk)
             conn.execute(
                 f"UPDATE relations SET is_current=0, confidence='none',"
                 f" source_count=0, job_count=0 WHERE id IN ({marks})",
                 chunk,
             )
-        rel_sql = (
-            "SELECT r.id AS sid, COUNT(*) AS n,"
-            "       COUNT(DISTINCT c.source_id) AS sources,"
-            "       COUNT(DISTINCT c.job_id)    AS jobs"
-            "  FROM relations r"
-            "  JOIN v_active_contributions c"
-            "    ON c.subject_kind='relation' AND c.subject_id=r.id"
-            f" WHERE r.id IN ({','.join('?' for _ in range(len(want_rel)))})"
-            " GROUP BY r.id"
-        )
-        for row in conn.execute(rel_sql, sorted(want_rel)):
-            sid = int(row["sid"])
-            n = int(row["n"])
-            conf = _relation_confidence(conn, sid) if n > 0 else "none"
-            conn.execute(
-                "UPDATE relations SET is_current=?, confidence=?, source_count=?,"
-                " job_count=? WHERE id=?",
-                (1 if n > 0 else 0, conf, int(row["sources"] or 0),
-                 int(row["jobs"] or 0), sid),
+            rel_sql = (
+                "SELECT r.id AS sid, COUNT(*) AS n,"
+                "       COUNT(DISTINCT c.source_id) AS sources,"
+                "       COUNT(DISTINCT c.job_id)    AS jobs"
+                "  FROM relations r"
+                "  JOIN v_active_contributions c"
+                "    ON c.subject_kind='relation' AND c.subject_id=r.id"
+                f" WHERE r.id IN ({marks})"
+                " GROUP BY r.id"
             )
+            for row in conn.execute(rel_sql, chunk):
+                sid = int(row["sid"])
+                n = int(row["n"])
+                conf = _relation_confidence(conn, sid) if n > 0 else "none"
+                conn.execute(
+                    "UPDATE relations SET is_current=?, confidence=?, source_count=?,"
+                    " job_count=? WHERE id=?",
+                    (1 if n > 0 else 0, conf, int(row["sources"] or 0),
+                     int(row["jobs"] or 0), sid),
+                )
 
     # ---- entity ----
     if want_ent:
-        for chunk in _chunks(sorted(want_ent), _BATCH):
+        for chunk in _chunks(sorted(want_ent), step):
             marks = ",".join("?" for _ in chunk)
             conn.execute(
                 f"UPDATE entities SET is_current=0 WHERE id IN ({marks})", chunk)
-        ent_sql = (
-            "SELECT e.id AS sid, COUNT(*) AS n"
-            "  FROM entities e"
-            "  JOIN v_active_contributions c"
-            "    ON c.subject_kind='entity' AND c.subject_id=e.id"
-            f" WHERE e.id IN ({','.join('?' for _ in range(len(want_ent)))})"
-            " GROUP BY e.id"
-        )
-        for row in conn.execute(ent_sql, sorted(want_ent)):
-            conn.execute("UPDATE entities SET is_current=1 WHERE id=?",
-                         (int(row["sid"]),))
+            ent_sql = (
+                "SELECT e.id AS sid, COUNT(*) AS n"
+                "  FROM entities e"
+                "  JOIN v_active_contributions c"
+                "    ON c.subject_kind='entity' AND c.subject_id=e.id"
+                f" WHERE e.id IN ({marks})"
+                " GROUP BY e.id"
+            )
+            for row in conn.execute(ent_sql, chunk):
+                conn.execute("UPDATE entities SET is_current=1 WHERE id=?",
+                             (int(row["sid"]),))
 
 
 def _chunks(items: Sequence[int], size: int) -> Iterator[list[int]]:
@@ -1484,23 +1529,72 @@ def source_authority(conn: sqlite3.Connection, source_id: int) -> str | None:
     return None if row is None else str(row["authority_level"])
 
 
-def register_parser(conn: sqlite3.Connection, fingerprint: str, *,                    profile_id: str | None = None, version: str | None = None,
+#: 「这次登记只有名字，没有实现可 hash」的**显式**标记（2.4 同期必交项 B）。
+#:
+#: 它存在是因为两类登记**真的不是一回事**，把它们混成一个默认值正是 v3.2 §16.4
+#: 第 2 条那笔债的来源：
+#:
+#:   * **实现级登记**（解析器自己，`ingest` 走这条）—— 调用方手里有解析器类，
+#:     `inspect.getsource` 就能算出实现 hash。这条路上 `definition_hash` 是真值。
+#:   * **名称级登记**（项目 scope 上钉的 `parser_fingerprint`、job 的快照）——
+#:     调用方只有一个名字 `nmap@1`，**没有任何实现可 hash**。硬要一个 hash，
+#:     得到的只会是"把名字再 hash 一遍"这种自欺。
+#:
+#: 所以这里不给默认值，而是让名称级的调用方**显式写出这个常量**：它可 grep、
+#: 可统计，读代码的人一眼能看出"这一行登记没有实现 hash"。
+UNHASHED_PARSER = "unhashed:name-only"
+
+
+def register_parser(conn: sqlite3.Connection, fingerprint: str, *,
                     definition_hash: str | None = None,
+                    profile_id: str | None = None, version: str | None = None,
                     actor: str = "cli") -> None:
     """登记一个 parser 指纹（幂等）。
 
     parser 指纹是**事实**：coverage 判定（§5.1）拿它和项目当前指纹比较，
     因此它必须可被引用（jobs / projects 都有指向它的 FK），也必须可审计。
+
+    `definition_hash` 回答的是另一个问题：**同一 fingerprint 背后的实现有没有
+    变过**。所以它是必填的（v3.2 §16.4 第 2 条）：
+
+    * **新登记**缺 `definition_hash` → `InvariantError`，文案说明缺了会答不出什么；
+    * **已登记**的行是幂等的空操作；若老行的 hash 还是 NULL / 只有名称级标记，
+      而这次带来了真实现 hash → **回填**（那不是漂移，是第一次知道实现长什么样）；
+    * 已登记且**已有真 hash**，这次带来的不一样 → **不覆盖**，由调用方自己报漂移
+      （`ingest._definition_drift`）。覆盖它会让"实现变过"这件事永远查不出来。
+
+    DB 层还有一道 `trg_parser_requires_definition_hash` 兜底（迁移 003），
+    所以绕过应用层的写入同样进不来。
     """
     if not fingerprint:
         raise InvariantError("parser fingerprint must be non-empty")
-    cur = conn.execute(
-        "INSERT OR IGNORE INTO parser_profiles(fingerprint, profile_id, version,"
+    provided = (definition_hash or "").strip() or None
+    row = conn.execute("SELECT definition_hash FROM parser_profiles WHERE fingerprint=?",
+                       (fingerprint,)).fetchone()
+    if row is not None:
+        stored = str(row["definition_hash"] or "").strip() or None
+        if provided is not None and stored in (None, UNHASHED_PARSER):
+            # 老库回填 / 名称级升级为实现级：这不是漂移，是第一次知道实现。
+            conn.execute("UPDATE parser_profiles SET definition_hash=? WHERE fingerprint=?",
+                         (provided, fingerprint))
+            log_activity(conn, actor=actor, action="parser.register",
+                         target_kind="parser",
+                         detail={"fingerprint": fingerprint, "backfilled": True,
+                                 "definition_hash": provided})
+        return
+    if provided is None:
+        raise InvariantError(
+            "register_parser 必须提供 definition_hash —— 缺了它，"
+            f"「同一 fingerprint（{fingerprint}）背后的实现有没有变过」就无法回答"
+            "（v3.2 §16.4 第 2 条）。名称级登记（拿不到实现）请显式传 "
+            "store.UNHASHED_PARSER。")
+    conn.execute(
+        "INSERT INTO parser_profiles(fingerprint, profile_id, version,"
         " definition_hash, registered_at) VALUES (?,?,?,?,?)",
-        (fingerprint, profile_id, version, definition_hash, now()),
+        (fingerprint, profile_id, version, provided, now()),
     )
-    if cur.rowcount:
-        log_activity(conn, actor=actor, action="parser.register",
-                     target_kind="parser", detail={"fingerprint": fingerprint,
-                                                   "profile_id": profile_id,
-                                                   "version": version})
+    log_activity(conn, actor=actor, action="parser.register",
+                 target_kind="parser", detail={"fingerprint": fingerprint,
+                                               "profile_id": profile_id,
+                                               "version": version,
+                                               "definition_hash": provided})

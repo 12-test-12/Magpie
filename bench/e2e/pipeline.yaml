@@ -1,0 +1,21 @@
+# 2.5 的端到端样例管线（§5.2 的形态）。
+#   py -3.13 -m magpie.core.pipeline run bench/e2e/pipeline.yaml
+#
+# 两个步骤刻意走**两条不同的选解析器路径**，一次跑全看到：
+#   dns   —— 显式指定 parser（§5.2 的写法），跳过仲裁
+#   probe —— 不指定，交给嗅探仲裁（§5.4）自己判
+name: 常规一轮（域名 + 指纹）
+project: 演示项目
+scope:
+  include: ["*.example.com"]
+  exclude: []
+data_dir: _scratch/magpie-data
+steps:
+  - id: dns
+    parser: domainlist
+    source: subfinder
+    source_glob: "recon/subfinder.txt"
+  - id: probe
+    source: httpx
+    source_glob: "recon/*httpx*.jsonl"
+    after: [dns]
