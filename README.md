@@ -22,7 +22,8 @@ magpie/core/tests/         不变量与回归测试（232 passed）
 magpie/api/                本地 HTTP 接口（FastAPI；extras: api）
 magpie/api/writer.py       进程级唯一写者（单写线程 + 写队列）
 magpie/api/events.py       SSE 事件总线（有界队列 + 丢帧可数）
-magpie/api/web/            静态页（本地打包，零出站）
+magpie/api/web/            GUI 构建产物（Vite 打包，零出站；**入库**，别手改）
+frontend/                  GUI 源码（Vue 3 + Vite；改完要 npm run build）
 magpie/cli.py              命令行入口（`magpie app` 可用；其余见 2.2 / 2.6）
 schema/001_init.sql        全部 DDL + 触发器 + 视图
 schema/002_*.sql           收窄 undo_incomplete（redo 的 blocked 状态合法化）
@@ -50,8 +51,32 @@ py -3.13 -m magpie.cli app             # 或 magpie app（若已装进 PATH）
 `/api/v1` 的响应形状与 `--json` 字段**是对外契约**：改它要升 minor 并写
 `CHANGELOG.md`。
 
-GUI（2.8）与 CLI 的读写命令（2.2 / 2.6）尚未开工 —— 见 `Magpie-项目计划书.md`
-的路线图。
+## GUI（2.8）
+
+打开服务打印的那条 URL 就是界面。**本阶段只有只读探索模式**：实体 = 节点、
+关系 = 边，可以拖位置 / 折叠 / 筛选 / 标注，**不能增删节点与边** —— 图的
+内容只能来自 `GET /graph`。
+
+顶部：项目切换 + 导入（=Run，走 `POST /imports` 并用 SSE 显示进度/阶段/坏行）
++ `Ctrl+K` + 体检 + Inbox 徽标。左栏镜头与类型面板、中间画布、右栏实体详情、
+底部日志抽屉。还有镜头页（资产 / 服务与中间件）、作业历史（含
+undo / redo **干跑预览**与 `explain_job_scope`）、Inbox 页、数据体检页。
+
+CLI 的写路径（2.6）后置之后，这三个入口从 CLI 移到了界面上 —— 没有它们，
+计划书 G2 出口 Gate 的「导入 → undo → redo 精确复原」就无法验收。
+
+改前端：
+
+```bash
+cd frontend && npm install && npm run build    # 产物落进 magpie/api/web/
+py -3.13 -m pytest magpie/api/tests/test_web.py -q
+```
+
+产物**入库**是刻意的：`magpie app` 不要求先装 node。前端的两条硬纪律
+（零出站、探索模式只读）分别由 `check.py lint` 的 R7-ASSETS 与 READONLY
+两条静态红线守着，见 `frontend/README.md`。
+
+CLI 的读写命令（2.2 / 2.6）尚未开工 —— 见 `Magpie-项目计划书.md` 的路线图。
 
 ## 一条命令验证
 
@@ -59,6 +84,7 @@ GUI（2.8）与 CLI 的读写命令（2.2 / 2.6）尚未开工 —— 见 `Magpi
 py -3.13 check.py          # 静态红线 + 单元测试 + 两个设计验证脚本
 py -3.13 check.py lint     # 只跑静态红线（秒级，可单独触发）
 py -3.13 check.py bench    # 严格性能契约（单独触发，不埋进"跑全部"）
+cd frontend && npm test    # 前端单测（聚合 / 布局 / 只读断言）—— 需要 node
 ```
 
 **一律用 `py -3.13` 显式调用，不要依赖 PATH 顺序。** 工程解释器是 **3.13**，

@@ -180,7 +180,14 @@ def create_app(*, db_path: str | Path | None = None,
 
         @app.get("/", include_in_schema=False)
         async def index() -> FileResponse:               # noqa: ANN202
-            return FileResponse(str(WEB_DIR / "index.html"))
+            # **`no-store` 是必须的，不是保守**（2.8）。Vite 给每个产物起了带
+            # 内容 hash 的文件名（`index-<hash>.js`），而 `index.html` 是**唯一**
+            # 一个名字不变的引用点。它一旦被浏览器缓存住，就会去拉一个已经被
+            # 下一次构建删掉的旧 hash —— 症状是**白屏**，而且刷新也不一定好
+            # （缓存还热着）。产物换名字本来就够保证资源不过期，所以这里把
+            # "引用点"标成不可缓存，代价是每次刷新多读一个 1KB 的 HTML。
+            return FileResponse(str(WEB_DIR / "index.html"),
+                                headers={"Cache-Control": "no-store"})
     else:                                                # pragma: no cover
         @app.get("/", include_in_schema=False)
         async def index_missing() -> JSONResponse:       # noqa: ANN202

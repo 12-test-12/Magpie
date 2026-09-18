@@ -37,6 +37,7 @@
     PARSE-RO  magpie/core/parsers/** 不得 import 写入口（解析器只读文件）
     PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
     FLOOR     不超出声明下限的语法 / 标准库 API / 运行时求值
+    READONLY  探索模式只读：frontend/src/** 不得出现增删节点与边的名字（2.8）
 
 关于 PARSE-RO / PARSE-NORM（2.4 的两条硬线）:
 
@@ -868,6 +869,118 @@ def _rule_floor() -> list:
 
 
 # ---------------------------------------------------------------------------
+# READONLY · 探索模式不能增删节点与边（2.8）
+# ---------------------------------------------------------------------------
+#
+# 计划书 §7.2 把两种画布模式分得很清楚：**探索模式**（数据图谱，只读）与
+# **编排模式**（管线图，可编辑）。2.8 只做前者，而"只读"这条交付标准写的是
+# 「探索模式无法增删节点与边（自动化用例断言）」—— 要断言，就得有一条真的
+# 会红的规则，而不是"我们记得不要调用那几个函数"。
+#
+# 这条规则扫的是 `frontend/src/**` 的**源码**（不是构建产物）：产物是压缩过的
+# 一行，名字全被改了，扫它等于什么都没扫。源码才是"有没有人写下这个能力"的
+# 地方，而"能力存不存在"正是只读与否的分界。
+#
+# **三层防线，各守一段**（缺一层都不是"结构性"的保证）：
+#   1. 这条静态红线 —— 全仓源码里**不出现**这些名字（每次 check.py 都跑）；
+#   2. `frontend/tests/readonly.test.js` —— store 的导出面上**不存在**这些
+#      能力，且挂载后的画布把连线入口关死；
+#   3. `GraphCanvas.vue` 的 `nodes-connectable=false` / `edges-updatable=false`
+#      与 `EntityNode` 不渲染 `Handle` —— 连误操作的入口都没有。
+#
+# ⚠️ **已知边界（说清楚，别把它读成完整保证）**：这是**名字级**的扫描，不是
+# 数据流分析。把 `addNodes` 存进变量再间接调用、或从 Vue Flow 的 composable
+# 里换一个没列进清单的别名，都绕得过去。所以它保证的是"没人把那些**众所周知的
+# 名字**直接写进源码"——包括将来那次"顺手把 `addNodes` 接上"的改动会在 CI 前
+# 就变红。更强的命题（"这个界面在运行时不可能造出节点"）由上面第 2、3 层守。
+#
+# 为什么连 `onConnect` 也禁：连线的那一端**就是**一条新边。禁掉"能不能连"的
+# 回调，比禁掉一个 `addEdge` 调用更靠近源头 —— 前者是一个入口，后者是一次动作。
+
+_FRONTEND_SRC = ROOT / "frontend" / "src"
+
+#: 一旦出现其中任何一个，"只读"就不再是结构上的事实。
+_GRAPH_MUTATION_NAMES = frozenset({
+    "addNode", "addNodes", "addEdge", "addEdges",
+    "removeNode", "removeNodes", "removeEdge", "removeEdges",
+    "setNodes", "setEdges", "updateNode", "updateEdge",
+    "applyNodeChanges", "applyEdgeChanges",
+    "connectNodes", "onConnect", "createNode", "createEdge",
+})
+
+#: 名字必须**整个**匹配 —— `onNodeDragStop` 里含 `onNode`，`setFilter` 里含
+#: `setF`，子串匹配会把它们全误报，而一条会误报的规则的下场是被关掉。
+_JS_IDENT_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+
+#: 注释里出现这些名字是**允许**的：`store.js` 的文件头就写着"这里没有
+#: `addNode` / `addEdge`……"，而那正是最该留下的说明。所以按行剔除注释后再扫。
+#: 只处理行注释与整块的 `/** … */`（这两种覆盖了这个仓库的写法）；行尾 `//`
+#: 之前的部分保留 —— 那才是代码。字符串字面量里的名字不剔除：写进字符串再用
+#: `eval` 一样是加节点，宁可多报。
+_JS_LINE_COMMENT = re.compile(r"^\s*(//|/\*|\*)")
+_JS_TRAILING_COMMENT = re.compile(r"\s//.*$")
+
+
+def _readonly_violations(text: str) -> list:
+    """源码文本 → 违规名字列表。**独立成函数是为了能自检**（见下）。"""
+    bad = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if _JS_LINE_COMMENT.match(line):
+            continue
+        code = _JS_TRAILING_COMMENT.sub("", line)
+        for name in _JS_IDENT_RE.findall(code):
+            if name in _GRAPH_MUTATION_NAMES:
+                bad.append((lineno, name))
+    return bad
+
+
+def _selftest_readonly() -> list:
+    """反例自检：该报的报、不该报的不报。
+
+    没有自检的静态规则很可能是"碰巧永远不报"—— 那和没写没有区别。
+    """
+    problems = []
+    proof = "const { addNodes } = useVueFlow()\n"
+    if not _readonly_violations(proof):
+        problems.append("READONLY 自检失败：`addNodes` 未被检出（断言形同虚设）")
+    if not _readonly_violations("flow.onConnect(handler)\n"):
+        problems.append("READONLY 自检失败：`onConnect` 未被检出")
+    # 反例二：合法代码不得被误报
+    control = ("onNodeDragStop(cb)\n"
+               "store.setFilter({ focusId: null })\n"
+               "// 这里没有 addNode / removeEdge，也不许有\n"
+               "/* 同上 */\n"
+               "const setEdgeLabel = 1\n")
+    hit = _readonly_violations(control)
+    if hit:
+        problems.append(f"READONLY 自检失败：合法代码被误报 —— {hit}")
+    return problems
+
+
+def _rule_readonly() -> list:
+    bad = _selftest_readonly()
+    if not _FRONTEND_SRC.is_dir():
+        # 目录不存在也算失败：2.8 之后它就**必须**存在。一个"目录没了规则就
+        # 静默变绿"的断言，会在某次重构把目录改名之后继续绿着。
+        return bad + [f"未找到 {_FRONTEND_SRC.relative_to(ROOT)} —— "
+                      f"READONLY 断言无从谈起（2.8 起前端源码必须在这里）"]
+    for path in sorted(_FRONTEND_SRC.rglob("*")):
+        if not path.is_file() or path.suffix not in (".js", ".vue"):
+            continue
+        rel = path.relative_to(ROOT)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):          # pragma: no cover
+            continue
+        for lineno, name in _readonly_violations(text):
+            bad.append(_v(rel, lineno,
+                          f"{name} —— READONLY：探索模式不能增删节点与边"
+                          f"（计划书 §7.2 / 2.8 交付标准）。画布的内容只能来自 "
+                          f"GET /graph；可编辑的是将来的编排模式"))
+    return bad
+
+
+# ---------------------------------------------------------------------------
 # 规则表与执行
 # ---------------------------------------------------------------------------
 
@@ -886,6 +999,8 @@ RULES = (
     ("FLOOR", "不超出声明下限（pyproject.toml 的 requires-python）的语法 / 标准库 API / "
               "运行时求值",
      _rule_floor),
+    ("READONLY", "探索模式只读：frontend/src/** 不得出现增删节点与边的名字",
+     _rule_readonly),
 )
 
 

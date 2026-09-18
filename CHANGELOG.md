@@ -7,6 +7,61 @@
 
 ---
 
+## 0.3.0 — 2.8 GUI 只读画布（探索模式）
+
+**纯新增**：前端目录 `frontend/`（Vue 3 + Vite）+ 四个 `/api/v1` 端点。
+数据层（`magpie/core`）一行未动 —— 四个端点是 `ops.undo` / `ops.redo` /
+`ops.explain_job_scope` 的 HTTP 外壳，能力本来就在那里。
+
+### 新增
+
+- `frontend/`：Vue 3 + Vite 的 GUI 源码。构建产物落进 `magpie/api/web/` 并
+  **入库**（`magpie app` 不要求先装 node）。挂载点没变，仍是 2.7 的
+  `/web` + `/` 那一处。
+- `/api/v1` 四个新端点（**对外契约**，见下）。
+- `check.py` 的 **READONLY** 静态红线：`frontend/src/**` 不得出现增删节点与边
+  的名字（探索模式只读，计划书 §7.2）。
+- `bench/test_perf_web.py`：首屏服务端交付 < 1.5s + 产物体积护栏。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+| 端点 | 说明 |
+|---|---|
+| `GET /jobs` | 作业历史。`?project= ?state= ?applied= ?limit=`；每条带 `applied` / `counts.contributions` / `counts.retracted` / `can_undo` / `can_redo` |
+| `GET /jobs/{id}` | 作业详情：`job` + **`scope`（`ops.explain_job_scope` 原样）** + `activity` |
+| `POST /jobs/{id}/undo` | `{dry_run}`。**干跑与真跑输出同构**，只有 COMMIT→ROLLBACK 之差 |
+| `POST /jobs/{id}/redo` | 同上 |
+
+`GET /openapi.json` 的快照已同步（新增四条路由，无改动、无删除）。
+
+### 为什么这四个端点属于 2.8
+
+原设计里「导入 / undo / redo」由 `magpie import` / `magpie undo` /
+`magpie redo`（2.6 的 CLI 写路径）承担，而 2.6 已后置。CLI 后置之后图形界面
+成了唯一的用户界面 —— **没有它们，计划书 G2 出口 Gate 的「导入 → undo →
+redo 精确复原」在界面上无法验收**。干跑走写队列而不是请求连接：`api` 的读
+连接带 `PRAGMA query_only=ON`，而干跑是在事务里真的写一遍再 ROLLBACK。
+
+### GUI 的交付标准落点
+
+| 项 | 怎么守 |
+|---|---|
+| 只读 | 三层：`check.py` 的 READONLY 红线 / `frontend/tests/readonly.test.js` / 组件里不存在那条入口 |
+| 零出站 | `check.py` 的 R7-ASSETS 扫 `magpie/api/web/**`（含构建产物）；`bench/test_perf_web.py` 再从 HTTP 交出去的字节上验一次 |
+| 防视觉混乱 | 卡片尺寸是常量；> 200 节点自动按类型聚合（`src/graph.js` 的 `buildAggregate`）；位置写回 `entity_layout` |
+| 空状态 | 三种空状态分开处理（无项目 / 有项目无数据 / 筛选没匹配），见 `EmptyGuide.vue` |
+| 首屏 < 1.5s | 实测服务端交付 **35ms**，产物 **304KB**（含浏览器解析的那一半没量，口径写在 `bench/test_perf_web.py`） |
+| 1000 节点 55fps | 支点是**渲染多少个元素**：聚合后 1000 个节点渲染 3 张卡片。`frontend/tests/graph.test.js` 断言这一点 |
+
+### 明确未做（界面里写出来了，不是没提）
+
+编排模式（2.6）、管线列表（`GET /pipelines` 仍 501）、搜索（`GET /search`
+仍 501，`Ctrl+K` 只在**已载入的**实体里搜并如实说明）、人工写字段的值
+（`PATCH /entities/{id}` 对它仍 501）。体检页把「尚未提供」的六项**列出来**，
+而不是用近似指标顶上去。
+
+---
+
 ## 0.2.0 — 2.7 `api` + SSE：人机共享同一份数据
 
 **纯新增**（没有破坏任何既有行为）。包边界从 `core` / `cli` 扩到 `core` / `cli` / `api`。

@@ -16,9 +16,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.2.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.3.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
+# 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,5 +56,12 @@ packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api"]
 # CDN，打开它的浏览器就替这个工具发起了出站请求。`check.py` 的 R7-ASSETS
 # 扫描这个目录并把"引用了外部域名"变成一条会让整轮验证变红的断言。
 #
-# 2.8 的 Vite 构建产物会落进 magpie/api/web/，届时这里改成递归的 "web/**/*"。
-"magpie.api" = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg"]
+# 2.8 起这里是 **Vite 的构建产物**，落在 `web/` 与 `web/assets/` 两层下，
+# 所以模式必须是递归的。平铺的 `web/*.js` 收不到 `web/assets/*.js` —— 那个
+# 错误的症状是"本地装了包之后 GUI 是空的"，而要等到有人真的 `pip install`
+# 一次才会发现。`magpie/api/tests/test_web.py` 的 `test_web_files_are_packaged`
+# 把这一行钉住（它读的就是这个文件）。
+#
+# 产物**入库**是刻意的：`magpie app` 不能要求用户先装 node 才能打开界面。
+# 改前端之后要重新 `npm run build` 并提交产物 —— 见 `frontend/README.md`。
+"magpie.api" = ["web/**/*"]

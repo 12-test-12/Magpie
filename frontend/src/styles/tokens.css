@@ -1,0 +1,182 @@
+/*
+ * 视觉规范 —— **逐字**实现计划书 §7.3 的 token 表。
+ *
+ *   画布底  #0E0E11 + 24px 点阵网格 #1B1B20
+ *   卡片    #1A1A1F，圆角 10px，边框 #2A2A32，顶部 3px 类型色带
+ *   选中态  border #4F8DF7 + 6px 外发光
+ *   字体    Inter（UI）/ JetBrains Mono（域名、IP、版本、参数）
+ *   连线    贝塞尔，默认 #3A3A45
+ *
+ * ⚠️ 字体那一条**刻意不引 webfont**。Inter 与 JetBrains Mono 只出现在
+ * `font-family` 列表的最前面：本机装了就用，没装就退到系统字体。
+ *
+ * 为什么宁可"没装就退"，也不 from CDN 拉一份：计划书 §7.6 的零出站是硬约束 ——
+ * 一个 `@import url(https://fonts.googleapis.com/…)` 会让**打开页面的浏览器**
+ * 替这个工具发起出站请求，而这正是 `check.py` 的 R7-ASSETS 要拦的东西。
+ * 一个自用的本地工具，字体差一档远比多一条外联值得。
+ */
+
+:root {
+  /* 画布与面板 */
+  --bg: #0E0E11;
+  --grid: #1B1B20;
+  --panel: #17171B;
+  --panel-2: #1A1A1F;
+  --line: #2A2A32;
+  --line-soft: #212129;
+
+  /* 前景 */
+  --fg: #E6E9EF;
+  --dim: #98A2B3;
+  --faint: #6B7280;
+
+  /* 强调与状态 */
+  --accent: #4F8DF7;
+  --accent-glow: rgba(79, 141, 247, 0.28);
+  --ok: #37B24D;
+  --warn: #F59F00;
+  --bad: #F03E3E;
+
+  /* 关系连线 */
+  --edge: #3A3A45;
+
+  /* 字体：Inter 在最前，缺了退系统栈；域名 / IP / 版本 / 参数用等宽 */
+  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+             "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas,
+               "Liberation Mono", monospace;
+
+  --radius-card: 10px;
+  --radius-ui: 6px;
+  --shadow-select: 0 0 0 1px var(--accent), 0 0 6px var(--accent-glow);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.55 var(--font-ui);
+  overflow: hidden;
+}
+
+button {
+  background: #232833;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  padding: 5px 11px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { border-color: var(--accent); color: var(--accent); }
+button.ghost { background: transparent; }
+
+input, textarea, select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); }
+
+.mono { font-family: var(--font-mono); }
+.dim { color: var(--dim); }
+.faint { color: var(--faint); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.chip.accent { border-color: var(--accent); color: var(--accent); }
+.chip.bad { border-color: var(--bad); color: var(--bad); }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+
+.badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #232833;
+  color: var(--dim);
+  font-size: 11px;
+  text-align: center;
+  line-height: 17px;
+}
+.badge.hot { background: var(--bad); color: #fff; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+h2.section {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.grid th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel); color: var(--faint);
+  font-weight: 600; font-size: 11px; text-align: left;
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+}
+table.grid td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+table.grid tbody tr:hover { background: #202530; cursor: pointer; }
+table.grid tbody tr.selected { background: #1D2733; }
+
+/*
+ * 连线默认样式。Vue Flow 把每条边渲染成 `path.vue-flow__edge-path`；
+ * 关系动词标签用 `--font-mono`，因为它写的是 `resolves_to` 这类词 —— 那是
+ * 词表里的**标识符**，不是自然语言。
+ */
+.vue-flow__edge-path {
+  stroke: var(--edge);
+  stroke-width: 1.4;
+  fill: none;
+}
+.vue-flow__edge.selected .vue-flow__edge-path { stroke: var(--accent); }
+.vue-flow__edge-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--dim);
+}
+.vue-flow__edge-textbg { fill: var(--bg); }
+.vue-flow__attribution { display: none; }
+.vue-flow__handle { display: none; }          /* 只读：没有连接点就没有"接出一条边"的暗示 */
+.vue-flow__controls button {
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  fill: var(--dim);
+}
+.vue-flow__controls button:hover { background: #232833; color: var(--accent); }

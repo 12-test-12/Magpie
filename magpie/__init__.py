@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"        # 与 pyproject.toml 的 version 保持一致（2.7：api + SSE）
+__version__ = "0.3.0"        # 与 pyproject.toml 的 version 保持一致（2.8：GUI 只读画布）
 
 __all__ = ["__version__"]

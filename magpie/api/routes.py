@@ -775,6 +775,165 @@ def undo_import(import_id: str, request: Request) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 作业历史 + undo / redo（2.8 的三个用户入口之一）
+# ---------------------------------------------------------------------------
+#
+# 为什么这三个端点属于 2.8 的交付，而不是"再开一条 CLI 的活"：原设计里
+# 「导入 / undo / redo」由 `magpie import` / `magpie undo` / `magpie redo`
+# （2.6 的 CLI 写路径）承担，而 2.6 已**后置**。CLI 后置后图形界面成了唯一的
+# 用户界面 —— **没有这三个端点，G2 的「导入 → undo → redo 精确复原」在界面上
+# 根本无法验收**。
+#
+# 三条纪律：
+#
+#   1. 路由里**一条写库的 SQL 都没有**（与导入一致）：undo / redo 一律提交给
+#      单写队列（R1 写入口唯一）。**干跑也走队列** —— `ops.undo(dry_run=True)`
+#      是在事务里真的 INSERT/UPDATE 之后再 ROLLBACK，而请求连接带着
+#      `PRAGMA query_only = ON`（`app.ApiContext.connect_ro`），在它上面干跑会
+#      当场报错。更根本的理由是：干跑要读的必须是**写者眼里的**那个库。
+#   2. 干跑与真跑**输出同构**，只有 COMMIT → ROLLBACK 之差（`ops.undo` /
+#      `ops.redo` 的 `dry_run` 本来就是这个语义），所以界面可以用同一段代码
+#      渲染"预览"与"结果"，不必维护两套。
+#   3. `explain_job_scope` 的输出**原样**带上。旧 job 必须用**当时的** scope
+#      解释；界面若拿当前 scope 去解释历史作业，就会得出"这条覆盖已经失效"
+#      的假结论 —— 那正是 `ops.explain_job_scope` 存在的理由。
+
+#: 作业历史默认返回多少条。与实体列表的 50 不同：作业是"最近发生了什么"，
+#: 一次导入就会产生 N 条（每个文件一条），翻页在这里比多给几条更烦人。
+DEFAULT_JOB_LIMIT = 100
+
+
+def _job_row(conn: sqlite3.Connection, job_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "E_JOB_NOT_FOUND", f"作业 {job_id} 不存在",
+                       hint="作业 id 由导入产生；GET /api/v1/jobs 看全部")
+    return dict(row)
+
+
+def _job_counts(conn: sqlite3.Connection,
+                job_ids: list[int]) -> dict[int, dict[str, int]]:
+    """每个 job 的贡献数 / 已撤回数。**一次查完，不做 N+1。**
+
+    `retracted` 就是 undo 的可逆性证据：undo 一次 = 这个数从 0 变成贡献数，
+    redo 一次 = 变回 0。界面据此判断"这个作业现在处于哪一侧"，而不是自己记账。
+    """
+    out = {int(j): {"contributions": 0, "retracted": 0} for j in job_ids}
+    if not job_ids:
+        return out
+    marks = ",".join("?" * len(job_ids))
+    for row in conn.execute(
+            "SELECT job_id, COUNT(*) AS n FROM contributions"
+            f" WHERE job_id IN ({marks}) GROUP BY job_id", tuple(job_ids)):
+        out[int(row["job_id"])]["contributions"] = int(row["n"])
+    for row in conn.execute(
+            "SELECT superseded_by_job_id AS jid, COUNT(*) AS n"
+            " FROM contribution_supersessions"
+            f" WHERE superseded_by_job_id IN ({marks}) AND reason='retract'"
+            " GROUP BY superseded_by_job_id", tuple(job_ids)):
+        out[int(row["jid"])]["retracted"] = int(row["n"])
+    return out
+
+
+def _decorate_job(conn: sqlite3.Connection, item: dict[str, Any]) -> dict[str, Any]:
+    item["applied"] = bool(item["applied"])
+    item["counts"] = _job_counts(conn, [int(item["id"])])[int(item["id"])]
+    item["can_undo"] = bool(item["applied"])
+    item["can_redo"] = not bool(item["applied"])
+    return item
+
+
+_JOB_STATES = ("running", "done", "failed", "partial", "aborted")
+_JOB_COLUMNS = ("id, project_id, kind, state, applied, coverage, scope_version,"
+                " scope_hash, parser_fingerprint, actor, started_at, finished_at")
+
+
+@router.get("/jobs", summary="作业历史（最近的在前）")
+def list_jobs(project: str | None = None, state: str | None = None,
+              applied: int | None = None, limit: int = DEFAULT_JOB_LIMIT,
+              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    where: list[str] = ["1=1"]
+    params: list[Any] = []
+    if project is not None:
+        where.append("project_id=?")
+        params.append(_resolve_project(conn, project))
+    if state is not None:
+        if state not in _JOB_STATES:
+            raise ApiError(400, "E_BAD_STATE",
+                           f"state 只能是 {' / '.join(_JOB_STATES)}，收到 {state!r}",
+                           supported=list(_JOB_STATES))
+        where.append("state=?")
+        params.append(str(state))
+    if applied is not None:
+        # 布尔从查询串进来只可能是 "0"/"1"/"true"/"false"，而 FastAPI 对
+        # int 的解析会把 "true" 变成 422（带一页 pydantic 报错）。收下来自己
+        # 判定，是为了让错误信息说人话。
+        where.append("applied=?")
+        params.append(1 if applied else 0)
+    rows = conn.execute(f"SELECT {_JOB_COLUMNS} FROM jobs"
+                        f" WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
+                        (*params, _page_size(limit))).fetchall()
+    items = [_decorate_job(conn, dict(r)) for r in rows]
+    return ok(items, count=len(items))
+
+
+@router.get("/jobs/{job_id}", summary="作业详情（含 explain_job_scope）")
+def get_job(job_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    job = _decorate_job(conn, _job_row(conn, job_id))
+    # scope 的解释**必须**来自数据层：`interpret_with` 是 historical_scope 时，
+    # 界面要显示的是"当时的 scope"，不是现在这份。
+    scope = ops.explain_job_scope(conn, job_id)
+    activity = [dict(r) for r in conn.execute(
+        "SELECT id, at, actor, action, target_kind, target_id, detail"
+        " FROM activity_log WHERE job_id=? ORDER BY id DESC LIMIT 50", (job_id,))]
+    for item in activity:
+        item["detail"] = _json_or_none(item["detail"])
+    return ok({"job": job, "scope": scope, "activity": activity,
+               "can_undo": job["can_undo"], "can_redo": job["can_redo"]},
+              project_id=int(job["project_id"]))
+
+
+class JobAction(BaseModel):
+    """undo / redo 的体。
+
+    `dry_run=True` 时输出与真跑**同构**（只有 COMMIT→ROLLBACK 之差），
+    界面因此可以用同一段代码渲染预览与结果 —— 见本节模块注释第 2 条。
+    """
+
+    dry_run: bool = False
+
+
+@router.post("/jobs/{job_id}/undo", summary="撤销一个作业（dry_run = 干跑预览）")
+def undo_job(job_id: int, body: JobAction, request: Request,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    job = _job_row(conn, job_id)
+    ctx, dry = _ctx(request), bool(body.dry_run)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return {"op": "undo", "job_id": job_id, "dry_run": dry,
+                "report": ops.undo(conn_, job_id, actor="api", dry_run=dry)}
+
+    label = f"{'dry-run ' if dry else ''}undo job {job_id}"
+    return ok(ctx.writer.submit(label, task).result(timeout=120),
+              project_id=int(job["project_id"]))
+
+
+@router.post("/jobs/{job_id}/redo", summary="复原一个被撤销的作业（dry_run = 干跑预览）")
+def redo_job(job_id: int, body: JobAction, request: Request,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    job = _job_row(conn, job_id)
+    ctx, dry = _ctx(request), bool(body.dry_run)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return {"op": "redo", "job_id": job_id, "dry_run": dry,
+                "report": ops.redo(conn_, job_id, actor="api", dry_run=dry)}
+
+    label = f"{'dry-run ' if dry else ''}redo job {job_id}"
+    return ok(ctx.writer.submit(label, task).result(timeout=120),
+              project_id=int(job["project_id"]))
+
+
+# ---------------------------------------------------------------------------
 # 体检 / Inbox / 活动
 # ---------------------------------------------------------------------------
 

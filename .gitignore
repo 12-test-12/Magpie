@@ -1,6 +1,14 @@
 # 注意: gitignore 里 `#` 只有**行首**才是注释。行尾的 `# 说明` 是模式的一部分，
 # 会静默失配 —— 本文件第一版就踩了这个坑（`.multica/   # 注释` 什么都没忽略）。
 
+# --- 前端依赖 ---
+# `frontend/node_modules/` 有 167 个包、几十 MB，是**可重建**的（package-lock.json
+# 入库就够了）。注意**不**忽略 `magpie/api/web/` —— 那是 Vite 的**构建产物**，
+# 必须入库：`magpie app` 不能要求用户先装 node 才能打开界面。
+frontend/node_modules/
+frontend/.vite/
+frontend/coverage/
+
 # --- Python 运行产物 ---
 __pycache__/
 *.py[cod]

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!--
+  Vite 的入口页。构建产物会被 `magpie/api/web/index.html` 取代。
+
+  两条纪律（从 2.7 那个静态占位页继承，构建之后同样成立）：
+
+    1. **零外部资源**。这里没有 CDN、没有外部字体、没有远程图标 —— 页面用到的
+       一切都由 Vite 打进 `/web/assets/`。`check.py` 的 R7-ASSETS 会扫
+       `magpie/api/web/**`，发现外部域名就让整轮验证变红。
+
+    2. **不做只能看不能用的假界面**。做不到的功能写在页面上说清楚
+       （搜索是 501、管线是 501、人工写值走 2.6），不给空按钮。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 深色画布：先给浏览器一个底色，避免首帧白闪 -->
+<meta name="color-scheme" content="dark">
+<title>Magpie · 资源统筹</title>
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
