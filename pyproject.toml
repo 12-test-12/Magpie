@@ -16,16 +16,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.1.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.2.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+# 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
+# `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-# 本地 API 层（阶段 2.7 起）。届时若新版 FastAPI / uvicorn / pydantic v2 抬高了
+# 本地 API 层（阶段 2.7 起）。若新版 FastAPI / uvicorn / pydantic v2 抬高了
 # Python 下限（超过 3.11），就在这里钉住最后一个仍兼容的版本，并把"为什么钉"
 # 写进注释 —— 不允许悄悄把 requires-python 抬上去。
+#
+# 刻意**不钉版本**（现状：fastapi 0.141.1 / uvicorn 0.52.1 / pydantic 2.13.4，
+# 都在 3.11 上装得动）。钉住能让 openapi 快照更"稳"，但那恰好把它要买的东西
+# 一起钉死了：升级带来的**契约漂移**会一直藏着，直到某天在某个消费者那里爆炸。
+# 让快照在升级时红一次，正是 test_contract_openapi.py 本来要换来的信号。
 api = ["fastapi", "uvicorn"]
 api-yaml = ["pyyaml"]
 # 阶段 4.5 的收口点（流量 / 接口文件解析）。目前那块解析走标准库，故为空；
@@ -40,5 +47,13 @@ magpie = "magpie.cli:main"
 [tool.setuptools]
 # 显式列出，关掉 setuptools 的 flat-layout 自动发现：仓库根还躺着 check.py、
 # verify_*.py、generate_docx.py，自动发现会把它们也当成顶层模块并直接报错。
-# magpie/core/tests/ 刻意**不**打包 —— 它是回归网，不是运行时的一部分。
-packages = ["magpie", "magpie.core", "magpie.core.parsers"]
+# 两个 tests/ 目录刻意**不**打包 —— 它们是回归网，不是运行时的一部分。
+packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api"]
+
+[tool.setuptools.package-data]
+# 静态资源随包走。**本地打包**是零出站的前提（计划书 §7.6）：页面一旦引用
+# CDN，打开它的浏览器就替这个工具发起了出站请求。`check.py` 的 R7-ASSETS
+# 扫描这个目录并把"引用了外部域名"变成一条会让整轮验证变红的断言。
+#
+# 2.8 的 Vite 构建产物会落进 magpie/api/web/，届时这里改成递归的 "web/**/*"。
+"magpie.api" = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg"]

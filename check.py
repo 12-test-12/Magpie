@@ -33,6 +33,7 @@
     C3        全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
     R6        magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
     R7        零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
+    R7-ASSETS api/web/** 静态资源不得引用外部域名（无 CDN、无外部字体）
     PARSE-RO  magpie/core/parsers/** 不得 import 写入口（解析器只读文件）
     PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
     FLOOR     不超出声明下限的语法 / 标准库 API / 运行时求值
@@ -83,6 +84,10 @@ ROOT = Path(__file__).resolve().parent
 
 UNIT = [
     [sys.executable, "-m", "pytest", "magpie/core/tests", "-q"],
+    # 2.7 的验收网（不是"跑一遍看看"）：契约快照 / 只绑回环 / SSE 背压 / 写者唯一。
+    # 它必须和 core 的测试一样**默认就跑** —— 一个只在想得起来时才跑的验收网，
+    # 和没有验收网的区别只在于它让人更安心。
+    [sys.executable, "-m", "pytest", "magpie/api/tests", "-q"],
     [sys.executable, "verify_v32r2.py"],
     [sys.executable, "verify_v32r3.py"],
 ]
@@ -92,6 +97,11 @@ BENCH = [
     [sys.executable, "-m", "pytest", "bench/test_perf_parse.py", "-q"],
     # 2.5 兑现的契约项：导入 10 万观测 < 60s（实跑一次完整导入，约 55s）
     [sys.executable, "-m", "pytest", "bench/test_perf_ingest.py", "-q"],
+    # 2.7 兑现的契约项：`magpie app` 的 RSS < 120MB 与冷启动 < 1s（计划书 §9.2
+    # 里长期是 ⬜ 的两项）。它起一个**真子进程** —— RSS 是整进程的数字，在
+    # pytest 进程里量到的是 pytest + 插件的和，那个数字对用户双击之后的占用
+    # 什么也没说。这条最便宜（< 1s），却总被漏掉，所以放在最后显眼处。
+    [sys.executable, "-m", "pytest", "bench/test_perf_app.py", "-q"],
 ]
 
 USAGE = __doc__
@@ -124,11 +134,25 @@ def _declared_floor():
     return (int(match.group(1)), int(match.group(2)))
 
 
+#: 不参与静态红线的目录。两类：
+#:   * 生成物（`__pycache__` / `build` / `dist`）—— 扫它们等于让构建产物决定
+#:     验证结果；
+#:   * **不入库的临时目录**（`_scratch/`，见 .gitignore 的说明）—— 那是调试与
+#:     复验的落脚点。2.7 实测过一次代价：一个放在 `_scratch/` 里的复验脚本
+#:     用了 `urllib.request`，于是**整轮 lint 变红**，而那条红跟产品没有任何
+#:     关系。临时文件不该有能力让红线报警 —— 那会训练人忽略红色。
+#: 边界：这些目录**不入库、不发布**，所以"没扫到"不等于"漏掉了风险"。
+_SKIP_DIRS = frozenset({"__pycache__", "_scratch", "build", "dist", ".venv", ".git"})
+#: 目录名以 `.` 开头的一律跳过（`.idea` / `.pytest_cache` / `.multica` …）。
+_ITER_IGNORED_PREFIX = "."
+
+
 def _iter_sources():
-    """(path, rel) —— 全仓 .py，跳过 .git / .idea / .venv / __pycache__ 之类。"""
+    """(path, rel) —— 全仓 .py，跳过生成物与不入库的临时目录。"""
     for path in sorted(ROOT.rglob("*.py")):
         rel = path.relative_to(ROOT)
-        if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+        if any(part.startswith(_ITER_IGNORED_PREFIX) or part in _SKIP_DIRS
+               for part in rel.parts):
             continue
         yield path, rel
 
@@ -343,12 +367,48 @@ def _is_outbound_module(module: str) -> bool:
     return any(module == m or module.startswith(m + ".") for m in _OUTBOUND_MODULES)
 
 
+#: 测试台架。**R7 守的是"工具本身不出站"，不是"代码里不许出现 HTTP 客户端"** ——
+#: 2.7 的 bench 必须起真服务、真发请求去量 RSS 与冷启动，而任何标准库 HTTP
+#: 客户端都在 `_OUTBOUND_MODULES` 里（那份清单本来就是"出站客户端清单"）。
+#: 台架连的是**本机**的服务；这和 2.4 的解析器要读 ProjectDiscovery 的 httpx
+#: 输出是同一类事：按用途判定，而不是按字符串判定。
+#:
+#: **已知边界（明说的豁免，不是漏的）**：豁免只免"import 了哪个模块"，
+#: **不免**下面那两类**行为**检查 —— 子进程拉远端（curl/wget/nc）与
+#: `socket.connect(…)` 调用点在台架里同样会报。豁免不到的那一段是
+#: "台架用 HTTP 客户端去连外网"：把它判准需要数据流分析（试过一版按 URL
+#: 字面量扫的，当场在 `test_ingest.py` 的**夹具数据** `"url": "https://…"` 上
+#: 误报 —— 那种规则的下场是被关掉，比没有更糟）。这里不假装覆盖它。
+_HARNESS_PARTS = frozenset({"tests", "bench"})
+
+
+def _is_harness(rel: Path) -> bool:
+    return bool(_HARNESS_PARTS & set(rel.parts))
+
+
+def _selftest_r7() -> list:
+    """反例自检：豁免只对台架生效，行为检查对谁都生效。"""
+    problems = []
+    if not _is_harness(Path("bench/test_perf_app.py")):
+        problems.append("R7 自检失败：bench/ 未被识别为台架")
+    if not _is_harness(Path("magpie/api/tests/test_routes.py")):
+        problems.append("R7 自检失败：**/tests/ 未被识别为台架")
+    if _is_harness(Path("magpie/api/routes.py")):
+        problems.append("R7 自检失败：产品代码被误判成台架（豁免漏进了运行时）")
+    if _is_harness(Path("magpie/core/parsers/httpx.py")):
+        problems.append("R7 自检失败：解析器被误判成台架")
+    if not _is_outbound_module("urllib.request"):
+        problems.append("R7 自检失败：出站模块判定坏了")
+    return problems
+
+
 def _rule_r7() -> list:
-    bad = []
+    bad = _selftest_r7()
     for path, rel in _iter_sources():
         tree, _ = _parse(path, rel)
         if tree is None:
             continue
+        harness = _is_harness(rel)
 
         socket_names = set()      # 绑定到 socket 模块的本地名
         socket_calls = {}         # 从 socket 直接 import 进来的连接函数
@@ -358,7 +418,7 @@ def _rule_r7() -> list:
                 for alias in node.names:
                     if alias.name == "socket":
                         socket_names.add(alias.asname or "socket")
-                    elif _is_outbound_module(alias.name):
+                    elif _is_outbound_module(alias.name) and not harness:
                         bad.append(_v(rel, node.lineno,
                                       f"import 了出站客户端模块 {alias.name!r} —— "
                                       f"R7：零出站网络"))
@@ -368,10 +428,11 @@ def _rule_r7() -> list:
                     for alias in node.names:
                         if alias.name in _SOCKET_CONNECT_ATTRS:
                             socket_calls[alias.asname or alias.name] = alias.name
-                elif _is_outbound_module(module):
+                elif _is_outbound_module(module) and not harness:
                     bad.append(_v(rel, node.lineno,
                                   f"from {module} import … —— R7：零出站网络"))
-                elif module == "urllib" and any(a.name == "request" for a in node.names):
+                elif module == "urllib" and any(a.name == "request" for a in node.names) \
+                        and not harness:
                     bad.append(_v(rel, node.lineno,
                                   "from urllib import request —— R7：零出站网络"
                                   "（urllib.parse 不受限）"))
@@ -395,6 +456,80 @@ def _rule_r7() -> list:
             if Path(name).stem.lower() in _NET_CLIENT_COMMANDS:
                 bad.append(_v(rel, lineno,
                               f"以 {name!r} 起子进程拉取远端 —— R7：零出站网络"))
+    return bad
+
+
+# ---------------------------------------------------------------------------
+# R7-ASSETS · 静态资源零出站（2.7）
+# ---------------------------------------------------------------------------
+#
+# 为什么需要它，而不是靠 R7：R7 扫的是 **Python 源码**（`import httpx` 那种出站
+# 调用点）。前端资源里的出站不长这样 —— 它长成 `<link href="https://cdn…">`
+# 或 `@import url(…fonts.googleapis.com…)`，由**浏览器**替这个工具发出去。
+# 计划书 §7.6 的"静态资源全部本地打包"就是为这件事写的，而 2.7 开始真的有静态
+# 资源了（`magpie/api/web/`）。口径仍然是"零出站"，只是换了一层介质。
+#
+# **已知边界**：只看文件内容里的 URL。资源在**运行时**用 JS 拼出来的地址
+# （`"ht" + "tps://…"`）扫不到；拼接字符串是能绕开任何静态扫描的，这里不假装
+# 能覆盖，只保证"没人把外部域名直接写进资源文件"。
+
+_ASSET_DIR = ROOT / "magpie" / "api" / "web"
+
+#: 允许出现的外部主机。**XML 命名空间是标识符，不是取回目标** ——
+#: `xmlns="http://www.w3.org/2000/svg"` 写的是规范的名字，浏览器不会去请求它。
+#: 这是一类经典的假阳性；把它白名单化，好过让规则因为"会误报"而被关掉。
+_ALLOWED_ASSET_HOSTS = frozenset({"www.w3.org"})
+
+#: `https://host` 与协议相对的 `//host` 都要抓 —— 后者正是 CDN 最省事的写法。
+#: 主机名末尾必须是**字母**（TLD），于是 `127.0.0.1:8000` 这种本机地址天然不匹配。
+_ASSET_URL_RE = re.compile(r"(?:https?:)?//([A-Za-z0-9._-]+\.[A-Za-z]{2,})")
+
+
+def _external_hosts_in_asset(text: str) -> list:
+    return sorted({host for host in _ASSET_URL_RE.findall(text)
+                   if host.lower() not in _ALLOWED_ASSET_HOSTS})
+
+
+def _selftest_assets() -> list:
+    """反例自检：该报的报、不该报的不报。"""
+    problems = []
+    cases = [
+        ('<link href="https://cdn.jsdelivr.net/npm/x.css">', True),
+        ('<link rel="preconnect" href="//fonts.gstatic.com">', True),
+        ('@import url("https://fonts.googleapis.com/css2?family=Inter");', True),
+        ('<script src="http://unpkg.com/vue@3"></script>', True),
+        ('<img src="/web/logo.png">', False),
+        ('fetch("/api/v1/meta")', False),
+        ('const url = "http://127.0.0.1:0/api/v1/meta";', False),
+        ('<svg xmlns="http://www.w3.org/2000/svg"></svg>', False),
+        ("// 这是一行注释，不是协议相对 URL", False),
+    ]
+    for source, should_flag in cases:
+        flagged = bool(_external_hosts_in_asset(source))
+        if flagged != should_flag:
+            problems.append(
+                f"R7-ASSETS 自检失败：期望 {'报' if should_flag else '不报'}，"
+                f"实际 {'报' if flagged else '不报'} —— {source!r}")
+    return problems
+
+
+def _rule_r7_assets() -> list:
+    bad = _selftest_assets()
+    if not _ASSET_DIR.is_dir():
+        # 目录不存在不算问题：2.7 之前它本来就不存在。但**存在就必须是干净的**。
+        return bad
+    for path in sorted(_ASSET_DIR.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(ROOT)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):          # 二进制资源（字体/图片）
+            continue
+        for host in _external_hosts_in_asset(text):
+            bad.append(f"{rel.as_posix()}: 引用了外部域名 {host!r} —— R7-ASSETS："
+                       f"静态资源必须本地打包（计划书 §7.6），"
+                       f"引 CDN 等于让浏览器替这个工具发起出站请求")
     return bad
 
 
@@ -742,6 +877,8 @@ RULES = (
     ("R6", "magpie/core/** 顶层 import ⊆ 标准库", _rule_r6),
     ("R7", "零出站网络（socket 连接点 / urllib.request / requests / Python httpx 库）",
      _rule_r7),
+    ("R7-ASSETS", "静态资源零出站（api/web/** 不得引用外部域名 / CDN / 外部字体）",
+     _rule_r7_assets),
     ("PARSE-RO", "magpie/core/parsers/** 不得 import 写入口（ops / store / sqlite3）",
      _rule_parse_ro),
     ("PARSE-NORM", "解析器只调用 normalize.py，不得内联自己的归一化",

@@ -16,18 +16,42 @@ magpie/core/ops.py         事务型状态迁移 T1–T5（含 dry-run）
 magpie/core/migrate.py     schema 版本化与迁移 runner
 magpie/core/confidence.py  §8.2 反多数票置信度
 magpie/core/manual.py      INV-12 唯一 manual 写入口（单写队列）
-magpie/core/tests/         不变量测试（84 passed）
-magpie/cli.py              命令行入口骨架（命令实现在 2.2 / 2.5）
+magpie/core/ingest.py      导入管线（文件 → 事实，含可选的 on_progress 观察者）
+magpie/core/parsers/       解析器（domainlist / httpx）
+magpie/core/tests/         不变量与回归测试（232 passed）
+magpie/api/                本地 HTTP 接口（FastAPI；extras: api）
+magpie/api/writer.py       进程级唯一写者（单写线程 + 写队列）
+magpie/api/events.py       SSE 事件总线（有界队列 + 丢帧可数）
+magpie/api/web/            静态页（本地打包，零出站）
+magpie/cli.py              命令行入口（`magpie app` 可用；其余见 2.2 / 2.6）
 schema/001_init.sql        全部 DDL + 触发器 + 视图
 schema/002_*.sql           收窄 undo_incomplete（redo 的 blocked 状态合法化）
-bench/test_perf.py         性能契约（MAGPIE_PERF_STRICT=1）
+bench/test_perf*.py        性能契约（MAGPIE_PERF_STRICT=1）
 ```
 
 `magpie/core/` **只用标准库**（红线 R6）；对外依赖一律进 `pyproject.toml` 的
 extras（`api` / `api-yaml` / `traffic` / `dev`）。工具本身**不主动发起任何网络
-请求**（红线 R7）。两条红线都由 `python check.py` 自动守着，不靠自觉。
+请求**（红线 R7，2.7 起连同静态资源一起守）。两条红线都由 `python check.py`
+自动守着，不靠自觉。
 
-API / GUI / 解析器尚未开工 —— 见 `Magpie-项目计划书.md` 的路线图。
+## 起服务（2.7）
+
+```bash
+py -3.13 -m pip install -e ".[api]"     # extras.api：fastapi + uvicorn
+py -3.13 -m magpie.cli app             # 或 magpie app（若已装进 PATH）
+# → 打印 http://127.0.0.1:<随机端口>/?token=<一次性 token>，浏览器打开即可
+```
+
+只绑 `127.0.0.1`（绑 `0.0.0.0` 会被**拒绝**）、随机端口、启动时一次性 token、
+不开 CORS 通配、静态资源零外部引用。`GET /openapi.json` 是给 agent 的说明书，
+它的内容被快照测试钉住（`magpie/api/tests/openapi_snapshot.json`）—— 契约变了
+测试就红，逼着变更是有意的。
+
+`/api/v1` 的响应形状与 `--json` 字段**是对外契约**：改它要升 minor 并写
+`CHANGELOG.md`。
+
+GUI（2.8）与 CLI 的读写命令（2.2 / 2.6）尚未开工 —— 见 `Magpie-项目计划书.md`
+的路线图。
 
 ## 一条命令验证
 

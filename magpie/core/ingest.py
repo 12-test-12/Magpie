@@ -64,6 +64,10 @@ CHUNK_BYTES = 1 << 20
 #: 每多少条记录提交一次 checkpoint。取消时已提交的部分仍可 undo。
 DEFAULT_BATCH = 2000
 
+#: 单条进度事件里最多带多少条**新**坏行。坏行明细是给人看的信号，不是全量搬运
+#: —— 全量在 `<data-dir>/reports/<job_id>.badlines.txt`，报告里给的是那个路径。
+PROGRESS_BAD_LINE_LIMIT = 50
+
 #: 解析器发现顺序 —— 前者是 2.4 的正式实现，后者是 2.5 的过渡实现
 PARSER_PACKAGES = ("magpie.core.parsers", "magpie.core.parsers_bridge")
 
@@ -121,6 +125,11 @@ class IngestOptions:
     actor: str = "import"
     verify: bool = True                # 收尾时跑不变量检查
     cancel_check: Callable[[], bool] | None = None   # 返回 True 即中断
+    #: 进度观察者（可选）。**纯观测**：不传它时，本模块的行为与从前逐字节一致。
+    #: 传了它，管线会在文件边界、每 batch 条记录、作业收尾各汇报一次（见
+    #: `_emit_progress` 的事件表）。它是 2.7 的 SSE 唯一的数据来源 ——
+    #: 进度**从运行时来**，而不是 API 层另起一套计数去猜。
+    on_progress: Callable[[dict[str, Any]], None] | None = None
 
     def __post_init__(self) -> None:
         if self.archive not in ("archived", "external"):
@@ -727,21 +736,56 @@ def _job_facts(conn: sqlite3.Connection, job_id: int) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
+def _emit_progress(opts: IngestOptions, ctx: ParseContext | None,
+                   payload: dict[str, Any]) -> None:
+    """把一条进度事件交给观察者（`opts.on_progress`）。
+
+    **观察者的异常不拖垮被观察的作业**：进度是旁路，不是管线的一环。一个断掉的
+    SSE 订阅者不该让导入失败，但也不该让这件事**静默** —— 异常会被记进
+    `ctx.notes`，随作业报告一起露出来。
+
+    事件表（`event` 字段）:
+        file_start  文件即将开始（index / total）
+        job_start   作业已开（job_id / parser）
+        progress    每 batch 条记录一次（records / line / 6 个计数 / 新坏行）
+        job_done    作业收尾（state / counts）
+    """
+    callback = opts.on_progress
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception as exc:                      # noqa: BLE001 —— 见上：旁路不通不该毁主路
+        if ctx is not None:
+            note = f"进度观察者抛了 {type(exc).__name__}: {exc}（已忽略，不影响本次导入）"
+            if note not in ctx.notes:
+                ctx.notes.append(note)
+
+
 def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
                  paths: Sequence[str | Path]) -> dict[str, Any]:
     """导入一批文件（每个文件一个 job）。返回聚合报告。"""
     files, problems = discover(paths)
     parsers, source_pkg = load_parsers()
     reports: list[dict[str, Any]] = []
-    for path in files:
+    for index, path in enumerate(files):
         if opts.cancel_check is not None and opts.cancel_check():
             reports.append({"path": str(path), "state": "cancelled", "job_id": None,
                             "reason": "中断：该文件尚未开始", "counts": Counters().as_dict()})
             continue
+        _emit_progress(opts, None, {"event": "file_start", "file": path.name,
+                                    "path": str(path), "index": index,
+                                    "total": len(files)})
         try:
-            reports.append(ingest_file(conn, opts, path, parsers=parsers))
+            report = ingest_file(conn, opts, path, parsers=parsers)
         except Exception as exc:            # 单个文件失败不该毁掉整轮导入
-            reports.append(_problem_report(path, f"{type(exc).__name__}: {exc}"))
+            report = _problem_report(path, f"{type(exc).__name__}: {exc}")
+        reports.append(report)
+        _emit_progress(opts, None, {"event": "file_done", "file": path.name,
+                                    "path": str(path), "index": index,
+                                    "total": len(files), "job_id": report.get("job_id"),
+                                    "state": report.get("state"),
+                                    "counts": report.get("counts")})
     totals: dict[str, int] = {}
     for rep in reports:
         for name, value in rep.get("counts", {}).items():
@@ -864,9 +908,13 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                                                "parser": fingerprint},
                                parser_fingerprint=fingerprint, actor=opts.actor)
         ctx.job_id = job_id
+        _emit_progress(opts, ctx, {"event": "job_start", "job_id": job_id,
+                                   "file": path.name, "parser": fingerprint,
+                                   "source": source_name})
         existing_fields, existing_rels = _existing_facts(conn, opts.project_id)
         seen: set[tuple[str, tuple[str, ...]]] = set()
         evidence_cache: dict[int, int] = {}
+        sent_bad_lines = 0
 
         try:
             for rec in parser_cls().parse(_tracked_lines(path, probe, ctx), ctx):
@@ -885,6 +933,18 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                 else:
                     counters.added += 1
                 txn.checkpoint()
+                if counters.records % opts.batch_size == 0:
+                    # 与 checkpoint **同一个节奏**：进度汇报的粒度就是"已提交多少"，
+                    # 不是"读了多少行" —— 后者会让进度条跑到 undo 追不上的位置。
+                    fresh = ctx.bad_lines[sent_bad_lines:]
+                    _emit_progress(opts, ctx, {
+                        "event": "progress", "job_id": job_id, "file": path.name,
+                        "records": counters.records, "line": ctx.current_line,
+                        "counts": counters.as_dict(), "commits": txn.commits,
+                        "bad_lines": fresh[:PROGRESS_BAD_LINE_LIMIT],
+                        "bad_lines_total": len(ctx.bad_lines),
+                    })
+                    sent_bad_lines += len(fresh)
         except Cancelled as exc:
             cancelled = True
             ctx.notes.append(f"作业中断：{exc}（已提交部分保留，可 undo）")
@@ -920,6 +980,16 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                 state = "failed"
         ops.finish_job(conn, job_id, state=state, actor=opts.actor)
         commits = txn.commits
+
+    # 收尾事件放在 `with` **之外**：此刻 COMMIT 已经落地，"进度说完了"与
+    # "数据真的可读了"才是同一件事。放在里面会让订阅者在提交前就去查库。
+    _emit_progress(opts, ctx, {"event": "job_done", "job_id": job_id,
+                               "file": path.name,
+                               "state": "cancelled" if cancelled else state,
+                               "parse_error": parse_error,
+                               "counts": counters.as_dict(),
+                               "badlines_report": badlines_path,
+                               "notes": list(ctx.notes)})
 
     report: dict[str, Any] = {
         "path": str(path), "sha256": digest, "byte_count": size,
