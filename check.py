@@ -91,6 +91,16 @@ UNIT = [
     [sys.executable, "-m", "pytest", "magpie/api/tests", "-q"],
     [sys.executable, "verify_v32r2.py"],
     [sys.executable, "verify_v32r3.py"],
+    # G2 出口 ⑧ 的端到端流程：真实夹具 → 事实 → undo → redo，走 2.5 的最小
+    # 入口（真子进程）。它替代了 `bench/e2e/pipeline.yaml` 手工跑的那一步 ——
+    # 一条"记得才跑"的端到端验收，和没有它只差在让人更安心。默认跑（不是
+    # bench）：实测约 2s（6 个子进程 + 一次真导入），远不到分钟级。
+    [sys.executable, "verify_v32r5.py"],
+    # 2.2 的契约网：每条只读命令的**退出码 + JSON 信封**，外加只读与非交互
+    # 两条纪律。它默认跑的理由和上面两条一样 —— 契约是**三个消费者**
+    # （GUI / CLI / MCP）共用的那个东西，破一次要动三处，而它破的时候
+    # 不会有任何一条功能测试变红。
+    [sys.executable, "-m", "pytest", "magpie/cli/tests", "-q"],
 ]
 BENCH = [
     [sys.executable, "-m", "pytest", "bench/test_perf.py", "-q"],

@@ -7,6 +7,70 @@
 
 ---
 
+## 0.4.0 — 2.2 CLI 只读骨架（`--json` 信封与退出码表）
+
+**纯新增**：`magpie/cli.py` 长成 `magpie/cli/`（入口仍是 `magpie.cli:main`，
+外加 `__main__.py` 让 `-m magpie.cli` 照旧可用）。`magpie/core/**` 一行未动 ——
+本步的兼容性约束就是"纯新增文件，不触碰 core"。
+
+命令：`init` / `ls` / `show` / `search` / `diff` / `doctor` / `schema`。
+**只有 `init` 写，而且只写 schema** —— 它连一个 project 都不建；`ls` 也不能
+顺手建库（那样"库在哪、谁建的"就没有答案了）。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · JSON 信封**（与 `/api/v1` 逐字同形）
+
+```json
+{"ok": true,  "data": ..., "meta": {"db": "...", "took_ms": 12, "schema_version": 3}}
+{"ok": false, "error": {"code": "E_AMBIGUOUS", "message": "...", "hint": "...", "candidates": []}}
+```
+
+失败信封**不带 `meta`** —— 多一个字段就是契约漂移，而三个消费者（GUI / CLI /
+MCP）里只要有一处按"错误里也有 meta"写，另一处就会崩。`--json` 是**默认**输出，
+`--human` 才切人读表格。
+
+**2 · 退出码表**（与 2.7 的 HTTP 状态码**一一对应**）
+
+| 退出码 | 含义 | HTTP |
+|---|---|---|
+| `0` | 成功 | 2xx |
+| `1` | 用法错 | 400 |
+| `2` | 数据错 | 404 |
+| `3` | 需人工裁决 | 409 |
+| `4` | 锁冲突 | 423 |
+| `5` | 版本不匹配 | 426 |
+
+`E_NOT_IMPLEMENTED` 在表里没有对应档位（2.7 的 501 是真实存在的一个状态），
+映射到 **1**：对调用方而言"请求了一个本工具还没有的语义"就是一次用法错误，
+而真正的信号在 `error.code` 与 `hint` 里。不新增第 6 档 —— 表是冻结的。
+
+**3 · `--json` 输出是纯 ASCII**（`ensure_ascii=True`）。中文走 `\uXXXX` 转义，
+于是"`magpie ls --json | python -c "import json,sys;json.load(sys.stdin)"`"
+这条验收**不依赖 `PYTHONIOENCODING`** 也成立（Windows 上消费者的 stdin 默认
+按 GBK 解，否则会当场 `UnicodeDecodeError`）。给人读的是 `--human`。
+
+**4 · `magpie schema --json`** 一条命令吐出类型 / 关系动词 / 字段 / 查询语法。
+其中**查询语法从真的那个 argparse 生成**，不是第二份手写文档 —— 因此它不会
+过期。同一份输出里带信封形状与上面那张退出码表。
+
+**5 · `GET /openapi.json` 的快照只差 `info.version`**（0.3.0 → 0.4.0）。没有
+增删任何一条路由；`/api/v1` 本身一行未改。
+
+### 与 2.7 的关系
+
+CLI **适配**既有契约，不重新定义它：过滤条件、分页游标、`E_UNSUPPORTED_FILTER`
+的"响亮拒绝"、`E_PROJECT_REQUIRED` 的 400/退出码 1，全部与 `/api/v1` 对齐。
+`search` 刻意**不实现** —— 2.7 的 `/search` 也是 501，若 CLI 自己发明一套查询
+语义，就出现了"两条路、一份数据、两种答案"（§3.5 的"GUI 与 CLI 共用同一实现"）。
+
+### 已知技术债
+
+`ls` / `show` 的 SQL 与 `api/routes.py` 的同名查询是**同一份语义的两份实现**。
+计划书 §3.5 的 `core/query.py` 落地后应收敛到一处。
+
+---
+
 ## 0.3.0 — 2.8 GUI 只读画布（探索模式）
 
 **纯新增**：前端目录 `frontend/`（Vue 3 + Vite）+ 四个 `/api/v1` 端点。

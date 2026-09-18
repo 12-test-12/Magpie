@@ -16,10 +16,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.3.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.4.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
+# 0.3.0 → 0.4.0 对应 2.2：CLI 只读骨架。`--json` 信封与退出码表（0/1/2/3/4/5
+# ↔ HTTP 2xx/400/404/409/423/426）从这一刻起是对外契约。
+# openapi 快照**只差 `info.version`**（没有增删任何一条路由）—— 见 CHANGELOG。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -48,8 +51,13 @@ magpie = "magpie.cli:main"
 [tool.setuptools]
 # 显式列出，关掉 setuptools 的 flat-layout 自动发现：仓库根还躺着 check.py、
 # verify_*.py、generate_docx.py，自动发现会把它们也当成顶层模块并直接报错。
-# 两个 tests/ 目录刻意**不**打包 —— 它们是回归网，不是运行时的一部分。
-packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api"]
+# 三个 tests/ 目录刻意**不**打包 —— 它们是回归网，不是运行时的一部分。
+#
+# 2.2 起 `magpie/cli.py` 长成了 `magpie/cli/`：入口仍是 `magpie.cli:main`，
+# 外加 `__main__.py` 让 `-m magpie.cli` 照旧可用（bench 的两条性能契约靠它）。
+# 拆开不是为了好看 —— 契约（`envelope.py`）比命令活得久，分开之后"改命令时
+# 顺手改到契约"这件事才需要多走一步。
+packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api", "magpie.cli"]
 
 [tool.setuptools.package-data]
 # 静态资源随包走。**本地打包**是零出站的前提（计划书 §7.6）：页面一旦引用

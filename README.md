@@ -24,7 +24,7 @@ magpie/api/writer.py       进程级唯一写者（单写线程 + 写队列）
 magpie/api/events.py       SSE 事件总线（有界队列 + 丢帧可数）
 magpie/api/web/            GUI 构建产物（Vite 打包，零出站；**入库**，别手改）
 frontend/                  GUI 源码（Vue 3 + Vite；改完要 npm run build）
-magpie/cli.py              命令行入口（`magpie app` 可用；其余见 2.2 / 2.6）
+magpie/cli/                命令行入口（2.2 的只读命令 + `magpie app`；写路径见 2.6）
 schema/001_init.sql        全部 DDL + 触发器 + 视图
 schema/002_*.sql           收窄 undo_incomplete（redo 的 blocked 状态合法化）
 bench/test_perf*.py        性能契约（MAGPIE_PERF_STRICT=1）
@@ -76,7 +76,29 @@ py -3.13 -m pytest magpie/api/tests/test_web.py -q
 （零出站、探索模式只读）分别由 `check.py lint` 的 R7-ASSETS 与 READONLY
 两条静态红线守着，见 `frontend/README.md`。
 
-CLI 的读写命令（2.2 / 2.6）尚未开工 —— 见 `Magpie-项目计划书.md` 的路线图。
+## 命令行（2.2 只读骨架）
+
+```bash
+py -3.13 -m magpie.cli init  --db .magpie/magpie.db   # 建库（只建 schema，不建项目）
+py -3.13 -m magpie.cli ls    --json --limit 20        # 实体列表（键集游标分页）
+py -3.13 -m magpie.cli show  api.example.com --json   # 实体详情（id 或规范 key）
+py -3.13 -m magpie.cli diff  --since last --json      # 自上次导入起，库里多了什么
+py -3.13 -m magpie.cli doctor --json                  # 数据体检
+py -3.13 -m magpie.cli schema --json                  # 类型 / 关系动词 / 字段 / 查询语法
+```
+
+默认**直连 core**，不需要服务在跑。`--json` 是默认输出（`--human` 才切人读表格），
+信封与 `/api/v1` 逐字同形；`magpie schema --json` 一条命令给出全部命令的语法，
+agent 不必读源码。
+
+退出码表 **0/1/2/3/4/5**（成功 / 用法错 / 数据错 / 需人工裁决 / 锁冲突 / 版本不匹配）
+与 2.7 的 HTTP 状态码 **2xx/400/404/409/423/426 一一对应**。它是**对外契约**：
+改它要升 minor 并写 `CHANGELOG.md`。
+
+**本步只做读**。`search` 与 `import` / `undo` / `redo` / `jobs` 会以
+`E_NOT_IMPLEMENTED` **响亮失败**（分别是 §8 与 2.6 的地盘）—— 不返回空结果，
+因为空结果对 agent 是一个确定的断言，而事实是"这条命令还不存在"。
+写路径见 2.6，整体排期见 `Magpie-项目计划书.md`。
 
 ## 一条命令验证
 
