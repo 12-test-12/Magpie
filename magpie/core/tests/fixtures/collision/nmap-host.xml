@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -R -oX nmap-host.xml 203.0.113.10" start="1758013300" version="7.94" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="1" services="80"/>
+<target specification="203.0.113.10" status="up" reason="arp-response"/>
+<host starttime="1758013301" endtime="1758013305">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<hostnames>
+<hostname name="app.example.com" type="PTR"/>
+</hostnames>
+<ports>
+<port protocol="tcp" portid="80">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="http" product="nginx" version="1.24.0" method="probed" conf="10">
+<cpe>cpe:/a:igor_sysoev:nginx:1.24.0</cpe>
+</service>
+</port>
+</ports>
+</host>
+<runstats><finished time="1758013305" elapsed="5.01" exit="success"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>

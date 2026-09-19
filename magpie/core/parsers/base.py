@@ -326,19 +326,29 @@ class RelationSpec:
     inverse: str = ""
 
 
-#: 本步（2.4）**真的落地**的 kind。刻意先窄后宽：每个登记的 kind 都要带三件套，
-#: 而 `endpoint` / `vuln` 之流的三件套只有在阶段 3 的解析器里才有真实形状。
-#: 提前登记它们等于凭空设计一套必然要返工的约束（计划书 §3.3 的教训）。
+#: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr`）。刻意先窄后宽：每个登记的
+#: kind 都要带三件套，而 `endpoint` / `vuln` 之流的三件套只有在阶段 3 各自的
+#: 解析器里才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束
+#: （计划书 §3.3 的教训）。
+#:
+#: `cidr` 是这条纪律的正面例子：`ip` 的身份规则里 2.4 就写着"网段是另一种
+#: kind"，但**那时没有产出者**，所以它一直没有被登记；3.1 的 nmap `<target>`
+#: 是第一个真实产出者，三件套同期到位（迁移 `schema/004_kind_cidr.sql`）。
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
-             produced_by=("domainlist@1", "httpx@1")),
+             produced_by=("domainlist@1", "httpx@1", "nmap@1")),
     KindSpec(kind="ip", fixture="fixtures/kinds/ip.json", lens="assets",
-             produced_by=("httpx@1",)),
+             produced_by=("httpx@1", "nmap@1")),
+    #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
+    #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
+    #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
+    KindSpec(kind="cidr", fixture="fixtures/kinds/cidr.json", lens="assets",
+             produced_by=("nmap@1",)),
     KindSpec(kind="host", fixture="fixtures/kinds/host.json", lens="assets"),
     KindSpec(kind="service", fixture="fixtures/kinds/service.json", lens="services",
-             produced_by=("httpx@1",)),
+             produced_by=("httpx@1", "nmap@1")),
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
-             produced_by=("httpx@1",)),
+             produced_by=("httpx@1", "nmap@1")),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。

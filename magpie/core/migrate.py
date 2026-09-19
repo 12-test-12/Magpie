@@ -44,6 +44,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 资源类型登记表 + 关系受控词表 + definition_hash 的 DB 级兜底（2.4 同期必交项 A/B）。
     # 词表落成"表 + 拒绝触发器"而不是字面量 CHECK 的理由见该文件头。
     Migration(3, "kind_registry", SCHEMA_DIR / "003_kind_registry.sql"),
+    # 登记 `cidr`（第一个真实产出者是 3.1 的 nmap `<target>`），并把 `nmap@1`
+    # 追加进 ip / service / product 的 produced_by。**新增迁移，不改 003**
+    # （红线 R4：已应用的迁移被改动 → 校验和不匹配 → 直接报错）。
+    Migration(4, "kind_cidr", SCHEMA_DIR / "004_kind_cidr.sql"),
 )
 
 

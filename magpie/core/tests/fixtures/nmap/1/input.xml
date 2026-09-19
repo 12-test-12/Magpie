@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/bin/../share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.94 scan initiated on Tue Sep 16 09:00:00 2025 as: nmap -sV -oX input.xml 203.0.113.0/24 10.0.0.7 -->
+<nmaprun scanner="nmap" args="nmap -sV -oX input.xml 203.0.113.0/24 10.0.0.7" start="1758013200" startstr="Tue Sep 16 09:00:00 2025" version="7.94" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="4" services="80,443,8080,5900"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<target specification="203.0.113.0/24" status="up" reason="arp-response"/>
+<host starttime="1758013201" endtime="1758013209">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="203.0.113.10" addrtype="ipv4"/>
+<address addr="00:11:22:33:44:55" addrtype="mac" vendor="Example Networks"/>
+<hostnames>
+<hostname name="app.example.com" type="PTR"/>
+</hostnames>
+<ports>
+<port protocol="tcp" portid="80">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="http" product="nginx" version="1.24.0" method="probed" conf="10">
+<cpe>cpe:/a:igor_sysoev:nginx:1.24.0</cpe>
+</service>
+<script id="http-title" output="Example Domain">Example Domain
+</script>
+</port>
+<port protocol="tcp" portid="443">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="ssl" product="nginx" version="1.24.0" tunnel="ssl" method="probed" conf="10">
+<cpe>cpe:/a:igor_sysoev:nginx:1.24.0</cpe>
+</service>
+</port>
+<port protocol="udp" portid="631">
+<state state="open" reason="udp-response" reason_ttl="64"/>
+<service name="ipp" method="table" conf="3">
+</service>
+</port>
+<port protocol="tcp" portid="5900">
+<state state="closed" reason="reset" reason_ttl="64"/>
+<service name="vnc" method="table" conf="3"/>
+</port>
+</ports>
+<hostscript>
+<script id="smb-os-discovery" output="OS: Linux 5.15">
+</script>
+</hostscript>
+</host>
+<host starttime="1758013210" endtime="1758013212">
+<status state="up" reason="syn-ack" reason_ttl="0"/>
+<address addr="203.0.113.11" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="22">
+<state state="open" reason="syn-ack" reason_ttl="64"/>
+<service name="ssh" product="OpenSSH" version="9.0p1" extrainfo="Ubuntu Linux; protocol 2.0" ostype="Linux" method="probed" conf="10">
+<cpe>cpe:/o:linux:linux_kernel:5.15</cpe>
+<cpe>cpe:/h:hp:proliant_dl380</cpe>
+</service>
+</port>
+</ports>
+</host>
+<host starttime="1758013213" endtime="1758013218">
+<status state="up" reason="echo-reply"/>
+<address addr="10.0.0.7" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="8080">
+<state state="open" reason="syn-ack" reason_ttl="53"/>
+<service name="http" product="Apache httpd" version="2.4.49-2.4.51" method="probed" conf="10">
+<cpe>cpe:/a:apache:httpd:2.4.49-2.4.51</cpe>
+</service>
+</port>
+</ports>
+</host>
+<host starttime="1758013219" endtime="1758013220">
+<status state="down" reason="no-response"/>
+<address addr="10.0.0.99" addrtype="ipv4"/>
+</host>
+<runstats>
+<finished time="1758013220" timestr="Tue Sep 16 09:00:20 2025" elapsed="20.12" summary="Nmap done at Tue Sep 16 09:00:20 2025; 257 IP addresses (4 hosts up) scanned in 20.12 seconds" exit="success"/>
+<hosts up="3" down="1" total="4"/>
+</runstats>
+</nmaprun>
