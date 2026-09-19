@@ -7,17 +7,28 @@
 事实表 → undo → redo"这条端到端流程，靠人记得才跑。这个脚本就是把它固化下来，
 纳入 `check.py` 的 UNIT（默认跑，不是 bench）。
 
-走哪条入口
-----------
-主流程走 **2.5 的最小入口**：`py -3.13 -m magpie.core.pipeline run/undo`，
-**真子进程**。理由不是"更真"，而是进程内 `import run_pipeline` 恰好跳过了最
-容易坏的那几段 —— argv 解析、`data_dir` 与 `db` 落在同一个基准下、退出码。
-2.7 的 HTTP 入口已被 `_scratch/gate2_api.py` 独立验过（那是画布视角），这里
-换成脚本视角，两条路互不替代。
+两条入口，同一套判据（2.6 起）
+------------------------------
+同一段 A/B 流程对**两个入口**各跑一遍：
 
-`redo` 没有最小入口（`pipeline` 只登记了 `undo`，redo 在 2.6 / 2.7 的地盘），
-故这一跳走 `ops.redo`。这是本脚本与产品入口之间**唯一**的进程内调用，写清楚
-免得后来人以为漏了。
+  * `PipelineEntry` —— 2.5 的最小入口：`py -3.13 -m magpie.core.pipeline run/undo`，
+    真子进程。理由不是"更真"，而是进程内 `import run_pipeline` 恰好跳过了最容易
+    坏的那几段 —— argv 解析、`data_dir` 与 `db` 落在同一个基准下、退出码。
+  * `CliEntry` —— 2.6 的正式入口：`magpie project create` / `magpie import` /
+    `magpie undo` / `magpie redo`，同样真子进程。2.6 的交付标准那一行写的是
+    "让 CLI 也能跑通同一条流程"，而"同一条"的可核对形式就是**同一段代码、
+    同一套逐行指纹**，不是另写一份差不多的。
+
+之所以能共用：`import` 的报告与 `pipeline run` 的报告**同源**（都出自
+`ingest.ingest_paths`），差别只在 pipeline 按 step 分组、import 是平铺的一串
+文件。`_file_reports()` 把两者折成同一个视图，A 段的断言因此一行都不用分叉。
+
+`redo` 在两条路上不对称，写清楚免得后来人以为漏了
+--------------------------------------------------
+2.5 的最小入口**只登记了 `undo`**（`redo` 在 2.6 / 2.7 的地盘），所以
+`PipelineEntry.redo` 是**进程内**调 `ops.redo` —— 这是本脚本与产品入口之间唯一
+的进程内调用。`CliEntry.redo` 走真子进程（`magpie redo`），因为 2.6 起它真的
+有这个命令了。B 段两条路都要判"精确复原"。
 
 复原怎么判
 ----------
@@ -37,6 +48,15 @@
 
 另有外部开关 `MAGPIE_VERIFY_V32R5_BREAK=noop`：把真 redo 换成坏 redo，整条
 Gate 应当变红。自检证明"比较有牙齿"，这个开关证明"产品坏了 Gate 真的会红"。
+它只作用于进程内那一侧（C 段与 `PipelineEntry`），因为 CLI 那一侧是子进程，
+外部开关伸不进去 —— 一份诚实的边界比一个假装全面的开关好。
+
+1. 与 2.6 契约测试的分工
+------------------------
+C 段（负向输入）仍然只跑 2.5 的入口：它验的是**管线的容忍度**。CLI 那一侧的
+负向与退出码（空文件 / GBK / 损坏 JSON / zip / 路径不存在 → 各有各的码）在
+`magpie/cli/tests/test_write.py` 里，那边能用 `envelope()` 逐条断言 `error.code`
+与退出码，比在这里再写一遍更紧。
 
 运行:  py -3.13 verify_v32r5.py
        MAGPIE_VERIFY_V32R5_BREAK=noop py -3.13 verify_v32r5.py    # 应退出 1
@@ -101,31 +121,42 @@ def diff_keys(before: dict, after: dict) -> list:
     return sorted(t for t in before if before[t] != after.get(t))
 
 
+def _file_reports(report: dict) -> list:
+    """两种入口的报告 → **同一个视图**：一个"文件报告"的列表。
+
+    `pipeline run` 按 step 分组（每个 step 一串 files），`magpie import` 是平铺的
+    一串 files。两者底下是同一个 `ingest_file` 的报告对象，所以折平之后 A 段的
+    每一条断言都只写一遍 —— 两条路要给出的是同一个答案，那判据就不该有两份。
+    """
+    if report.get("kind") == "pipeline":
+        return [f for step in report.get("steps") or [] for f in step.get("files") or []]
+    return list(report.get("files") or [])
+
+
 # ---------------------------------------------------------------------------
-# 走 2.5 的最小入口（真子进程）
+# 真子进程
 # ---------------------------------------------------------------------------
 
 
-def entry(*args: str) -> tuple:
-    """`py -3.13 -m magpie.core.pipeline …` → (退出码, stdout)。
+def _run(argv: list) -> tuple:
+    """跑一个子进程 → (退出码, stdout, stderr)。
 
-    子进程一律 `sys.executable`（lint 红线 C2）：`python` 在 PATH 上是谁，
-    和工程解释器是谁，是两件事。
+    一律 `sys.executable`（lint 红线 C2）：`python` 在 PATH 上是谁，和工程
+    解释器是谁，是两件事。
     """
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    proc = subprocess.run([sys.executable, "-m", "magpie.core.pipeline", *args],
-                          cwd=str(ROOT), capture_output=True, env=env)
-    return proc.returncode, proc.stdout.decode("utf-8", "replace"), \
-        proc.stderr.decode("utf-8", "replace")
+    proc = subprocess.run([sys.executable, *argv], cwd=str(ROOT),
+                          capture_output=True, env=env)
+    return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
+            proc.stderr.decode("utf-8", "replace"))
 
 
-def entry_json(*args: str) -> tuple:
-    """同 `entry`，并把 stdout 当 JSON 读 → (退出码, 报告, 失败时的尾部输出)。
+def _json_of(code: int, out: str, err: str) -> tuple:
+    """stdout 当 JSON 读 → (退出码, 报告, 失败时的尾部输出)。
 
-    报告是这条入口**唯一的交付通道**（人看的是它，不是退出码）。所以"stdout
-    是不是合法 JSON"就等于"进程有没有崩" —— 崩掉的进程打的是 traceback。
+    报告是这两条入口**唯一的交付通道**（人看的是它，不是退出码）。所以
+    "stdout 是不是合法 JSON"就等于"进程有没有崩" —— 崩掉的进程打的是 traceback。
     """
-    code, out, err = entry(*args)
     try:
         return code, json.loads(out), ""
     except json.JSONDecodeError:
@@ -133,11 +164,173 @@ def entry_json(*args: str) -> tuple:
         return code, None, (tail[-400:] or "(无输出)")
 
 
+def entry(*args: str) -> tuple:
+    """`py -3.13 -m magpie.core.pipeline …` → (退出码, stdout, stderr)。"""
+    return _run(["-m", "magpie.core.pipeline", *args])
+
+
+def entry_json(*args: str) -> tuple:
+    return _json_of(*entry(*args))
+
+
+def cli(*args: str) -> tuple:
+    """`py -3.13 -m magpie.cli …` → (退出码, stdout, stderr)。"""
+    return _run(["-m", "magpie.cli", *args])
+
+
+def cli_json(*args: str) -> tuple:
+    return _json_of(*cli(*args))
+
+
+def _undo_impact(payload) -> dict | None:
+    """两种入口的 undo 返回 → 那个 `impact` 字典。
+
+    `pipeline undo` 直接打印 `ops.undo` 的报告；`magpie undo` 把它套在信封的
+    `data.report` 里（与 `POST /jobs/{id}/undo` 同形）。折成同一个视图，判据
+    才只需要写一遍 —— 与 `_file_reports()` 是同一条理由。
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data") if "data" in payload else payload
+    if isinstance(data, dict) and "report" in data:
+        data = data["report"]
+    return data.get("impact") if isinstance(data, dict) else None
+
+
 def open_db(db_path) -> "store.sqlite3.Connection":
     """连上子进程刚写过的库 —— 指纹是**直接读库**算的，不走任何报告。"""
     conn = store.connect(db_path)
     store.init_db(conn)
     return conn
+
+
+# ---------------------------------------------------------------------------
+# 两条入口
+# ---------------------------------------------------------------------------
+
+
+class PipelineEntry:
+    """2.5 的最小入口：`pipeline run` / `pipeline undo`（真子进程）。"""
+
+    label = "2.5 最小入口（pipeline run / undo）"
+    redo_note = "redo 走进程内 ops.redo（最小入口没有 redo，它属于 2.6 / 2.7）"
+
+    def __init__(self, yaml_path: Path) -> None:
+        self.yaml = yaml_path
+        self._conn = None
+
+    def import_files(self, db, data_dir, *, dry_run: bool) -> tuple:
+        """导入夹具里的两个文件（这一步同时把项目建出来 —— YAML 的 scope 就是它）。"""
+        args = ["run", str(self.yaml)]
+        if dry_run:
+            args.append("--dry-run")
+        args += ["--db", str(db), "--data-dir", str(data_dir)]
+        return entry_json(*args)
+
+    def undo(self, db, job_id: int) -> tuple:
+        return entry_json("undo", str(job_id), "--db", str(db))
+
+    def redo(self, db, job_id: int) -> tuple:
+        """进程内 —— 见模块 docstring 与 `redo_note`。"""
+        if self._conn is None:
+            self._conn = store.connect(db)
+        report = active_redo()(self._conn, job_id)
+        return 0, report, ""
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
+class CliEntry:
+    """2.6 的正式入口：`import` / `undo` / `redo`（全是真子进程）。
+
+    与 `PipelineEntry` 的一处结构性差异：CLI **没有一个 YAML 帮它建项目**，
+    项目的创建是一个独立的、显式的动作（`magpie project create`）。这不是
+    多出来的一步 —— 它是"文件的落点必须先存在"这件事在命令行上的样子。
+    """
+
+    label = "2.6 CLI（project create / import / undo / redo）"
+    redo_note = "redo 走真子进程 magpie redo"
+
+    #: 与 `bench/e2e/pipeline.yaml` 的 scope 逐字一致：两条路的**库状态**要能
+    #: 直接对拍，而 scope 进的是每个 job 的 `scope_hash`。
+    SCOPE = {"include": ["*.example.com"], "exclude": []}
+
+    #: 两个来源。与 YAML 的两个 step 一一对应 —— **刻意走两条不同的选解析器
+    #: 路径**：dns 显式指定，probe 交给嗅探仲裁。
+    SOURCES = (
+        ("subfinder.txt", ["--parser", "domainlist", "--source", "subfinder"]),
+        ("httpx.jsonl",   ["--source", "httpx"]),
+    )
+
+    def __init__(self) -> None:
+        self.project_id: int | None = None
+
+    def project(self) -> list:
+        return ["--project", str(self.project_id)]
+
+    def prepare(self, db, data_dir) -> list:
+        """`init` → `project create`。**这条链路的起点，两步都不能省。**
+
+        `init` 必须显式跑：写命令刻意**不顺手建库**（与只读命令拒绝顺手建库
+        同一条理由 —— 建库是一个显式的、可以被记一笔的动作）。而 CLI 也没有
+        一个 YAML 帮它建项目，项目的创建同样是独立的、显式的一步。
+
+        返回 [(标题, 退出码, 报告, 尾部输出)] 供上层逐条判。
+        """
+        out = []
+        code, data, bad = cli_json("init", "--db", str(db),
+                                   "--data-dir", str(data_dir), "--json")
+        out.append(("init 建库", code, data, bad))
+        code, data, bad = cli_json(
+            "project", "create", "演示项目", "--scope", json.dumps(self.SCOPE),
+            "--db", str(db), "--data-dir", str(data_dir), "--json")
+        if data and data.get("ok"):
+            self.project_id = int(data["data"]["id"])
+        out.append(("project create", code, data, bad))
+        return out
+
+    def import_files(self, db, data_dir, *, dry_run: bool) -> tuple:
+        """两个来源各导一次，折成与 `pipeline run` 同形的报告。
+
+        **一次一个文件**（而不是一次给两个路径）是为了与 YAML 的两个 step 对齐：
+        `--parser` 是整条命令共用的，合起来就表达不出"一个指定、一个仲裁"。
+        """
+        merged = {"kind": "import", "dry_run": bool(dry_run), "files": [],
+                  "job_ids": [], "totals": {}, "problems": []}
+        codes = []
+        for name, extra in self.SOURCES:
+            code, payload, bad = cli_json(
+                "import", str(RECON / name), *extra,
+                *self.project(), "--db", str(db), "--data-dir", str(data_dir),
+                *(["--dry-run"] if dry_run else []), "--json")
+            codes.append(code)
+            if payload is None:
+                return code, None, bad
+            if not payload.get("ok"):
+                # 失败的导入仍然带着完整报告（挂在 error.report 上）—— 用它继续，
+                # 让 A 段的断言自己去判"哪里不对"，而不是在这里提前下结论。
+                merged["problems"].append(payload["error"].get("message", ""))
+                merged["files"].extend((payload["error"].get("report") or {}).get("files") or [])
+                continue
+            report = payload["data"]["report"]
+            merged["files"].extend(report.get("files") or [])
+            merged["job_ids"].extend(report.get("job_ids") or [])
+            merged["problems"].extend(report.get("problems") or [])
+            for name, value in (report.get("totals") or {}).items():
+                merged["totals"][name] = merged["totals"].get(name, 0) + int(value)
+        return (0 if all(c == 0 for c in codes) else max(codes)), merged, ""
+
+    def undo(self, db, job_id: int) -> tuple:
+        return cli_json("undo", str(job_id), "--db", str(db), "--json")
+
+    def redo(self, db, job_id: int) -> tuple:
+        return cli_json("redo", str(job_id), "--db", str(db), "--json")
+
+    def close(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -164,131 +357,157 @@ def active_redo():
     return _noop_redo if BREAK == "noop" else ops.redo
 
 
-def restore(conn, job_ids, baseline: dict, *, redo=None) -> tuple:
+def restore(conn, entry, db, job_ids, baseline: dict, *, redo=None) -> tuple:
     """undo 之后逐个 redo，返回 (是否逐行复原, 复原后的指纹)。
 
     `redo` 刻意不在默认参数里绑定 `ops.redo`：默认参数在**函数定义时**求值，
-    那样一来 `BREAK` 换掉的 redo 就永远轮不到，这个开关会静默失效。
+    那样一来 `BREAK` 换掉的 redo 就永远轮不到，这个开关会静默失效。默认值是
+    `None`，真值在调用时从 `entry` 上取 —— 于是"哪条入口复原的"也一并可查。
     """
-    redo = redo or active_redo()
+    redo = redo or entry.redo
     for jid in job_ids:
-        redo(conn, jid)
+        redo(db, jid)
     after = fingerprint(conn)
     return after == baseline, after
 
 
-def main() -> int:
-    shutil.rmtree(WORK, ignore_errors=True)
-    (WORK / "neg").mkdir(parents=True)
-    data_dir = WORK / "main-data"
+# ---------------------------------------------------------------------------
+# A · 真实夹具 → 事实    B · undo → redo 精确复原
+# ---------------------------------------------------------------------------
+
+
+def ab_flow(entry, work_root: Path, label: str) -> None:
+    """A / B 两段。**入口无关** —— 判据全是逐行指纹与报告里的数。
+
+    两条入口各调一次本函数，用的是同一段代码：任何一个断言在两条路上给出不同
+    答案，红的都是"入口之间不一致"，而那正是端到端验收最该发现的东西。
+    """
+    shutil.rmtree(work_root, ignore_errors=True)
+    data_dir = work_root / "data"
     db_path = data_dir / "magpie.db"
 
-    # ================================================== A · 真实夹具 → 事实 ===
-    print("=== A · 真实夹具 → 事实（走 2.5 最小入口）===")
+    print()
+    print(f"=== A · 真实夹具 → 事实（{label}）===")
+    if isinstance(entry, CliEntry):
+        # CLI 的起点要多两步（`init` + `project create`）—— 那两步本身就是
+        # "文件 → 库 → 命令行"这条链路的前半段，不是准备动作。
+        for title, code, payload, bad in entry.prepare(db_path, data_dir):
+            check(f"A0  {label}：{title} 退出码 0",
+                  code == 0 and bool(payload) and payload.get("ok"), f"rc={code} {bad}")
 
-    # A1 干跑。先看一眼：这个入口在**冷启动**下到底跑不跑得起来。
-    # 注意 dry-run 仍会按 YAML 的 scope 建项目（`resolve_project` 无条件调用），
-    # 这不是事实 —— 所以判据是"**事实表**一行不动"，与 §2.6 那行的措辞一致。
-    code, dry, bad = entry_json("run", str(PIPELINE_YAML), "--dry-run",
-                                "--db", str(db_path), "--data-dir", str(data_dir))
-    check("A1a 干跑退出码 0（无 needs_confirmation 文件）", code == 0, f"rc={code} {bad}")
-    check("A1b 干跑的报告是合法 JSON 且标了 dry_run", bool(dry) and dry.get("dry_run") is True)
+    # A1 干跑。先看一眼：这条入口在**冷启动**下到底跑不跑得起来。
+    # 注意 dry-run 仍会建项目（`resolve_project` 无条件调用），这不是事实 ——
+    # 所以判据是"**事实表**一行不动"，与 §2.6 那行的措辞一致。
+    code, dry, bad = entry.import_files(db_path, data_dir, dry_run=True)
+    check(f"A1a {label}：干跑退出码 0（无 needs_confirmation 文件）",
+          code == 0, f"rc={code} {bad}")
+    check(f"A1b {label}：干跑的报告是合法 JSON 且标了 dry_run",
+          bool(dry) and dry.get("dry_run") is True)
     cold = fingerprint(open_db(db_path))
-    check("A1c 干跑后事实表一行不多（有效状态逐表为 0）",
+    check(f"A1c {label}：干跑后事实表一行不多（有效状态逐表为 0）",
           all(cell["rows"] == 0 for cell in cold.values()), str(counts(cold)))
     dry_totals = dict((dry or {}).get("totals") or {})
 
     # A2 真跑。这是"文件到事实"那一步。
-    code, real, bad = entry_json("run", str(PIPELINE_YAML),
-                                 "--db", str(db_path), "--data-dir", str(data_dir))
-    check("A2a 真跑退出码 0", code == 0, f"rc={code} {bad}")
+    code, real, bad = entry.import_files(db_path, data_dir, dry_run=False)
+    check(f"A2a {label}：真跑退出码 0", code == 0, f"rc={code} {bad}")
     job_ids = list((real or {}).get("job_ids") or [])
-    check("A2b 两个步骤各落一个 job（夹具真的被导入了）",
+    check(f"A2b {label}：两个来源各落一个 job（夹具真的被导入了）",
           len(job_ids) == 2, f"job_ids={job_ids}")
-    check("A2c 报告里没有 problems（路径 / 编码都干净）",
-          not [p for step in (real or {}).get("steps", []) for p in step.get("problems", [])],
-          str([p for step in (real or {}).get("steps", []) for p in step.get("problems", [])]))
+    check(f"A2c {label}：报告里没有 problems（路径 / 编码都干净）",
+          not (real or {}).get("problems"), str((real or {}).get("problems")))
 
     conn = open_db(db_path)
     full = fingerprint(conn)
     facts = counts(full)
-    check("A2d 事实表非空（真实文件确实变成了事实）",
+    check(f"A2d {label}：事实表非空（真实文件确实变成了事实）",
           facts.get("entities", 0) > 0 and facts.get("relations", 0) > 0, str(facts))
     # 干跑与真跑算出来的数必须**一模一样** —— 否则"干跑"就没在预测真跑，
     # 只是走了个过场。这一条比"干跑 totals 是 0"有意义得多：干跑照样算全量，
     # 只是不落库，所以它的 totals 当然不是 0。
-    check("A2e 干跑算出的 totals 与真跑逐项相同（干跑真的在预演，不是空转）",
+    check(f"A2e {label}：干跑算出的 totals 与真跑逐项相同（干跑真的在预演）",
           dry_totals == (real or {}).get("totals"),
           f"dry={dry_totals} real={(real or {}).get('totals')}")
 
-    steps = {s["id"]: s for s in (real or {}).get("steps", [])}
-    # `or [{}]`：某个步骤一个文件都没匹配到时，这里必须变成一条 FAIL 而不是
-    # IndexError —— 验收脚本自己崩掉，等于把"红"和"没跑"混成一种表现。
-    files_by_step = {sid: (s.get("files") or [{}])[0] for sid, s in steps.items()}
-    check("A2f 两份来源都落了盘：dns=done，probe=partial",
-          [s["state"] for s in files_by_step.values()] == ["done", "partial"],
-          str({sid: f.get("state") for sid, f in files_by_step.items()}))
+    files_by_name = {Path(str(f.get("path"))).name: f for f in _file_reports(real or {})}
+    check(f"A2f {label}：两份来源都落了盘：subfinder=done，httpx=partial",
+          [files_by_name.get(n, {}).get("state") for n in ("subfinder.txt", "httpx.jsonl")]
+          == ["done", "partial"],
+          str({n: f.get("state") for n, f in files_by_name.items()}))
     # 夹具里**故意**有一行坏 JSON 和一个未知字段（`cname_chain`）。它们是这套
     # 端到端验收真正的价值所在：坏行必须被隔离，而不是让整批失败或静默消失。
-    probe = files_by_step.get("probe") or {}
+    probe = files_by_name.get("httpx.jsonl") or {}
     probe_counts = probe.get("counts") or {}
     badlines = Path(str(probe.get("badlines_report") or ""))
-    check("A2g 坏行被隔离成报告文件（1 行 JSON 解析失败），整批没有失败",
+    check(f"A2g {label}：坏行被隔离成报告文件（1 行 JSON 解析失败），整批没有失败",
           probe_counts.get("bad_lines") == 1 and badlines.is_file()
           and "JSON 解析失败" in badlines.read_text(encoding="utf-8"),
           f"bad_lines={probe_counts.get('bad_lines')} 报告={badlines}")
-    check("A2h 未知字段被记名而不是被丢掉（cname_chain）",
+    check(f"A2h {label}：未知字段被记名而不是被丢掉（cname_chain）",
           (probe.get("unknown_fields_detail") or {}).get("cname_chain") == 1,
           str(probe.get("unknown_fields_detail")))
-    check("A2i 两步的对账都平（records == counted）",
-          all((f.get("reconcile") or {}).get("ok") for f in files_by_step.values()),
-          str({sid: f.get("reconcile") for sid, f in files_by_step.items()}))
-    check("A2j 导入后完整性 ok", store.integrity_check(conn)["ok"],
+    check(f"A2i {label}：两个来源的对账都平（records == counted）",
+          all((f.get("reconcile") or {}).get("ok") for f in _file_reports(real or {})),
+          str({n: f.get("reconcile") for n, f in files_by_name.items()}))
+    check(f"A2j {label}：导入后完整性 ok", store.integrity_check(conn)["ok"],
           str(store.integrity_check(conn).get("violations")))
 
-    # A3 幂等：同两个文件再导一次，不该产生任何新观测。
-    code, again, bad = entry_json("run", str(PIPELINE_YAML),
-                                  "--db", str(db_path), "--data-dir", str(data_dir))
+    # A3 幂等：同一批文件再导一次，不该产生任何新观测。
+    code, again, bad = entry.import_files(db_path, data_dir, dry_run=False)
     second = fingerprint(conn)
     added = int((again or {}).get("totals", {}).get("added", -1))
-    check("A3a 第二次导入退出码 0", code == 0, f"rc={code} {bad}")
-    check("A3b 第二次导入 added=0（没有新观测）", added == 0, f"added={added}")
-    check("A3c 第二次导入后逐行指纹不变（第二次不留痕）",
+    check(f"A3a {label}：第二次导入退出码 0", code == 0, f"rc={code} {bad}")
+    check(f"A3b {label}：第二次导入 added=0（没有新观测）", added == 0, f"added={added}")
+    check(f"A3c {label}：第二次导入后逐行指纹不变（第二次不留痕）",
           second == full, f"变了的表: {diff_keys(full, second)}")
 
     # ============================================== B · undo → redo 精确复原 ===
     print()
-    print("=== B · undo 干净回滚 → redo 精确复原 ===")
+    print(f"=== B · undo 干净回滚 → redo 精确复原（{label}）===")
 
-    # B1 undo 全部 job —— 走最小入口（一次一个 job，它就是那个签名）。
-    codes = []
+    # B1 undo 全部 job —— 走这条入口自己的 undo 命令。
+    failures = []
     for jid in job_ids:
-        code, _undo, bad = entry_json("undo", str(jid), "--db", str(db_path))
-        codes.append((jid, code, bad))
-    check("B1a undo 全部退出码 0", all(c == 0 for _, c, _ in codes), str(codes))
+        code, payload, bad = entry.undo(db_path, jid)
+        if code != 0:
+            failures.append((jid, code, bad))
+        # 退出码 0 还不够：**报告必须来自数据层**。一条只会"不报错"的 undo
+        # （impact 是空的）在退出码上与真撤了一样，而它什么都没撤 —— B1b 的
+        # 指纹会抓到这个，但在这里报出"是哪个 job"，定位快得多。
+        impact = _undo_impact(payload)
+        # 只报三个数：impact 里的 `purge_retained` 是一份很长的清单，把它整份
+        # 打进日志会把这一行埋掉 —— 而这条断言的读者要的是"撤了多少"。
+        check(f"B1a {label}：undo job {jid} 真的撤了东西（impact 来自数据层）",
+              bool(impact) and int(impact.get("contributions", 0)) > 0,
+              "" if not impact else
+              f"contributions={impact.get('contributions')} "
+              f"superseded={impact.get('superseded')} "
+              f"inbox_closed={impact.get('inbox_closed')}")
+    check(f"B1a {label}：undo 全部退出码 0", not failures, str(failures))
     undone = fingerprint(conn)
-    check("B1b undo 后有效状态逐表归零（干净回滚，不留幻影行）",
+    check(f"B1b {label}：undo 后有效状态逐表归零（干净回滚，不留幻影行）",
           all(cell["rows"] == 0 for cell in undone.values()), str(counts(undone)))
-    check("B1c undo 后无待决 inbox 项", not store.integrity_check(conn)["ok"]
+    check(f"B1c {label}：undo 后无待决 inbox 项", not store.integrity_check(conn)["ok"]
           or counts(undone).get("inbox_items") == 0,
           str(counts(undone).get("inbox_items")))
 
     # B2 redo 精确复原 —— 逐行指纹比。
-    ok, redone = restore(conn, job_ids, full)
-    check("B2  redo 精确复原（逐行指纹相等，不是只比条数）", ok,
+    ok, redone = restore(conn, entry, db_path, job_ids, full)
+    check(f"B2  {label}：redo 精确复原（逐行指纹相等，不是只比条数）", ok,
           f"变了的表: {diff_keys(full, redone)}")
 
     # B3 反例自检①：把 redo 换成 no-op，脚本必须报出来。
+    # 这一条验的是**脚本自己的牙齿**（进程内），与走哪条入口无关。
     for jid in job_ids:
         ops.undo(conn, jid)
-    ok_broken, fp_broken = restore(conn, job_ids, full, redo=_noop_redo)
-    check("B3  反例自检①：no-op redo 必须被判红（否则本脚本没有牙齿）",
+    ok_broken, fp_broken = restore(conn, entry, db_path, job_ids, full, redo=_noop_redo)
+    check(f"B3  {label}：反例自检①：no-op redo 必须被判红（否则本脚本没有牙齿）",
           not ok_broken and fp_broken != full,
           f"变了的表: {diff_keys(full, fp_broken)}")
 
     # 反例没留下痕迹 —— 真的 redo 仍然复原得回来。
-    ok, redone = restore(conn, job_ids, full)
-    check("B4  反例跑完后真 redo 仍然精确复原（自检不污染被测状态）", ok,
+    ok, redone = restore(conn, entry, db_path, job_ids, full)
+    check(f"B4  {label}：反例跑完后真 redo 仍然精确复原（自检不污染被测状态）", ok,
           f"变了的表: {diff_keys(full, redone)}")
 
     # B5 反例自检②：**条数一列不动**，只改一个字段值。
@@ -297,41 +516,56 @@ def main() -> int:
     victim = conn.execute(
         "SELECT id, value FROM observations WHERE is_current=1 ORDER BY id LIMIT 1"
     ).fetchone()
-    check("B5a 找得到一行可改的有效观测（反例②的前提）", victim is not None)
+    check(f"B5a {label}：找得到一行可改的有效观测（反例②的前提）", victim is not None)
     if victim is not None:
         original = victim["value"]
         conn.execute("UPDATE observations SET value=? WHERE id=?",
                      (str(original) + "__反例__", victim["id"]))
         perturbed = fingerprint(conn)
-        check("B5b 反例自检②：条数完全相同，但逐行指纹不等（只比条数会漏）",
+        check(f"B5b {label}：反例自检②：条数完全相同，但逐行指纹不等（只比条数会漏）",
               counts(perturbed) == counts(full) and perturbed != full,
               f"条数{'相同' if counts(perturbed) == counts(full) else '不同'}，"
               f"变了的表: {diff_keys(full, perturbed)}")
         conn.execute("UPDATE observations SET value=? WHERE id=?",
                      (original, victim["id"]))
         conn.commit()
-        check("B5c 改回去 → 指纹重新相等（比对本身不假阳性）",
+        check(f"B5c {label}：改回去 → 指纹重新相等（比对本身不假阳性）",
               fingerprint(conn) == full)
 
-    # ================================================= C · 负向输入不崩 =======
+    conn.close()
+    entry.close()
+
+
+# ---------------------------------------------------------------------------
+# C · 负向输入不崩（2.5 的最小入口）
+# ---------------------------------------------------------------------------
+
+
+def negative_flow(work_root: Path) -> None:
+    """四种负向输入钉在**独立的数据区**里，免得它们生成的 inbox 待确认项混进
+    A/B 的有效状态。夹具现造 —— 真实世界里收到的就是这种文件。
+
+    YAML 本身**不放在夹具目录里**：`source_glob: "*"` 会把定义文件自己也扫
+    进去（第一版就是这么写的，于是报告里多出一个 negative.yaml）。`--base-dir`
+    正是为这种"定义与素材不同处"准备的。
+
+    只跑 2.5 的入口：这一段验的是**管线的容忍度**；CLI 那一侧的负向与退出码在
+    `magpie/cli/tests/test_write.py`（见模块 docstring 第 1 条）。
+    """
     print()
     print("=== C · 负向输入：空文件 / GBK / 损坏 JSON / 任意二进制 ===")
 
-    # 四种负向输入钉在**独立的数据区**里，免得它们生成的 inbox 待确认项混进
-    # A/B 的有效状态。夹具现造 —— 真实世界里收到的就是这种文件。
-    # YAML 本身**不放在夹具目录里**：`source_glob: "*"` 会把定义文件自己也扫
-    # 进去（第一版就是这么写的，于是报告里多出一个 negative.yaml）。`--base-dir`
-    # 正是为这种"定义与素材不同处"准备的。
-    neg_dir, neg_data = WORK / "neg", WORK / "neg-data"
+    neg_dir, neg_data = work_root / "neg", work_root / "neg-data"
     cases = {
         "empty.txt": b"",
         "gbk.txt": "app.example.com\n测试.example.com\n".encode("gbk"),
         "broken.json": b'{"a": 1, "b": [}\n{"c": ',
         "binary.bin": bytes(range(256)) * 8,
     }
+    neg_dir.mkdir(parents=True, exist_ok=True)
     for name, blob in cases.items():
         (neg_dir / name).write_bytes(blob)
-    neg_yaml = WORK / "negative.yaml"
+    neg_yaml = work_root / "negative.yaml"
     neg_yaml.write_text(
         "name: 负向输入\n"
         "project: 负向样例\n"
@@ -381,6 +615,20 @@ def main() -> int:
     check("C5  负向输入只产生 inbox 待确认项，不产生观测",
           counts(neg_fp).get("observations", -1) == 0,
           str(counts(neg_fp)))
+    neg_conn.close()
+
+
+def main() -> int:
+    shutil.rmtree(WORK, ignore_errors=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+
+    # 两条入口各跑一遍完整的 A/B。第二条（CLI）**不是可有可无的重复**：2.6 的
+    # 交付标准要的正是"命令行这条路径真人跑得通"，而这里的每一条判据都是可以与
+    # 第一条逐项对拍的。
+    ab_flow(PipelineEntry(PIPELINE_YAML), WORK / "pipeline", PipelineEntry.label)
+    ab_flow(CliEntry(), WORK / "cli", CliEntry.label)
+
+    negative_flow(WORK)
 
     print()
     if BREAK:

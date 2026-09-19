@@ -7,6 +7,84 @@
 
 ---
 
+## 0.5.0 — 2.6 CLI 写路径（垂直切片闭合）
+
+**纯新增命令**：`project create` / `import` / `undo` / `redo` / `jobs`。
+`/api/v1` 一行未改（openapi 快照仍只差 `info.version`）；`magpie/core/**` 的
+既有函数签名一个未动 —— 对 core 的改动全是**追加参数且默认值保持既有行为**
+（`IngestOptions.report_dir`、`ingest.parser_drift_report`、五处连接守卫）。
+
+至此「文件 → 库 → 命令行」第一次完整闭合：`init` → `project create` →
+`import` → `ls` / `diff` → `undo` → `redo`，全程命令行。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · 新增五个命令**（`magpie schema --json` 里逐条列出，语法从真的 argparse 生成）
+
+| 命令 | 对应 `/api/v1` |
+|---|---|
+| `magpie project create <名字> [--include…] [--exclude…] [--scope <JSON>]` | `POST /projects` |
+| `magpie import <路径…> [--parser] [--source] [--authority] [--archive] [--dry-run]` | `POST /imports` |
+| `magpie undo <job> [--dry-run]` | `POST /jobs/{id}/undo` |
+| `magpie redo <job> [--dry-run]` | `POST /jobs/{id}/redo` |
+| `magpie jobs [<job>] [--state] [--applied] [--limit]` | `GET /jobs`、`GET /jobs/{id}` |
+
+嵌套命令在 `schema --json` 里展平成带空格的键（`"project create"`），与
+`RUNNERS` 的键逐字一致。
+
+**2 · 退出码落到每个失败上的具体裁定**（表本身没变，0/1/2/3/4/5 一字未动）
+
+| 情形 | 退出码 | `error.code` |
+|---|---|---|
+| 项目重名 | `3` ↔ 409 | `E_PROJECT_EXISTS` |
+| 文件没有解析器被采用（已进 Inbox） | `3` ↔ 409 | `E_PARSER_AMBIGUOUS`（带 `candidates`） |
+| 文件坏了 / 是二进制 / 路径不存在 | `2` ↔ 404 | `E_IMPORT_FAILED` / `E_IMPORT_BINARY` / `E_IMPORT_PATH` |
+| 作业不存在 | `2` ↔ 404 | `E_JOB_NOT_FOUND` |
+| `<job>` 不是正整数、`--scope` 非法 JSON、`--applied` 不是布尔 | `1` ↔ 400 | `E_BAD_JOB_ID` / `E_BAD_SCOPE` / `E_BAD_APPLIED` |
+
+`redo` **部分成功**（`applied=0` + `impact.blocked` 非空）退出 **0** —— 因为
+`/jobs/{id}/redo` 在那种情况下返回 200。那个事实写在 `data.report` 与
+`--human` 的 ⚠ 里，不借用一个不存在的退出码。
+
+**3 · 失败的 `import` 仍然交出完整报告**，挂在 `error.report` 上；一批里同时
+有多种毛病时退出码只报**最需要人的**那一档（需人工裁决 > 数据错），其余的写在
+`error.report.files` 与 `hint` 的追加句里。报告是导入唯一的交付通道，只回一句
+错误码会逼调用方重跑一次 —— 而重跑是有副作用的。
+
+成功的 `import` 另有 `data.notes`：一个此刻为空（或全是 `.db` / `.png` 之类
+不可认领扩展名）的目录会退出 0 并在这里说清楚，而不是安静地"导了 0 个"。
+
+**4 · `magpie doctor --json` 新增 `data.imports`**：`unknown_fields` /
+`bad_lines` / `parser_drift`（2.6 的四项任务之一）。这三项**不进 `healthy`**：
+`healthy` 判的是"数据坏没坏"，而格式漂移是"某个上游工具可能改了输出"。
+
+**5 · `GET /openapi.json` 的快照仍只差 `info.version`**（0.4.0 → 0.5.0）。
+没有增删任何一条路由。
+
+### 承 2.2 的纪律，仍然是它们
+
+一条写库的 SQL 都没有（`test_cli_source_contains_no_write_sql` 静态扫描
+`magpie/cli/**`）；全部经 `magpie/core` 的受控写入口，于是 undo / 身份 / 冲突
+折叠**只有一份实现**。非交互（需要人决定时返回结构化错误 + 退出码 3，绝不弹
+提示）、`--json` 默认且纯 ASCII、所有写命令 `--dry-run` 与真跑**输出同构**。
+
+### 顺带修掉的两处（不在 2.6 的清单里，但同属"让干跑这句话算数"）
+
+* **`--dry-run` 曾经真的复制原文**：`_JobTxn` 的 ROLLBACK 只回滚数据库，而
+  归档复制发生在事务之外 —— 一次被明确要求"先别动"的导入照样能把几个 GB
+  写进 `raw/`。现在干跑不落盘（`ingest.archive_file`）。
+* **`ingest._fact_key` 的键补上 `field_namespace`**、值过 `_value_text`：
+  否则同一实体的 `entity_field` 与同名 `observation_field` 会撞成一个键，
+  一条**新观测**会被计成 `updated`（库里不受影响，只错在报告上）。
+
+### 已知技术债
+
+`ls` / `show` 的 SQL 与 `api/routes.py` 的同名查询是**同一份语义的两份实现**；
+2.6 起 `jobs` / `_job_counts` / `_decorate_job` 也记在这笔账上。计划书 §3.5 的
+`core/query.py` 落地后应收敛到一处。
+
+---
+
 ## 0.4.0 — 2.2 CLI 只读骨架（`--json` 信封与退出码表）
 
 **纯新增**：`magpie/cli.py` 长成 `magpie/cli/`（入口仍是 `magpie.cli:main`，

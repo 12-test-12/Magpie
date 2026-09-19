@@ -199,6 +199,10 @@ class ImportRegistry:
                 project_id=record.project_id, data_dir=self.data_dir,
                 parser=record.parser, source_name=record.source,
                 archive=record.archive, dry_run=record.dry_run, actor=self.actor,
+                # 与 CLI / pipeline 同一条：报告副本落进 `reports/`。GUI 现在是
+                # 主入口，若只有 CLI 落盘，`magpie doctor` 的"未知字段"就会在
+                # 一个纯 GUI 的数据区里静默为空 —— 那正是它要防的那种静默。
+                report_dir=self.data_dir / "reports",
                 cancel_check=lambda: self.writer.cancel_requested(record.id),
                 on_progress=lambda payload: self.broker.publish(
                     record.id, str(payload.get("event") or "progress"), payload),

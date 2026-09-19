@@ -16,13 +16,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.4.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.5.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
 # 0.3.0 → 0.4.0 对应 2.2：CLI 只读骨架。`--json` 信封与退出码表（0/1/2/3/4/5
 # ↔ HTTP 2xx/400/404/409/423/426）从这一刻起是对外契约。
-# openapi 快照**只差 `info.version`**（没有增删任何一条路由）—— 见 CHANGELOG。
+# 0.4.0 → 0.5.0 对应 2.6：CLI 写路径（project create / import / undo / redo /
+# jobs）。**纯新增命令，没有增删任何一条路由** —— `/api/v1` 一行未改，openapi
+# 快照因此仍然只差 `info.version`。见 CHANGELOG。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"

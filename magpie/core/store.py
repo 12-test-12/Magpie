@@ -138,6 +138,36 @@ def connect(db_path: str | Path = ":memory:", *,
     return conn
 
 
+def require_row_factory(conn: sqlite3.Connection, *, caller: str) -> None:
+    """断言 `conn` 是 `store.connect()` 建出来的连接 —— 否则**立刻**报可读错误。
+
+    为什么需要这条守卫（审核 LARI-21 · `6406b99` 的已知遗留）:
+        本模块与 `ops` 的多数函数按**列名**取值（`row["contribution_kind"]`、
+        `row["entity_id"]`……），这要求 `conn.row_factory = sqlite3.Row`。
+        而这条前提全仓**只在 `connect()` 里设置过一次**，别处没有任何守卫。
+        于是"自己 `sqlite3.connect()` 的调用方"（2.7 的 FastAPI 层就是现实的
+        例子）走到 `ops.undo` / `ops.redo` 时，拿到的是
+
+            TypeError: tuple indices must be integers or slices, not str
+
+        —— 一个指向函数内部、且完全不提"你少了个前提"的错误。坏状态要大声报出来，
+        而不是坏在别处（与 `check.py` 的解释器守卫同一纪律）。
+
+    为什么只认 `sqlite3.Row`（而不是"factory 不为 None 就行"）:
+        本模块依赖的是"按列名取值"这一条**具体**行为；别的 factory 是否等价
+        不能靠猜。`connect()` 钉的就是 `sqlite3.Row`，这里就认它。
+    """
+    if conn.row_factory is sqlite3.Row:
+        return
+    actual = "None（裸 sqlite3.connect）" if conn.row_factory is None \
+        else repr(conn.row_factory)
+    raise InvariantError(
+        f"{caller} 要求 store.connect() 建出来的连接（conn.row_factory = sqlite3.Row），"
+        f"当前连接的 row_factory 是 {actual}。\n"
+        f"  改法: conn = store.connect(db_path)（或先 conn.row_factory = sqlite3.Row）。\n"
+        f"  原因: 数据层按列名取值，裸连接的行是 tuple，会以 TypeError 坏在函数内部。")
+
+
 def init_db(conn: sqlite3.Connection, schema_path: Path = SCHEMA_PATH) -> None:
     """建库 / 升级到当前 schema 版本。
 
@@ -654,6 +684,13 @@ def _owners_of(conn: sqlite3.Connection,
 
     用于给增量 recompute 限定评分索引的扫描范围（见 FieldScoreBatch(owners=...)）。
     entity subject 自身也是 owner。
+
+    分块大小同样由**连接**决定（`bind_batch_size`），不用写死的 `_BATCH`:
+    一次 delta 可以覆盖上万个 observation（10 万观测的导入就是这样），
+    而这些 id 是按 `IN (...)` 绑定的。审核 LARI-21 修的就是这里 ——
+    同一批改动里 `recompute_subset` / `FieldScoreBatch` 都改用了连接上限，
+    只有本函数漏了，于是在 999 上限的 SQLite 编译参数下（docstring 明说它存在）
+    delta 覆盖 1000 个观测即 `too many SQL variables`。
     """
     owners: set[int] = set()
     obs_ids: list[int] = []
@@ -665,12 +702,13 @@ def _owners_of(conn: sqlite3.Connection,
             obs_ids.append(int(sid))
         elif kind == "relation":
             rel_ids.append(int(sid))
-    for chunk in _chunks(obs_ids, _BATCH):
+    step = bind_batch_size(conn)
+    for chunk in _chunks(obs_ids, step):
         marks = ",".join("?" for _ in chunk)
         for r in conn.execute(
                 f"SELECT entity_id FROM observations WHERE id IN ({marks})", chunk):
             owners.add(int(r["entity_id"]))
-    for chunk in _chunks(rel_ids, _BATCH):
+    for chunk in _chunks(rel_ids, step):
         marks = ",".join("?" for _ in chunk)
         for r in conn.execute(
                 f"SELECT src_id FROM relations WHERE id IN ({marks})", chunk):

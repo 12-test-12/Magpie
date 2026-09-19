@@ -30,7 +30,13 @@ import sqlite3
 from pathlib import Path
 
 from ..core import migrate, store
-from .envelope import EXIT_DATA, EXIT_LOCKED, EXIT_VERSION, CliError
+from .envelope import (
+    EXIT_DATA,
+    EXIT_LOCKED,
+    EXIT_USAGE,
+    EXIT_VERSION,
+    CliError,
+)
 
 #: 数据区默认名。**与 `api.app.DEFAULT_DATA_DIRNAME` / `core.pipeline` 的
 #: `data_dir` 缺省值一致**（三处指同一个目录）。
@@ -40,10 +46,62 @@ DEFAULT_DATA_DIR = ".magpie"
 REGISTRY_TABLE = "schema_migrations"
 
 
+def resolve_data_dir(data_dir: str | None) -> Path:
+    """`--data-dir` → 数据区目录。**唯一一处**做这个推导。
+
+    单独一个函数（而不是散在各命令里的 `Path(x or DEFAULT_DATA_DIR)`）的理由与
+    `resolve_db` 一样：归档目录、坏行报告、导入报告副本都落在这里，三处各推一次
+    就会出现"库在 A、归档在 B"那种最容易被读成"数据丢了"的分叉。
+    """
+    return Path(data_dir) if data_dir else Path(DEFAULT_DATA_DIR)
+
+
 def resolve_db(db: str | None, data_dir: str | None) -> Path:
-    """`--db` / `--data-dir` → 数据库文件路径。**唯一一处**做这个推导。"""
-    dd = Path(data_dir) if data_dir else Path(DEFAULT_DATA_DIR)
-    return Path(db) if db else dd / "magpie.db"
+    """`--db` / `--data-dir` → 数据库文件路径。**唯一一处**做这个推导。
+
+    ⚠ 与 `resolve_data_dir` 的分工：显式给了 `--db` 时，两者**不会**互相推导 ——
+    `--db /tmp/x.db` 的归档仍然落在 `--data-dir`（默认 `.magpie`）下。这与
+    `magpie app` 的 `serve(db_path=…, data_dir=…)` 是同一条约定：`--db` 只换库，
+    换数据区要用 `--data-dir`。
+    """
+    return Path(db) if db else resolve_data_dir(data_dir) / "magpie.db"
+
+
+def resolve_project(conn: sqlite3.Connection, spec: str | None) -> int:
+    """`--project` 收 id 或名字；不给时，**只有一个项目**才允许省略。
+
+    刻意不做"默认选第一个"：多项目下"第一个"是行序，不是意图。让调用方显式写，
+    比让他某天发现数据进了另一个项目要好。（这条与 2.7 的 `_resolve_project`
+    逐字同义，退出码 1 ↔ HTTP 400。）
+
+    住在 `db.py` 而不是某个命令模块里: "库在哪"（`resolve_db`）与"项目是哪个"
+    是同一个问题的两半，而**读命令与写命令都要问它** —— 放在任何一侧的命令
+    模块里，另一侧就得反向 import，那是循环依赖的入口。
+    """
+    rows = conn.execute("SELECT id, name FROM projects ORDER BY id").fetchall()
+    if spec is None:
+        if len(rows) == 1:
+            return int(rows[0]["id"])
+        raise CliError(
+            "E_PROJECT_REQUIRED",
+            f"这个库里有 {len(rows)} 个项目，必须显式给 --project",
+            exit_code=EXIT_USAGE,
+            hint="加上 `--project <id 或名字>`；项目列表见 `magpie schema --json`"
+                 " 的 projects（或 `magpie ls --project` 的报错 candidates）。",
+            projects=[{"id": int(r["id"]), "name": str(r["name"])} for r in rows])
+    text = str(spec)
+    row = None
+    if text.isdigit():
+        row = conn.execute("SELECT id FROM projects WHERE id=?", (int(text),)).fetchone()
+    if row is None:
+        row = conn.execute("SELECT id FROM projects WHERE name=?", (text,)).fetchone()
+    if row is None:
+        raise CliError(
+            "E_PROJECT_NOT_FOUND", f"项目 {text!r} 不存在", exit_code=EXIT_DATA,
+            hint="用 id 或**完整的**项目名；名字是大小写敏感的。"
+                 "建项目用 `magpie project create <名字>`。",
+            candidates=[{"id": int(r["id"]), "name": str(r["name"])} for r in rows])
+    return int(row["id"])
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -141,9 +199,48 @@ class Database:
         self._conn = conn
         return conn
 
-    # -- 写路径（只有 `init` 用） ----------------------------------------------
+    # -- 写路径（2.6 的写命令 + `init`） ----------------------------------------
+    def connect_write(self) -> sqlite3.Connection:
+        """写命令的连接：**可写 + 版本自洽 + 行工厂就位**。三样缺一不可。
+
+        与 `connect()` 的两处差别，都是刻意的：
+
+          * **不设 `query_only`** —— 它就是要写的。于是"只读"这条路依然只有
+            `connect()` 一条，写命令想静默退化成只读也退不了（写会在 SQLite
+            那层直接报错，而不是留下一个"什么都没发生"的成功）。
+          * **照做版本体检**。读到不认识的 schema 只是"可能读错"，**写进去**
+            是在一个自己读不懂的库上留下不可回退的痕迹。两者都不该继续，
+            但后者的代价高得多 —— 所以这里的体检不是"顺手加的"，它与
+            `connect()` 共用同一个 `check_version`，结论当然也一致。
+
+        ⚠ **连接必须来自 `store.connect`（`row_factory = sqlite3.Row`）**。
+        数据层的写入口按**列名**取值（`ops.undo` 的 `row["contribution_kind"]`、
+        `store.recompute` 的 `row["entity_id"]`……），裸 `sqlite3.connect` 会以
+        `TypeError: tuple indices must be integers` 坏在函数内部 —— 一个指向
+        函数里、完全不提"你少了个前提"的错误。`_open` 走的就是 `store.connect`，
+        `ops` 里那几个入口另有 `require_row_factory` 守卫兜底（审核 LARI-21）。
+        """
+        if self.read_only:                                       # pragma: no cover
+            raise RuntimeError("connect_write() 只对 read_only=False 的库有意义")
+        if self._conn is not None:
+            return self._conn
+        if not self.path.exists():
+            raise CliError(
+                "E_DB_MISSING", f"数据库不存在：{self.path}", exit_code=EXIT_DATA,
+                hint=f"先跑 `magpie init --db {self.path}` 把 schema 建出来。"
+                     f"写命令**不顺手建库** —— 建库是一个显式的、可以被记一笔的"
+                     f"动作（`magpie init`）。")
+        conn = _open(self.path)
+        try:
+            self.schema_version = check_version(conn, self.path)
+        except CliError:
+            conn.close()
+            raise
+        self._conn = conn
+        return conn
+
     def writable(self) -> sqlite3.Connection:
-        """可写连接。**本步只有 `magpie init` 会走到这里。**
+        """可写连接，**且不做版本体检**。只有 `magpie init` 会走到这里。**
 
         它写 schema，不写事实 —— 建库是"让只读命令能用"的前置动作，
         与"引入写路径"是两回事。测试里有一条断言钉住这个区别：

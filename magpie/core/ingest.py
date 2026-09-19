@@ -39,6 +39,7 @@ import hashlib
 import importlib
 import inspect
 import io
+import json
 import os
 import pkgutil
 import sqlite3
@@ -68,6 +69,9 @@ DEFAULT_BATCH = 2000
 #: —— 全量在 `<data-dir>/reports/<job_id>.badlines.txt`，报告里给的是那个路径。
 PROGRESS_BAD_LINE_LIMIT = 50
 
+#: 内存里保留多少条坏行**明细**（计数不受它限制，见 `ParseContext.bad_line_total`）。
+BAD_LINE_DETAIL_LIMIT = 5000
+
 #: 解析器发现顺序 —— 前者是 2.4 的正式实现，后者是 2.5 的过渡实现
 PARSER_PACKAGES = ("magpie.core.parsers", "magpie.core.parsers_bridge")
 
@@ -85,7 +89,19 @@ _BINARY_MAGIC = (
 #: 编码探测顺序（严格解码成功才认；全失败 → utf-8 + replace，并记一条 note）
 _ENCODING_CANDIDATES = ("utf-8", "gb18030")
 
-_INPUT_SUFFIXES = (".txt", ".jsonl", ".ndjson", ".json", ".log", ".csv", ".tsv", ".out")
+#: 目录扫描认哪些扩展名。**公开**（不带下划线）：CLI 的报错要把它念给用户听
+#: （"目录按扩展名过滤，`.db`/`.png` 不算输入"），而念一份手抄的副本迟早会
+#: 与这里分叉 —— 报名单和用名单的必须是同一份。
+INPUT_SUFFIXES = (".txt", ".jsonl", ".ndjson", ".json", ".log", ".csv", ".tsv", ".out")
+
+#: 两个字段命名空间。**取值与 schema 的 CHECK 逐字一致**
+#: （`contributions.field_namespace IN ('entity_field','observation_field')`），
+#: 也与会写它们的 `ops.add_entity_field` / `ops.add_observation` 一致。
+#: 之所以在 ingest 里再写一份：added / updated 的判定是拿**解析器产出的记录**
+#: 去和**库里读回来的行**比对，两边的键必须逐字段同形，而这条知识在文件里
+#: 只以字面量的形式存在于写入侧。
+ENTITY_NAMESPACE = "entity_field"
+OBSERVATION_NAMESPACE = "observation_field"
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +146,11 @@ class IngestOptions:
     #: `_emit_progress` 的事件表）。它是 2.7 的 SSE 唯一的数据来源 ——
     #: 进度**从运行时来**，而不是 API 层另起一套计数去猜。
     on_progress: Callable[[dict[str, Any]], None] | None = None
+    #: 机器可读报告落盘目录（2.6）。**追加参数，默认 None = 不落盘** —— 不传它时
+    #: 本模块的行为与从前逐字节一致。传了它，每导入一个文件就在
+    #: `<report_dir>/<job_id>.json`（没有 job 时用 sha256 前缀）留一份 `ingest_file`
+    #: 的原样报告。理由见 `_write_report`。
+    report_dir: Path | None = None
 
     def __post_init__(self) -> None:
         if self.archive not in ("archived", "external"):
@@ -138,6 +159,8 @@ class IngestOptions:
             raise ValueError(f"batch_size 必须 >= 1，收到 {self.batch_size!r}")
         # 绝对化：归档 locator 要写成 file:// URI，相对路径表达不了（也不该表达）
         self.data_dir = Path(self.data_dir).resolve()
+        if self.report_dir is not None:
+            self.report_dir = Path(self.report_dir).resolve()
 
 
 class Cancelled(Exception):
@@ -162,7 +185,13 @@ class ParseContext:
     source_name: str
     job_id: int | None = None
     source_override: str | None = None
+    #: 坏行**明细**（最多 `BAD_LINE_DETAIL_LIMIT` 条，内存上限）。
     bad_lines: list[dict[str, Any]] = field(default_factory=list)
+    #: 坏行**总数**。明细有上限，计数没有 —— 报告里的 `counts.bad_lines` 读的是它。
+    #: 审核 LARI-21: 旧实现把"内存里留了多少条"当成计数，于是 10001 条坏行的文件
+    #: 报告 `bad_lines=5000`，落盘报告的头也写"共 5000 条"—— 质量信号在撒谎，
+    #: 而且**没有任何信号**说它被截断了。
+    bad_line_total: int = 0
     unknown_fields: dict[str, int] = field(default_factory=dict)
     #: 管线级说明（中断、解析器崩了……）。**不算坏行** —— 坏行是"数据有问题"，
     #: 这里是"这一轮没跑完"，两者混在一起会让 bad_lines 这个质量信号失真。
@@ -175,8 +204,9 @@ class ParseContext:
     # ---- 解析器汇报通道 ----
 
     def on_bad_line(self, lineno: int, reason: str, raw: str = "") -> None:
-        # 明细全收（要落盘）；内存里只留前 5000 条，避免坏行把内存吃掉。
-        if len(self.bad_lines) < 5000:
+        # 计数**永远**加一；只有明细受内存上限约束（5000 条足够看清"坏在哪"）。
+        self.bad_line_total += 1
+        if len(self.bad_lines) < BAD_LINE_DETAIL_LIMIT:
             self.bad_lines.append({"line": int(lineno), "reason": str(reason),
                                    "raw": str(raw)[:400]})
 
@@ -224,7 +254,7 @@ def discover(paths: Sequence[str | Path], *, recursive: bool = True
              ) -> tuple[list[Path], list[str]]:
     """把"用户给的一串路径"展开成文件列表。返回 (files, problems)。
 
-    目录按扩展名过滤（`_INPUT_SUFFIXES`），避免把 .db / .png 之类拖进来。
+    目录按扩展名过滤（`INPUT_SUFFIXES`），避免把 .db / .png 之类拖进来。
     problems 是**可读**的跳过原因，不抛异常。
     """
     files: list[Path] = []
@@ -251,7 +281,7 @@ def discover(paths: Sequence[str | Path], *, recursive: bool = True
 
 
 def _looks_like_input(path: Path) -> bool:
-    return path.suffix.lower() in _INPUT_SUFFIXES
+    return path.suffix.lower() in INPUT_SUFFIXES
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +330,15 @@ def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
 
     archived —— 复制进 `<data-dir>/raw/<前两位>/<sha256>`（按内容寻址，天然去重），
     源文件此后可删；external —— 只记原路径，不动文件。
+
+    ⚠ **干跑不复制**（2.6）。这一条以前是漏的：`_JobTxn` 的 ROLLBACK 只回滚
+    **数据库**，而复制发生在事务之外 —— 于是 `--dry-run` 会在磁盘上留下一份
+    原文，一份被明确要求"先别动"的导入照样能把几个 GB 写进去。报告里那句
+    `storage_state="archived"` 是对真跑结果的**预测**（干跑的整份报告都是），
+    所以这里返回的还是那个预测值，只是不再真的落盘。
+
+    与 `magpie init --dry-run` 不建 0 字节的 magpie.db 是同一条纪律：干跑的
+    全部价值在于"什么都没发生"这句话可以被无条件相信。
     """
     if opts.archive == "external":
         locator_uri = path.resolve().as_uri()
@@ -309,6 +348,11 @@ def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
 
     dest_dir = opts.data_dir / "raw" / sha256[:2]
     dest = dest_dir / sha256
+    if opts.dry_run:
+        return (_add_raw_file(conn, project_id=opts.project_id,
+                              locator_uri=dest.as_uri(), sha256=sha256,
+                              byte_count=size, storage_state="archived"),
+                dest.as_uri(), "archived")
     if not dest.exists():
         dest_dir.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".part")
@@ -527,12 +571,32 @@ def arbitrate(ranked: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _fact_key(rec: Any) -> tuple[str, tuple[str, ...]]:
-    """把一条 Raw* 记录折成 (类别, 键)。键只用 **(kind, key) 引用**，不用 DB id。"""
+    """把一条 Raw* 记录折成 (类别, 键)。键只用 **(kind, key) 引用**，不用 DB id。
+
+    键必须与 `_existing_facts` 的键**逐字段同形** —— 后者是从库里读回来的
+    `(field_namespace, alias_key, semantic_field, field_value)` 四元组。两个
+    地方的差别就是 added / updated 的差别，而那个差别没有任何测试会替你发现。
+
+    两处刻意的口径（审核 LARI-21 遗留项②）:
+
+      * **namespace 进键**。`entity_field`（`RawEntity` 的 display_name）与
+        `observation_field`（`RawObservation`）是**两个字段命名空间**
+        （schema 的 CHECK 就是这两个值）。旧键只有 (key, field, value)，于是
+        同一实体的 `display_name` 与一条同名字段的观测会撞成同一个键 ——
+        一条**新观测**有机会被计成 `updated`。库里不受影响（两者写进不同的
+        行），`records` 也守恒，所以它只错在报告上；而"报告说更新了、其实
+        新增了一条"正是最难查的那类错。
+      * **value 过 `_value_text`**。`_write_record` 落库前也走它：dict / list
+        会被折成 canonical JSON。键里留原始 Python 对象的话，结构化值与它
+        在库里的文本永远不相等 —— 那一条会**永远**被算成 added。
+    """
     if _is_relation(rec):
         return "relation", (str(rec.src[1]), str(rec.rel), str(rec.dst[1]))
     if _is_observation(rec):
-        return "field", (str(rec.entity_ref[1]), str(rec.type), str(rec.value))
-    return "field", (str(rec.key), "display_name", str(rec.display or rec.key))
+        return "field", (OBSERVATION_NAMESPACE, str(rec.entity_ref[1]),
+                         str(rec.type), _value_text(rec.value))
+    return "field", (ENTITY_NAMESPACE, str(rec.key), "display_name",
+                     _value_text(rec.display or rec.key))
 
 
 def _is_observation(rec: Any) -> bool:
@@ -548,15 +612,21 @@ def _existing_facts(conn: sqlite3.Connection, project_id: int) -> tuple[set, set
 
     键用 **alias_key / entity_key** 而不是自增 id —— 解析器只产出 (kind, key)
     引用，管线这一侧也必须只用 key，撤销之后结论才仍然说得通。
+
+    键的形状必须与 `_fact_key` **逐字段同形**，否则比对必然落空（每一项都被
+    算成新增）或误中（新增被算成更新）。`field_namespace` 是其中一员：它是
+    schema 里真实存在的列，也真的区分两种字段 —— 读少了它，`entity_field`
+    的 display_name 与同名 `observation_field` 就会撞成一个键。
     """
-    fields: set[tuple[str, str, str]] = set()
+    fields: set[tuple[str, str, str, str]] = set()
     for row in conn.execute(
-        "SELECT a.alias_key AS k, c.semantic_field AS f, c.field_value AS v"
+        "SELECT c.field_namespace AS ns, a.alias_key AS k,"
+        "       c.semantic_field AS f, c.field_value AS v"
         "  FROM v_field_owner c"
         "  JOIN entity_alias a ON a.entity_id = c.owner_id AND a.project_id = c.project_id"
         " WHERE c.project_id = ? AND a.revoked_by_job_id IS NULL", (project_id,)
     ):
-        fields.add((str(row["k"]), str(row["f"]), str(row["v"])))
+        fields.add((str(row["ns"]), str(row["k"]), str(row["f"]), str(row["v"])))
     rels: set[tuple[str, str, str]] = set()
     for row in conn.execute(
         "SELECT sa.alias_key AS s, r.rel AS rel, da.alias_key AS d"
@@ -687,13 +757,23 @@ def _open_value_conflicts(conn: sqlite3.Connection, project_id: int) -> int:
 
 
 def _write_badlines(opts: IngestOptions, job_id: int, ctx: ParseContext) -> str | None:
-    """坏行明细 → `<data-dir>/reports/<job_id>.badlines.txt`（§5.6）。"""
+    """坏行明细 → `<data-dir>/reports/<job_id>.badlines.txt`（§5.6）。
+
+    头部写的是**真实条数** `bad_line_total`，并如实交代明细被截到多少条 ——
+    "共 5000 条"在只保留了 5000 条明细、而实际有 10001 条时是一句假话。
+    """
     if not ctx.bad_lines:
         return None
     reports = opts.data_dir / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     path = reports / f"{job_id}.badlines.txt"
-    lines = [f"# job {job_id} 坏行明细（共 {len(ctx.bad_lines)} 条，内存上限 5000 条）"]
+    kept = len(ctx.bad_lines)
+    truncated = "" if kept >= ctx.bad_line_total else f"，此处只保留前 {kept} 条明细"
+    lines = [f"# job {job_id} 坏行明细（共 {ctx.bad_line_total} 条{truncated}）"]
+    if kept < ctx.bad_line_total:
+        ctx.notes.append(
+            f"坏行明细只保留了前 {kept} 条（实际 {ctx.bad_line_total} 条）——"
+            f"计数不受影响，counts.bad_lines 是真实条数")
     for item in ctx.bad_lines:
         lines.append(f"{item['line']}\t{item['reason']}\t{item['raw'].replace(chr(9), ' ')}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -806,7 +886,53 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
 
 def ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
                 parsers: Sequence[Any] | None = None) -> dict[str, Any]:
-    """一个文件的完整管线（§5.1 的 12 个阶段）。失败也返回可读报告，不抛堆栈。"""
+    """一个文件的完整管线（§5.1 的 12 个阶段）。失败也返回可读报告，不抛堆栈。
+
+    顺手按 `opts.report_dir` 落一份机器可读的副本（默认 None = 不落，见
+    `_write_report`）。落盘失败**不影响**这条报告的返回：一份写不下去的诊断
+    副本，不该把一次成功的导入变成失败。
+    """
+    report = _ingest_file(conn, opts, path, parsers=parsers)
+    _write_report(opts, report)
+    return report
+
+
+def _write_report(opts: IngestOptions, report: dict[str, Any]) -> str | None:
+    """把这份报告写进 `<report_dir>/<job_id>.json`（无 job 时用 sha256 前缀）。
+
+    为什么要有它（2.6）: 报告是导入**唯一**的交付通道，但一次 `magpie import`
+    结束、终端翻页之后它就没了。而 §5.6 的两个质量信号里，坏行至少还有
+    `.badlines.txt` 明细，**未知字段却没有任何持久化的痕迹** —— 它只活在那一次
+    调用的内存里。`magpie doctor` 要回答"哪个来源的格式漂了"，就必须有人在
+    导入当时把它记下来（`unknown_fields_detail`），事后无迹可查。
+
+    落在 `reports/` 里而不是新开一个目录：坏行明细已经在那里，同一个目录放
+    同一件事的两种粒度（人读的 `.txt` / 机器读的 `.json`），比散在两处好找。
+
+    刻意**不为 dry-run 落盘**：干跑没有 job，留下来的文件会声称一次并未发生的
+    导入发生过 —— 那是真的副作用，不是"什么都没做"（与 `init --dry-run` 不建
+    文件的理由同一条）。
+    """
+    if opts.report_dir is None or opts.dry_run:
+        return None
+    job_id = report.get("job_id")
+    if job_id is not None:
+        name = f"{int(job_id)}.json"
+    else:
+        name = f"sha-{str(report.get('sha256') or 'unknown')[:16]}.json"
+    path = opts.report_dir / name
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str),
+                        encoding="utf-8")
+    except OSError:                                              # pragma: no cover
+        return None
+    return str(path)
+
+
+def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
+                 parsers: Sequence[Any] | None = None) -> dict[str, Any]:
+    """上一条的实现体（`ingest_file` 负责落盘副本，这里只算报告）。"""
     path = Path(path)
     if parsers is None:
         parsers, _ = load_parsers()
@@ -942,7 +1068,7 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                         "records": counters.records, "line": ctx.current_line,
                         "counts": counters.as_dict(), "commits": txn.commits,
                         "bad_lines": fresh[:PROGRESS_BAD_LINE_LIMIT],
-                        "bad_lines_total": len(ctx.bad_lines),
+                        "bad_lines_total": ctx.bad_line_total,
                     })
                     sent_bad_lines += len(fresh)
         except Cancelled as exc:
@@ -952,8 +1078,18 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
             parse_error = f"{type(exc).__name__}: {exc}"
             ctx.notes.append(f"解析在第 {ctx.current_line} 行中止：{parse_error}")
 
+        # §5.3 的契约要求解析器"在行边界检查 cancelled() 并尽快返回" —— 于是
+        # 中断时解析器可能是**正常结束**（StopIteration），而不是抛 Cancelled。
+        # 只看异常的话，那次导入会被报成 state='done'：数据少了一半，报告说完成。
+        # 这里回读同一个标志，让"解析器自己停的"与"管线拦下的"落进同一个结论。
+        if not cancelled and ctx.cancelled():
+            cancelled = True
+            ctx.notes.append(
+                f"作业中断：解析器在第 {ctx.current_line} 行按 cancelled() 提前返回"
+                f"（已提交部分保留，可 undo）")
+
         badlines_path = _write_badlines(opts, job_id, ctx)
-        counters.bad_lines = len(ctx.bad_lines)
+        counters.bad_lines = ctx.bad_line_total      # 计数不随明细上限截断
         counters.unknown_fields = sum(ctx.unknown_fields.values())
 
         # --- 阶段 8 收口：缓存重算（增量）---
@@ -1087,6 +1223,68 @@ def _definition_drift(conn: sqlite3.Connection, fingerprint: str,
     return None
 
 
+def parser_drift_report(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """已登记的解析器指纹 vs **当前实现**：哪些变过。
+
+    判据与 `_definition_drift`（导入当时那一条）共用同一个哈希函数，只是这里
+    事后批量算。两处各算一次会分叉，而分叉之后"哪个对"没有答案 —— 所以
+    `_definition_hash` 是唯一实现，这个函数只是把它用在别处。
+
+    三种漂移，都是**真的会影响答案**的那种：
+
+      * `implementation` —— 同一 fingerprint 背后的实现变了。这意味着"同一份
+        文件、同一个指纹"导出来的事实可能与当时不同，而 `_already_imported`
+        的幂等短路**只认指纹**。这是三个里最需要人看一眼的。
+      * `unavailable` —— 库里登记过一个指纹，而本程序当前的解析器集合里已经
+        没有它了（2.4 落地后 `parsers_bridge` 退役就会产生一批）。重导那些
+        文件会走仲裁，落到的解析器**不是**原来那个。
+      * `unregistered` —— 反过来：本程序认识、库里也有它的作业，但
+        `parser_profiles` 里没有登记（`definition_hash` 为空）。导入路径会先
+        登记再开作业（v3.2 §16.4 第 2 条），所以它通常意味着数据是绕开管线
+        写进来的，或者是很早的版本留下的。
+
+    空定义哈希（`store.UNHASHED_PARSER`，名称级登记，没有实现可 hash）**不算
+    漂移** —— 它本来就声明了"我不知道"，把它报成漂移等于报一个假警。
+    """
+    parsers, _source_pkg = load_parsers()
+    current = {f"{c.tool}@{c.format_version}": c for c in parsers}
+    out: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT fingerprint, profile_id, version, definition_hash"
+                            " FROM parser_profiles ORDER BY fingerprint"):
+        fingerprint = str(row["fingerprint"])
+        registered = row["definition_hash"]
+        cls = current.get(fingerprint)
+        if cls is not None and registered not in (None, store.UNHASHED_PARSER):
+            actual = _definition_hash(cls)
+            if str(registered) != actual:
+                out.append({
+                    "fingerprint": fingerprint, "drift": "implementation",
+                    "registered_definition_hash": str(registered),
+                    "current_definition_hash": actual,
+                    "detail": (f"{fingerprint} 已登记的 definition_hash "
+                               f"{str(registered)[:12]}… 与当前实现 {actual[:12]}… "
+                               f"不一致 —— 同一指纹背后的实现变过。"
+                               f"那些文件的幂等短路只认指纹，重导**不会**重跑，"
+                               f"要重跑得先换一个 format_version。")})
+            continue
+        if cls is None:
+            out.append({
+                "fingerprint": fingerprint, "drift": "unavailable",
+                "registered_definition_hash": None if registered is None else str(registered),
+                "detail": (f"{fingerprint} 在本程序当前的解析器集合里已经不存在了 —— "
+                           f"涉及它的文件重导会走仲裁，落到的**不是**原来那个解析器。")})
+            continue
+        if registered is None and conn.execute(
+                "SELECT 1 FROM jobs WHERE parser_fingerprint=? LIMIT 1",
+                (fingerprint,)).fetchone() is not None:
+            out.append({
+                "fingerprint": fingerprint, "drift": "unregistered",
+                "registered_definition_hash": None,
+                "detail": (f"{fingerprint} 有作业用过，但 parser_profiles 里没有它的 "
+                           f"definition_hash —— 这条路径没有走管线的'先登记、再开作业'。")})
+    return out
+
+
 def _already_imported(conn: sqlite3.Connection, project_id: int, digest: str,
                       fingerprint: str) -> dict[str, Any] | None:
     """该 sha256 是否已被**同一 fingerprint** 的作业导入过（幂等判定的唯一依据）。
@@ -1191,5 +1389,7 @@ __all__ = [
     "Cancelled", "Counters", "IngestOptions", "ParseContext", "Probe",
     "SNIFF_ADOPT_MARGIN", "SNIFF_ADOPT_SCORE",
     "arbitrate", "archive_file", "discover", "ingest_file", "ingest_paths",
-    "iter_lines", "load_parsers", "probe_file", "sha256_file", "sniff_rank",
+    "INPUT_SUFFIXES", "iter_lines", "load_parsers", "parser_drift_report",
+    "probe_file",
+    "sha256_file", "sniff_rank",
 ]

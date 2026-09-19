@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 from typing import Any
 
-from ..core import ops, store
-from .db import Database, current_version
+from ..core import ingest, ops, store
+from . import write
+from .db import Database, current_version, resolve_project
 from .envelope import (
     EXIT_DATA,
     EXIT_HUMAN,
@@ -79,36 +81,9 @@ def _json_or_none(raw: Any) -> Any:
         return raw
 
 
-def resolve_project(conn: sqlite3.Connection, spec: str | None) -> int:
-    """`--project` 收 id 或名字；不给时，**只有一个项目**才允许省略。
-
-    刻意不做"默认选第一个"：多项目下"第一个"是行序，不是意图。让调用方显式写，
-    比让他某天发现数据进了另一个项目要好。（这条与 2.7 的 `_resolve_project`
-    逐字同义，退出码 1 ↔ HTTP 400。）
-    """
-    rows = conn.execute("SELECT id, name FROM projects ORDER BY id").fetchall()
-    if spec is None:
-        if len(rows) == 1:
-            return int(rows[0]["id"])
-        raise CliError(
-            "E_PROJECT_REQUIRED",
-            f"这个库里有 {len(rows)} 个项目，必须显式给 --project",
-            exit_code=EXIT_USAGE,
-            hint="加上 `--project <id 或名字>`；项目列表见 `magpie schema --json`"
-                 " 的 projects（或 `magpie ls --project` 的报错 candidates）。",
-            projects=[{"id": int(r["id"]), "name": str(r["name"])} for r in rows])
-    text = str(spec)
-    row = None
-    if text.isdigit():
-        row = conn.execute("SELECT id FROM projects WHERE id=?", (int(text),)).fetchone()
-    if row is None:
-        row = conn.execute("SELECT id FROM projects WHERE name=?", (text,)).fetchone()
-    if row is None:
-        raise CliError(
-            "E_PROJECT_NOT_FOUND", f"项目 {text!r} 不存在", exit_code=EXIT_DATA,
-            hint="用 id 或**完整的**项目名；名字是大小写敏感的。",
-            candidates=[{"id": int(r["id"]), "name": str(r["name"])} for r in rows])
-    return int(row["id"])
+# `resolve_project` 住在 `db.py`（"库在哪、项目是哪个"是同一件事的两半），
+# 在这里**再导出**一次只是为了让老的 `from .read import resolve_project` 照旧
+# 可用。写命令要用它，而 `write.py` 不能反向依赖本模块 —— 本模块要 import 它。
 
 
 def keys_of(conn: sqlite3.Connection, project_id: int,
@@ -672,7 +647,23 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
       * `store.orphan_subjects` —— 从未有过任何贡献的实体（§2.3：不得自动清理）；
       * `store.purge_eligible` —— GC 判定（默认 `purge == []`，这是 v3.2-r2 的
         有意语义，不是"还没实现"）；
+      * `ingest.parser_drift_report` —— 已登记的解析器指纹 vs 当前实现（2.6）；
       * `ops.explain_job_scope` —— 每个作业**按它当时的 scope** 解释。
+
+    **2.6 增补的三项导入体检**（`data.imports`）:
+
+      * `unknown_fields` / `bad_lines` —— §5.6 的两个格式漂移信号。它们**只在
+        解析当时可见**，所以判据是 `<data-dir>/reports/` 下留下的东西：坏行明细
+        （`.badlines.txt`，导入路径无条件写的）与每文件的机器可读报告
+        （`<job_id>.json`，导入路径在 2.6 起写）。**没有留下报告的作业就统计不到**
+        —— 这一条写在 `imports.notes` 里，而不是让空数组冒充"没有漂移"。
+      * `parser_drift` —— 见 `ingest.parser_drift_report`。
+
+    一个刻意的取舍：这三项都不进 `healthy`。`healthy` 是**数据坏没坏**的判断
+    （不变量 + 孤儿 + GC），而格式漂移是"某个上游工具可能改了输出"—— 那是一个
+    **要你去看一眼**的信号，不是一条数据损坏。把两者混进同一个布尔，会让
+    "healthy=false" 同时意味着"库坏了"和"某天 httpx 加了个字段"，于是没人
+    再认真对待它。
 
     在 CLI 里重写这些判断的代价不是"多写几行"，而是**两个真相**：体检报告与
     数据层自己的断言会分叉，而分叉之后"哪个对"没有答案。
@@ -713,6 +704,8 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
         "jobs": len(jobs),
         "open_inbox": _scalar(conn, "SELECT COUNT(*) FROM inbox_items WHERE state='open'"),
     }
+    imports = _import_health(ctx)
+
     healthy = bool(report["ok"]) and not orphans and not purge["purge"]
     data = {
         "healthy": healthy,
@@ -725,6 +718,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
         "purge_eligible": purge,
         "jobs": jobs,
         "counts": counts,
+        "imports": imports,
     }
     human = [f"{'健康' if healthy else '**不健康**'}",
              f"  sqlite integrity_check：{report['sqlite_integrity']}",
@@ -739,7 +733,124 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
                   [[j["id"], j["kind"], j["state"], j["applied"], j["started_at"],
                     ("error" if "error" in j["scope"]
                      else j["scope"].get("interpret_with"))] for j in jobs])
+    human += ["", "导入体检（2.6）：",
+              f"  解析器漂移：{len(imports['parser_drift'])} 项"
+              + (f"  {[d['drift'] for d in imports['parser_drift']]}" if imports["parser_drift"] else ""),
+              f"  坏行：{len(imports['bad_lines'])} 个作业有明细，共 {imports['bad_lines_total']} 条",
+              f"  未知字段：{len(imports['unknown_fields'])} 个名字"
+              + (f"  {imports['unknown_fields']}" if imports["unknown_fields"] else ""),
+              f"  报告目录：{imports['reports_dir']}（{len(imports['reports'])} 份报告）"]
+    for note in imports["notes"]:
+        human.append(f"  ⚠ {note}")
     return data, human
+
+
+def _import_health(ctx) -> dict:
+    """2.6 增补的三项导入体检。见 `cmd_doctor` 的 docstring。
+
+    全部是**只读**：一个 SQL 常量在 `parser_drift_report` 里（core 的判断），
+    其余是读 `<data-dir>/reports/` 下的文件。体检不该有副作用 —— 一条顺手写了
+    点什么的 doctor 会让"体检前后逐字节不变"那条断言失效，而那条断言正是
+    `test_read_commands_do_not_touch_a_byte` 在守的东西。
+    """
+    from .db import resolve_data_dir
+
+    conn = ctx.conn()
+    reports_dir = resolve_data_dir(getattr(ctx.args, "data_dir", None)) / "reports"
+    drift = ingest.parser_drift_report(conn)
+
+    bad_lines: list[dict] = []
+    reports: list[dict] = []
+    unknown: dict[str, int] = {}
+    notes: list[str] = []
+
+    if reports_dir.is_dir():
+        for path in sorted(reports_dir.glob("*.badlines.txt")):
+            total, kept = _badlines_header(path)
+            bad_lines.append({"job_id": _int_or_none(path.stem), "bad_lines": total,
+                              "kept": kept, "report": str(path)})
+        for path in sorted(reports_dir.glob("*.json")):
+            item = _read_report(path)
+            if item is not None:
+                reports.append(item)
+                for name, count in (item.get("unknown_fields_detail") or {}).items():
+                    unknown[str(name)] = unknown.get(str(name), 0) + int(count)
+    else:
+        notes.append(f"数据区里没有解析报告目录（{reports_dir}）—— 还没有导入过，"
+                     f"或者导入走的是不落报告的入口。")
+
+    if reports_dir.is_dir() and not reports:
+        notes.append(
+            "报告目录里没有机器可读的报告（`<job_id>.json`）—— **未知字段只在解析"
+            "当时可见**，没有报告就没有它的痕迹。这一项因此为空，"
+            "而不是'没有漂移'。")
+    covered = {int(r["job_id"]) for r in reports if r.get("job_id") is not None}
+    jobs_with_fingerprint = _scalar(
+        conn, "SELECT COUNT(*) FROM jobs WHERE parser_fingerprint IS NOT NULL")
+    return {
+        "reports_dir": str(reports_dir),
+        "reports": reports,
+        "bad_lines": bad_lines,
+        "bad_lines_total": sum(int(b["bad_lines"]) for b in bad_lines),
+        "unknown_fields": dict(sorted(unknown.items())),
+        "parser_drift": drift,
+        # 「有报告的作业」对「用过解析器的作业」——两个数差得远就说明大部分
+        # 导入没留下报告（走的不是会落报告的入口），而未知字段那一项正是
+        # 靠报告才算得出来的。一个空数组不该冒充"没有漂移"。
+        "reported_jobs": sorted(covered),
+        "jobs_with_parser_fingerprint": jobs_with_fingerprint,
+        "notes": notes,
+    }
+
+
+def _int_or_none(text: str) -> int | None:
+    return int(text) if str(text).isdigit() else None
+
+
+def _badlines_header(path) -> tuple[int, int | None]:
+    """从坏行明细的头读 (真实条数, 保留条数)。
+
+    头是 `_write_badlines` 写的：`# job N 坏行明细（共 M 条[，此处只保留前 K 条明细]）`。
+    取不到就返回 (0, None) —— 一个读不懂的头不该让整份体检崩掉，但它确实是一份
+    **读不懂**的明细，所以 0 是"没读到"，`kept=None` 如实表达这一点。
+    """
+    try:
+        first = path.read_text(encoding="utf-8").splitlines()[:1]
+    except OSError:                                             # pragma: no cover
+        return 0, None
+    if not first:
+        return 0, None
+    text = first[0]
+    total = re.search(r"共\s*(\d+)\s*条", text)
+    kept = re.search(r"只保留前\s*(\d+)\s*条", text)
+    return (int(total.group(1)) if total else 0,
+            int(kept.group(1)) if kept else (int(total.group(1)) if total else None))
+
+
+def _read_report(path) -> dict | None:
+    """读一份导入报告副本。**只取体检要用的字段**，不是把整个报告塞进体检输出。"""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):                                # pragma: no cover
+        return None
+    if not isinstance(payload, dict):
+        return None
+    counts = payload.get("counts") or {}
+    return {
+        "path": str(path),
+        "job_id": payload.get("job_id"),
+        "source_path": payload.get("path"),
+        "state": payload.get("state"),
+        "parser": payload.get("parser"),
+        "definition_drift": payload.get("definition_drift"),
+        "observation_at_accuracy": None,
+        "counts": {"records": counts.get("records"), "added": counts.get("added"),
+                   "updated": counts.get("updated"), "skipped": counts.get("skipped"),
+                   "bad_lines": counts.get("bad_lines"),
+                   "unknown_fields": counts.get("unknown_fields")},
+        "unknown_fields_detail": dict(payload.get("unknown_fields_detail") or {}),
+        "notes": list(payload.get("notes") or []),
+    }
 
 
 def _scalar(conn: sqlite3.Connection, sql: str, *params: Any) -> int:
@@ -784,31 +895,42 @@ def _query_syntax(parser) -> dict:
 
     一份手写的语法文档会在第三次改命令时过期，而一个过期的语法文档比没有更坏
     （agent 会照着它拼参数）。直接从 argparse 的注册表读，两边就不可能分叉。
+
+    **嵌套的命令展平成一个带空格的键**（`project create`），与 `RUNNERS` 的键
+    逐字一致。2.2 时这里写着"嵌套的子命令不在本步的合同里" —— 那是当时只有扁平
+    命令时的一句实话；`project create` 落地后，同一句话就会变成"agent 的说明书
+    上少了这条命令"，而那正是这份输出存在的理由。
     """
     commands: dict[str, Any] = {}
-    for action in getattr(parser, "_actions", []):
-        choices = getattr(action, "choices", None)
-        if not isinstance(choices, dict):                      # 只看 subparsers
-            continue
-        for name, sub in choices.items():
-            options, positionals = [], []
-            for sub_action in getattr(sub, "_actions", []):
-                if isinstance(sub_action, argparse._SubParsersAction):
-                    continue                       # 嵌套的子命令不在本步的合同里
-                entry = {"help": (sub_action.help or "").strip() or None}
-                if not sub_action.option_strings:               # 位置参数
-                    entry["name"] = sub_action.dest
-                    positionals.append(entry)
-                    continue
-                entry["flag"] = "/".join(sub_action.option_strings)
-                entry["metavar"] = sub_action.metavar
-                if sub_action.choices:
-                    entry["choices"] = list(sub_action.choices)
-                if sub_action.default not in (None, False, argparse.SUPPRESS):
-                    entry["default"] = sub_action.default
-                options.append(entry)
-            commands[name] = {"help": (sub.description or "").strip() or None,
-                              "options": options, "positionals": positionals}
+
+    def walk(node, prefix: str) -> None:
+        for action in getattr(node, "_actions", []):
+            choices = getattr(action, "choices", None)
+            if not isinstance(choices, dict):                  # 只看 subparsers
+                continue
+            for name, sub in choices.items():
+                key = f"{prefix} {name}".strip()
+                options, positionals = [], []
+                for sub_action in getattr(sub, "_actions", []):
+                    if isinstance(sub_action, argparse._SubParsersAction):
+                        continue
+                    entry = {"help": (sub_action.help or "").strip() or None}
+                    if not sub_action.option_strings:           # 位置参数
+                        entry["name"] = sub_action.dest
+                        positionals.append(entry)
+                        continue
+                    entry["flag"] = "/".join(sub_action.option_strings)
+                    entry["metavar"] = sub_action.metavar
+                    if sub_action.choices:
+                        entry["choices"] = list(sub_action.choices)
+                    if sub_action.default not in (None, False, argparse.SUPPRESS):
+                        entry["default"] = sub_action.default
+                    options.append(entry)
+                commands[key] = {"help": (sub.description or "").strip() or None,
+                                 "options": options, "positionals": positionals}
+                walk(sub, key)                                 # 再下去一层
+
+    walk(parser, "")
     return {
         "program": parser.prog,
         "commands": commands,
@@ -899,6 +1021,10 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
 
 
 #: 命令名 → 实现。`__init__.py` 按它分发；**没有登记的命令不会被执行**。
+#:
+#: 写命令从 `write.py` 并进来（而不是各留一张表）：分发只该有一处，否则
+#: "某条命令不被执行"的诊断要先去查它到底在哪张表里。`project create` 这种
+#: 嵌套命令在这里折成一个带空格的键（见 `__init__._runner_key`）。
 RUNNERS = {
     "init": cmd_init,
     "ls": cmd_ls,
@@ -907,4 +1033,10 @@ RUNNERS = {
     "diff": cmd_diff,
     "doctor": cmd_doctor,
     "schema": cmd_schema,
+    # -- 2.6 的写路径（实现在 `write.py`）--------------------------------------
+    "project create": write.cmd_project_create,
+    "import": write.cmd_import,
+    "undo": write.cmd_undo,
+    "redo": write.cmd_redo,
+    "jobs": write.cmd_jobs,
 }

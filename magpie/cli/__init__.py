@@ -39,10 +39,9 @@ import sqlite3
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from .. import __version__
-from .db import DEFAULT_DATA_DIR, Database, resolve_db
+from .db import DEFAULT_DATA_DIR, Database, resolve_data_dir, resolve_db
 from .envelope import (
     EXIT_OK,
     EXIT_USAGE,
@@ -52,16 +51,18 @@ from .envelope import (
     usage_error,
 )
 from .read import RUNNERS
+from .write import WRITE_COMMANDS
+from . import write
 
 __all__ = ["build_parser", "main"]
 
-#: 2.6 才会落地的写命令。**先登记名字**：`magpie undo` 报"尚未实现、属于 2.6"
-#: 比 argparse 报"invalid choice: 'undo'"有用得多 —— 后者会让人以为这个命令
-#: 不存在，而事实是它还没做。
-PENDING_WRITE_COMMANDS = ("import", "undo", "redo", "jobs")
-
 #: 未实现命令的退出码。见 `envelope` 里关于 `E_NOT_IMPLEMENTED` 的裁定。
 EXIT_NOT_IMPLEMENTED = EXIT_USAGE
+
+#: 需要**可写连接**的命令。`init` 在 `read.py` 里（它只写 schema），其余在
+#: `write.py` 里各自登记（`WRITE_COMMANDS`）。这里合成一个是**分发用**的：
+#: `main` 据它决定 `Database(read_only=…)`。
+WRITABLE = ("init",) + WRITE_COMMANDS
 
 
 class _Parse(argparse.ArgumentParser):
@@ -99,7 +100,13 @@ class Context:
     parser: argparse.ArgumentParser
 
     def conn(self) -> sqlite3.Connection:
-        return self.db.connect()
+        """本命令该用的连接。**唯一入口**：读命令只读，写命令可写。
+
+        `read_only` 在 `main` 里按**命令名**定（`WRITABLE`），不在这里按命令
+        自己的意愿定 —— 一条命令能不能写，是分发层的事实，不该由命令自己声明
+        而没有任何人复核。写连接自己也会做版本体检（`Database.connect_write`）。
+        """
+        return self.db.connect() if self.db.read_only else self.db.connect_write()
 
 
 # ---------------------------------------------------------------------------
@@ -216,21 +223,79 @@ def build_parser() -> argparse.ArgumentParser:
         description="agent 的说明书。查询语法**从真的那个 parser 生成** —— "
                     "手写的语法文档会在第三次改命令时过期。")
 
-    # -- 2.6 的写命令：先登记名字，未实现时响亮失败 ---------------------------
-    for name in PENDING_WRITE_COMMANDS:
-        pending = sub.add_parser(name, parents=[_LOCATION, _FORMAT],
-                                 help="尚未实现（属于 2.6 的写路径）",
-                                 description="**尚未实现**。它属于 2.6 的写路径；"
-                                             "本步（2.2）只交付只读命令。")
-        # 收下任意位置参数，只为把错误信息**说对**：`magpie undo 1` 应当得到
-        # "undo 尚未实现，属于 2.6"，而不是 argparse 的
-        # "unrecognized arguments: 1" —— 后者会让人以为是自己参数写错了。
-        pending.add_argument("rest", nargs="*", help=argparse.SUPPRESS)
+    # -- 2.6：写路径 ----------------------------------------------------------
+    project = sub.add_parser(
+        "project", parents=[_LOCATION, _FORMAT],
+        help="项目（空库的第一件事：没有项目就没有地方导入）",
+        description="项目命令。目前只有 create —— 项目的**创建**是写路径的事"
+                    "（`init` 刻意不建项目，它只建 schema）。")
+    psub = project.add_subparsers(dest="project_command", metavar="<子命令>")
+    pcreate = psub.add_parser(
+        "create", parents=[_LOCATION, _FORMAT],
+        help="建项目（↔ POST /projects；重名返回退出码 3）",
+        description="与 `/api/v1/projects` 同义。scope 决定「什么算在范围里」，"
+                    "它随每次改动版本化（§5.1）—— 老作业用**当时的** scope 解释。")
+    pcreate.add_argument("name", metavar="<名字>", help="项目名（唯一）")
+    _scope = pcreate.add_mutually_exclusive_group()
+    _scope.add_argument("--include", action="append", metavar="<glob>",
+                        help="范围内的 glob，可重复（如 '*.example.com'）")
+    _scope.add_argument("--scope", metavar="<JSON>",
+                        help='完整 scope，如 \'{"include":["*.x"],"exclude":[]}\'')
+    pcreate.add_argument("--exclude", action="append", metavar="<glob>",
+                         help="排除的 glob，可重复")
+
+    imp = sub.add_parser(
+        "import", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="导入文件 / 目录（↔ POST /imports）",
+        description="把真实工具的输出导进库里。每个文件一个作业 —— 于是 undo "
+                    "的粒度是文件。解析器由嗅探仲裁选；仲裁不出结果的文件**不猜**，"
+                    "而是进 Inbox 待人工确认（退出码 3）。")
+    imp.add_argument("paths", nargs="+", metavar="<路径…>",
+                     help="文件或目录（目录按扩展名浅过滤，不递归挑 .db / .png）")
+    imp.add_argument("--parser", help="强制指定解析器，跳过仲裁（取值见 `magpie schema`）")
+    imp.add_argument("--source", help="来源名（默认取解析器的工具名）")
+    imp.add_argument("--authority", help="来源可信度上限（默认 unverified）")
+    imp.add_argument("--archive", choices=["archived", "external"],
+                     help="archived = 复制进数据区（默认）；external = 只记路径 + sha256")
+    imp.add_argument("--dry-run", action="store_true",
+                     help="干跑：事实一行不写，事务 ROLLBACK（报告与真跑同构）")
+
+    undo = sub.add_parser(
+        "undo", parents=[_LOCATION, _FORMAT],
+        help="撤销一个作业（↔ POST /jobs/{id}/undo）",
+        description="事实层追加 retract 抑制，不删贡献、不改贡献（INV-01 无例外）。"
+                    "与 redo 严格互逆。")
+    undo.add_argument("job", metavar="<job>", help="作业 id（见 `magpie jobs`）")
+    undo.add_argument("--dry-run", action="store_true",
+                      help="干跑：输出与真跑同构，只有 COMMIT→ROLLBACK 之差")
+
+    redo = sub.add_parser(
+        "redo", parents=[_LOCATION, _FORMAT],
+        help="复原一个被撤销的作业（↔ POST /jobs/{id}/redo）",
+        description="清掉指向该作业的 retract 抑制与撤销边，`applied` 回到 1。"
+                    "没有任何东西可复原时是幂等的（`noop`），不是错误。")
+    redo.add_argument("job", metavar="<job>", help="作业 id（见 `magpie jobs`）")
+    redo.add_argument("--dry-run", action="store_true",
+                      help="干跑：输出与真跑同构，只有 COMMIT→ROLLBACK 之差")
+
+    jobs = sub.add_parser(
+        "jobs", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="作业历史（含 explain_job_scope）",
+        description="不给 <job> 时列最近的一批（每条都带 explain_job_scope —— "
+                    "老作业必须用**当时的** scope 解释）；给了就是单条详情。")
+    jobs.add_argument("job", nargs="?", metavar="<job>", help="作业 id（可省略）")
+    jobs.add_argument("--state", help=f"按状态过滤（{' / '.join(write.JOB_STATES)}）")
+    jobs.add_argument("--applied", metavar="<true|false>",
+                      help="只看生效中（true）或已撤销（false）的作业")
+    jobs.add_argument("--limit", type=int, default=write.DEFAULT_JOB_LIMIT,
+                      help=f"列表最多返回多少条（默认 {write.DEFAULT_JOB_LIMIT}，"
+                           f"上限 {write.MAX_JOB_LIMIT}）")
 
     parser.epilog = (
-        "已实现：init、ls、show、diff、doctor、schema（只读）与 app（本地服务）。"
-        "search 与 " + "、".join(PENDING_WRITE_COMMANDS) + " 尚未实现 —— 它们会"
-        "以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
+        "只读：init、ls、show、diff、doctor、schema。"
+        "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
+        "放在一起便于对照）。本地服务：app。"
+        "search 尚未实现 —— 它以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
         "契约与退出码表见 `magpie schema --json`。")
     return parser
 
@@ -238,6 +303,26 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # 分发
 # ---------------------------------------------------------------------------
+
+
+def _subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
+    """取一个 parser 的子命令表。找不到就抛 —— 没有子命令的 parser 是程序缺陷。"""
+    for action in parser._actions:                                  # noqa: SLF001
+        if isinstance(action, argparse._SubParsersAction):          # noqa: SLF001
+            return action
+    raise AssertionError(f"{parser.prog} 没有子命令表")               # pragma: no cover
+
+
+def _runner_key(args) -> str:
+    """已解析的 namespace → `RUNNERS` 的键。目前只有 `project` 这一族是**嵌套**的。
+
+    `project create` 在 argparse 里是两层，而 `RUNNERS` 是一层表。把两层折成
+    一个键名（`"project create"`）而不是给 `RUNNERS` 加一层嵌套：调用方的
+    `runner(args, ctx)` 形状不变，读命令那边一行都不用动。
+    """
+    if args.command == "project":
+        return f"project {args.project_command}"
+    return str(args.command)
 
 
 def _run_app(args) -> int:
@@ -260,7 +345,7 @@ def _run_app(args) -> int:
 
     from ..api.app import serve
 
-    data_dir = Path(getattr(args, "data_dir", None) or DEFAULT_DATA_DIR)
+    data_dir = resolve_data_dir(getattr(args, "data_dir", None))
     return serve(db_path=resolve_db(getattr(args, "db", None),
                                     getattr(args, "data_dir", None)),
                  data_dir=data_dir, host=args.host, port=args.port,
@@ -286,18 +371,18 @@ def main(argv: list | None = None) -> int:
         return EXIT_OK
     if args.command == "app":
         return _run_app(args)
-    if args.command in PENDING_WRITE_COMMANDS:
-        from .envelope import not_implemented
-        err = not_implemented(f"命令 {args.command}",
-                              plan="2.6（CLI 写路径）")
-        emit_error(err, fmt)
-        return err.exit_code
+    if args.command == "project" and getattr(args, "project_command", None) is None:
+        # `magpie project` 单独出现：它不是一个命令，是命令的**父节点**。
+        # 打印那一段的用法并退出 1 —— `parser.print_help()` 会打出全局帮助，
+        # 让人以为是自己命令写错了。
+        _subparsers(parser).choices["project"].print_help()
+        return EXIT_USAGE
 
-    runner = RUNNERS[args.command]
+    runner = RUNNERS[_runner_key(args)]
     started = time.perf_counter()
     db = Database(resolve_db(getattr(args, "db", None),
                              getattr(args, "data_dir", None)),
-                  read_only=args.command != "init")
+                  read_only=args.command not in WRITABLE)
     ctx = Context(args=args, db=db, parser=parser)
     try:
         data, human = runner(args, ctx)

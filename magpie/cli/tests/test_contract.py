@@ -449,6 +449,15 @@ def test_schema_query_syntax_matches_the_real_parser(empty_db):
     real_commands = _subparsers(parser)
     assert set(described) == set(real_commands), "命令集合分叉"
 
+    import argparse as _argparse
+
+    def is_subparsers(action) -> bool:
+        # 子命令表在 argparse 里也是一个"位置参数"（dest=`project_command` 之类），
+        # 但它描述的是**命令名本身**，不是参数 —— `_query_syntax` 两边都跳过它，
+        # 这里不跳的话，`project` 这一条会凭空多出一个名叫 project_command 的位置
+        # 参数，而那是一条错误的用法说明。
+        return isinstance(action, _argparse._SubParsersAction)
+
     for name, sub in real_commands.items():
         real_flags = {f for a in sub._actions if a.option_strings
                       for f in a.option_strings}
@@ -456,7 +465,8 @@ def test_schema_query_syntax_matches_the_real_parser(empty_db):
                      for f in o["flag"].split("/")}
         assert real_flags == got_flags, (name, real_flags ^ got_flags)
 
-        real_pos = [a.dest for a in sub._actions if not a.option_strings]
+        real_pos = [a.dest for a in sub._actions
+                    if not a.option_strings and not is_subparsers(a)]
         assert real_pos == [o["name"] for o in described[name]["positionals"]], name
 
     # 默认值也要跟着来 —— `--since last` 与 `--limit 50` 是 agent 拼参数时
@@ -469,15 +479,37 @@ def test_schema_query_syntax_matches_the_real_parser(empty_db):
             assert option["default"] == 50
 
 
-def _subparsers(parser):
+def _subparsers(parser) -> dict:
+    """parser → {命令名: 子 parser}，**嵌套的展平成带空格的键**。
+
+    与 `read._query_syntax` 的 `walk` 同一口径：`project create` 是两层 argparse
+    一层键。两边各展平一次而不是共用，是因为这里要的是**真 parser 对象**（拿去
+    比对 `_actions`），而那边要的是序列化后的字典。展平规则本身只有一条，
+    它由 `set(described) == set(real_commands)` 这条断言钉住 —— 两边一旦
+    展平得不一样，先红的就是它。
+    """
     import argparse
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return dict(action.choices)
-    return {}
+
+    out: dict = {}
+
+    def walk(node, prefix: str) -> None:
+        for action in node._actions:
+            if not isinstance(action, argparse._SubParsersAction):
+                continue
+            for name, sub in action.choices.items():
+                key = f"{prefix} {name}".strip()
+                out[key] = sub
+                walk(sub, key)
+
+    walk(parser, "")
+    return out
 
 
-RUNNER_COMMANDS = {"init", "ls", "show", "search", "diff", "doctor", "schema"}
+#: 2.2 交付的只读命令。`schema` 的描述里这几条必须在（它们是最老的一批消费者
+#: 依赖的东西）。刻意不是"全集相等"：那条断言在 `test_schema_..._real_parser`
+#: 里已经逐项做过了，这里再钉一次是为了让"加命令时顺手删掉一条老的"也能红。
+RUNNER_COMMANDS = {"init", "ls", "show", "search", "diff", "doctor", "schema",
+                   "project create", "import", "undo", "redo", "jobs"}
 
 
 # ---------------------------------------------------------------------------
@@ -496,14 +528,61 @@ def test_unknown_command_is_a_usage_error_in_the_envelope(empty_db):
     assert code == 1
 
 
-def test_pending_write_commands_say_why(empty_db):
-    """`magpie undo 1` 应当说"属于 2.6"，而不是 argparse 的
-    "unrecognized arguments: 1" —— 后者会让人以为是自己参数写错了。"""
-    for name in ("import", "undo", "redo", "jobs"):
-        code, payload = envelope(name, "1", "--db", str(empty_db), "--json")
-        error = assert_err(payload, "E_NOT_IMPLEMENTED")
-        assert code == EXIT_USAGE, name
-        assert "2.6" in error["plan"], name
+def test_every_registered_command_is_dispatchable(empty_db):
+    """**登记在 `RUNNERS` 里的命令必须真的能被分发**（2.6 起写命令已落地）。
+
+    2.2 时这条写的是"`magpie undo 1` 应当说'属于 2.6'，而不是 argparse 的
+    'unrecognized arguments: 1'"。写路径落地之后，那句"尚未实现"就不再成立，
+    而**测试没有跟着改**的话，它就会变成一条要求命令保持未实现的断言 ——
+    一个把缺陷固化成规格的经典形态。所以这里换成正向的：每条命令都得跑起来。
+
+    判据刻意不看退出码：`import 1` 在空库上会因为"没有项目"失败，那是**业务**
+    失败，与"这条命令没被分发"是两回事。真正要排除的是 `E_NOT_IMPLEMENTED`
+    与 argparse 的用法错 —— 它们才是"这条路根本没通"的症状。
+    """
+    from magpie.cli.read import RUNNERS
+
+    #: 每条命令一个最小可运行调用（位置参数给对，`--db` 指到空库）。
+    invocations = {
+        "init": ("init",),
+        "ls": ("ls",),
+        "show": ("show", "1"),
+        "search": ("search", "q"),
+        "diff": ("diff", "--since", "last"),
+        "doctor": ("doctor",),
+        "schema": ("schema",),
+        "project create": ("project", "create", "p"),
+        "import": ("import", "x.txt"),
+        "undo": ("undo", "1"),
+        "redo": ("redo", "1"),
+        "jobs": ("jobs",),
+    }
+    assert set(invocations) == set(RUNNERS), "有命令没被这条测试覆盖到"
+
+    #: 登记了但**故意**还说自己没做的：搜索 DSL 属于计划书 §8。它由下一条
+    #: 用例单独钉住 —— 混在这一条里会让"哪几条该通"变成一句含糊的话。
+    not_yet = {"search"}
+
+    for key, args in invocations.items():
+        _, payload = envelope(*args, "--db", str(empty_db), "--json")
+        code = payload.get("error", {}).get("code")
+        if key in not_yet:
+            assert code == "E_NOT_IMPLEMENTED", f"{key} 应当响亮地未实现：{payload}"
+            continue
+        assert payload["ok"] is True or code not in ("E_NOT_IMPLEMENTED", "E_USAGE"), \
+            f"{key} 没有被分发：{payload}"
+
+
+def test_search_is_still_loudly_not_implemented(empty_db):
+    """`search` **仍然**是响亮的 501（§8 没落地）—— 它不该被写路径顺手带上。
+
+    这条与上一条是一对：上一条证明"该通的通了"，这一条证明"没做的那条仍然
+    说自己没做"。少了它，`search` 返回一个空列表也会全绿。
+    """
+    code, payload = envelope("search", "x", "--db", str(empty_db), "--json")
+    error = assert_err(payload, "E_NOT_IMPLEMENTED")
+    assert code == EXIT_USAGE
+    assert "§8" in error["plan"]
 
 
 def test_bad_limit_says_what_is_wrong(empty_db):

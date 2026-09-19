@@ -33,6 +33,8 @@ YAML 形态（§5.2）:
 一个文件都没导入成功，本步骤会在报告里被标 `dependency_empty: true`，但**仍然
 执行**（今天的解析器之间没有真实的产物传递；真正的"上一步的产物喂给下一步"
 要等阶段 3 的离线指纹引擎）。把它写成硬失败会凭空挡住合法的并行用法。
+
+"一个文件都没导入成功"的判据：见 `_PRODUCED_STATES`。
 """
 
 from __future__ import annotations
@@ -59,6 +61,22 @@ USAGE = """用法:
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_USAGE = 2
+
+#: 文件状态里，哪些算"这一步真的产出了东西"。`dependency_empty` 只问这一件事。
+#:
+#: * `done` / `partial`  —— 事实落了库（partial 是"落了但没落全"，仍然是有产出）。
+#: * `skipped`           —— 幂等跳过。它**算有产出**：跳过恰恰因为同一 sha256 已被
+#:                          同一 fingerprint 导入过，上游的产物真实存在于库里。
+#: * `needs_confirmation` —— **不算**。它为"待人工裁决"建了一个 job（所以旧判据
+#:                          `job_id is not None` 会把它算成有产出），但这个 job 一条
+#:                          事实都没落，下游拿到的是一个空的上游。审核 LARI-21 指出
+#:                          的正是这一条：判据当时问的是"建没建作业"，而不是
+#:                          "有没有产出"。
+#: * `failed` / `cancelled` —— 显然不算。
+#:
+#: 它只是报告里的一个提示位，不改变执行 —— 判错一个提示位不会毁掉数据，
+#: 但会让"下游为什么是空的"这个问题失去唯一的线索。
+_PRODUCED_STATES = frozenset({"done", "partial", "skipped"})
 
 
 # ---------------------------------------------------------------------------
@@ -101,9 +119,16 @@ def load_definition(path: str | Path) -> dict[str, Any]:
         sid = step.get("id")
         if not sid:
             raise ValueError(f"steps[{index}] 缺少 id")
-        if sid in ids:
-            raise ValueError(f"steps[{index}] 的 id {sid!r} 重复")
-        ids.append(str(sid))
+        # 判重必须按**归一化后的 id**（`str`），与 `order_steps` 的 `by_id` 同一口径。
+        # 旧实现拿 YAML 的原始值去和 `ids`（装着 str）比：`id: 1` 与 `id: 1` 因为
+        # `1 in ["1"]` 为假而**判不出来**，于是 `by_id = {str(id): step}` 把后者覆盖
+        # 前者，拓扑排序只剩一步 —— 两步的管线静默跑成一步，报告里也少一步。
+        key = str(sid)
+        if key in ids:
+            raise ValueError(
+                f"steps[{index}] 的 id {sid!r} 重复（已有一个 {key!r}；"
+                f"id 按字符串比较，`1` 与 `\"1\"` 视为同一个）")
+        ids.append(key)
         if not step.get("source_glob") and not step.get("source"):
             raise ValueError(f"step {sid}: 至少要给 source_glob（要导入什么）")
         after = step.get("after") or []
@@ -111,7 +136,7 @@ def load_definition(path: str | Path) -> dict[str, Any]:
             raise ValueError(f"step {sid}: after 必须是列表")
     for step in steps:
         for dep in step.get("after") or []:
-            if dep not in ids:
+            if str(dep) not in ids:                          # 同上：按归一化 id 比
                 raise ValueError(
                     f"step {step['id']}: after 引用了不存在的步骤 {dep!r}；"
                     f"已定义的步骤：{ids}")
@@ -121,8 +146,19 @@ def load_definition(path: str | Path) -> dict[str, Any]:
 
 
 def order_steps(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 `after` 依赖做稳定拓扑排序。有环 → ValueError（并指出环上的步骤）。"""
-    by_id = {str(s["id"]): s for s in steps}
+    """按 `after` 依赖做稳定拓扑排序。有环 → ValueError（并指出环上的步骤）。
+
+    这个函数**必须**拒绝重复 id: `by_id` 是 `{str(id): step}`，两个步骤归一化到
+    同一个 id 时后者会覆盖前者，被覆盖的那一步从此不在 `ordered` 里 —— 静默丢步。
+    `load_definition` 已经判过一次重（带下标，报错更好读），这里再判一次是因为
+    "丢"就发生在本函数：直接调用本函数的调用方不该拿到一个少了一步的结果。
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        key = str(step["id"])
+        if key in by_id:
+            raise ValueError(f"steps 里有重复的 id {key!r}（后一个会覆盖前一个 → 静默丢步）")
+        by_id[key] = step
     ordered: list[dict[str, Any]] = []
     done: set[str] = set()
     visiting: list[str] = []
@@ -133,6 +169,8 @@ def order_steps(steps: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         if sid in visiting:
             cycle = " → ".join(visiting[visiting.index(sid):] + [sid])
             raise ValueError(f"after 依赖成环：{cycle}")
+        if sid not in by_id:
+            raise ValueError(f"after 引用了不存在的步骤 {sid!r}；已定义的步骤：{sorted(by_id)}")
         visiting.append(sid)
         for dep in by_id[sid].get("after") or []:
             visit(str(dep))
@@ -219,9 +257,13 @@ def run_pipeline(conn: sqlite3.Connection, definition: dict[str, Any], *,
             authority_level=str(step.get("authority") or "unverified"),
             archive=str(step.get("archive") or archive),
             dry_run=bool(dry_run or step.get("dry_run")), actor=actor,
+            # 报告副本落进 `reports/`（坏行明细本来就在那儿）。doctor 报"未知
+            # 字段"只能靠它 —— 那个信号只活在一次解析里，事后无迹可查。
+            report_dir=dd / "reports",
             batch_size=int(step.get("batch_size") or ingest.DEFAULT_BATCH))
         report = ingest.ingest_paths(conn, opts, matched)
-        produced[sid] = sum(1 for f in report["files"] if f.get("job_id"))
+        produced[sid] = sum(1 for f in report["files"]
+                            if f.get("state") in _PRODUCED_STATES)
         step_reports.append({
             "id": sid,
             "parser": step.get("parser"),

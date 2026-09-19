@@ -458,7 +458,12 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             （"跑完了但被撤销" 与 "执行失败" 是两件事）。
 
     幂等: 已撤销的 job 再次 undo 不会重复写边（都带 `IS NULL` 守卫）。
+
+    前置条件: `conn` 必须是 `store.connect()` 建出来的连接。本函数按列名取值
+    （`row["contribution_kind"]` 等），裸 `sqlite3.connect()` 的行是 tuple，
+    会以 `TypeError` 坏在内部 —— 因此入口先守卫（审核 LARI-21）。
     """
+    store.require_row_factory(conn, caller="ops.undo")
     job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if job is None:
         raise InvariantError(f"job {job_id} not found")
@@ -589,7 +594,11 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
       应用状态: `applied=1`。
 
     幂等: 已经没有 retract 行且 `applied=1` 时，返回 `{"noop": True}` 报告。
+
+    前置条件: 同 `undo` —— `conn` 必须是 `store.connect()` 建出来的连接
+    （入口守卫，审核 LARI-21）。
     """
+    store.require_row_factory(conn, caller="ops.redo")
     job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if job is None:
         raise InvariantError(f"job {job_id} not found")
@@ -824,7 +833,11 @@ def rekey(conn: sqlite3.Connection, *, project_id: int,
     快照在事务**之前**做（事务内备份会撞锁），dry-run 也做 —— 因为 dry-run 与
     真实执行走同一代码路径，快照那一步的失败（磁盘满 / 目录不可写）必须在预演时
     就暴露，而不是等到真跑。
+
+    前置条件: 同 `undo` / `redo` —— `conn` 必须是 `store.connect()` 建出来的
+    连接（入口守卫，审核 LARI-21 的遗留项①）。
     """
+    store.require_row_factory(conn, caller="ops.rekey")
     snapshot = store.online_backup(conn, dest_dir=backup_dir, tag="rekey")
     with transaction(conn, dry_run=dry_run):
         job_id = _identity_job(conn, project_id, "rekey", job_id, actor)
@@ -894,7 +907,11 @@ def merge(conn: sqlite3.Connection, *, project_id: int, survivor_key: str,
           actor: str = "cli", dry_run: bool = False) -> dict[str, Any]:
     """merge 是 identity overlay:
       事实层零变更（INV-10），只写 merge event + alias，然后 recompute。
+
+    前置条件: 同 `undo` / `redo` —— `conn` 必须是 `store.connect()` 建出来的
+    连接（入口守卫，审核 LARI-21 的遗留项①）。
     """
+    store.require_row_factory(conn, caller="ops.merge")
     with transaction(conn, dry_run=dry_run):
         job_id = _identity_job(conn, project_id, "merge", job_id, actor)
         survivor_id = entity_for_key(conn, project_id, survivor_key)
@@ -956,7 +973,12 @@ def unmerge(conn: sqlite3.Connection, *, event_id: int, actor: str = "cli",
     修复: 旧实现用 `payload_json LIKE '%"event_id":N%'` 关闭 merge_conflict 项，
     但当时 `_merge_conflicts` 的 payload 里**没有** event_id（死代码）。
     现在 payload 真的带 event_id，这个关闭动作才真正生效。
+
+    前置条件: 同 `merge` —— `conn` 必须是 `store.connect()` 建出来的连接
+    （入口守卫）。LARI-21 只点名了 `merge`，但两者是同一对逆操作、同一种调用
+    形状，守一半会让"有守卫 ⇒ 这条路上都安全"变成一句不成立的话。
     """
+    store.require_row_factory(conn, caller="ops.unmerge")
     with transaction(conn, dry_run=dry_run):
         ev = conn.execute("SELECT * FROM entity_merge_events WHERE id=?", (event_id,)).fetchone()
         if ev is None:
@@ -1049,7 +1071,11 @@ def compact(conn: sqlite3.Connection, *, project_id: int, job_id: int | None = N
         旧实现取 MIN(observed_at) 会把时间线往回拉，等于让压实改坏了历史。
 
     v3.2-r2 编组键补 `contribution_kind`（不同语义的贡献永不合并）。
+
+    前置条件: 同 `undo` / `redo` —— `conn` 必须是 `store.connect()` 建出来的
+    连接（入口守卫，审核 LARI-21 的遗留项①）。
     """
+    store.require_row_factory(conn, caller="ops.compact")
     with transaction(conn, dry_run=dry_run):
         groups = conn.execute(
             """
@@ -1390,7 +1416,12 @@ def _downgrade_evidence_in_txn(conn: sqlite3.Connection, *, raw_file_id: int,
 def degrade_evidence(conn: sqlite3.Connection, *, raw_file_id: int,
                      to_state: str, actor: str = "compact",
                      job_id: int | None = None, dry_run: bool = False) -> dict[str, Any]:
-    """把某个 raw_file 下的 evidence 降级（只降不升）。"""
+    """把某个 raw_file 下的 evidence 降级（只降不升）。
+
+    前置条件: 同 `undo` / `redo` —— `conn` 必须是 `store.connect()` 建出来的
+    连接（入口守卫，审核 LARI-21 的遗留项①）。
+    """
+    store.require_row_factory(conn, caller="ops.degrade_evidence")
     with transaction(conn, dry_run=dry_run):
         return _downgrade_evidence_in_txn(conn, raw_file_id=raw_file_id, to_state=to_state,
                                           actor=actor, job_id=job_id, dry_run=dry_run)

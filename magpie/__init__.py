@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.4.0"        # 与 pyproject.toml 的 version 保持一致（2.2：CLI 只读骨架）
+__version__ = "0.5.0"        # 与 pyproject.toml 的 version 保持一致（2.6：CLI 写路径）
 
 __all__ = ["__version__"]
