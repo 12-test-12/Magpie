@@ -1,0 +1,677 @@
+{
+  "tool": "ffuf",
+  "format_version": "1",
+  "input": "input.json",
+  "bad_lines": [
+    {
+      "line": 1,
+      "reason": "results[8] 缺 url（或它不是字符串）：None"
+    }
+  ],
+  "unknown_fields": {
+    "results[].weird_field": 1
+  },
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8080",
+      "display": "app.example.com:8080",
+      "subtitle": "http"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/admin",
+      "display": "app.example.com:8080/admin",
+      "attrs": {
+        "path_template": "/admin"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "path",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "path_template",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "length",
+      "value": 1234
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "duration",
+      "value": 1234567
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/admin"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=admin"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/user/{id}",
+      "display": "app.example.com:8080/user/{id}",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "path",
+      "value": "/user/1"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "length",
+      "value": 900
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "duration",
+      "value": 2345678
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=1"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "path",
+      "value": "/user/2"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "length",
+      "value": 901
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "duration",
+      "value": 3456789
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/{id}"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=2"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/user/abc",
+      "display": "app.example.com:8080/user/abc",
+      "attrs": {
+        "path_template": "/user/abc"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "path",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "path_template",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "status",
+      "value": 403
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "length",
+      "value": 12
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "duration",
+      "value": 456789
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/user/abc"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=abc"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/.git/config",
+      "display": "app.example.com:8080/.git/config",
+      "attrs": {
+        "path_template": "/.git/config"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "path",
+      "value": "/.git/config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "path_template",
+      "value": "/.git/config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "length",
+      "value": 92
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "duration",
+      "value": 567890
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/.git/config"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=.git/config"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/api/v1/users",
+      "display": "app.example.com:8080/api/v1/users",
+      "attrs": {
+        "path_template": "/api/v1/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "path",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "path_template",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "status",
+      "value": 500
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "length",
+      "value": 13
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "duration",
+      "value": 678901
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=v1"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/api/v2/users",
+      "display": "app.example.com:8080/api/v2/users",
+      "attrs": {
+        "path_template": "/api/v2/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "path",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "path_template",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "status",
+      "value": 500
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "length",
+      "value": 14
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "duration",
+      "value": 789012
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=v2"
+    }
+  ]
+}

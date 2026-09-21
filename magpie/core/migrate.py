@@ -52,6 +52,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 并把 `nuclei@1` 追加进 domain / ip / service 的 produced_by。
     # 同样**新增迁移、不改 003 / 004**（红线 R4）。
     Migration(5, "kind_vuln", SCHEMA_DIR / "005_kind_vuln.sql"),
+    # 登记 `endpoint`（第一个真实产出者是 3.3 的四个"路径列表"来源：
+    # dirsearch / katana / gau / ffuf）与关系动词 `served_by`，并把四个指纹追加进
+    # domain / ip / service 的 produced_by。同样**新增迁移、不改 003–005**（R4）。
+    Migration(6, "kind_endpoint", SCHEMA_DIR / "006_kind_endpoint.sql"),
 )
 
 

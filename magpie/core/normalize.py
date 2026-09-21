@@ -34,7 +34,14 @@ import unicodedata
 
 __all__ = [
     "NormalizeError",
+    "SEGMENT_TEMPLATES",
+    "WEB_DEFAULT_PORTS",
     "compare_version",
+    "endpoint_base",
+    "endpoint_identity",
+    "endpoint_key",
+    "http_method",
+    "is_absolute_url",
     "normalize_cidr",
     "normalize_domain",
     "normalize_ip",
@@ -268,6 +275,32 @@ _NUMERIC_RE = re.compile(r"^[0-9]{1,20}$")
 #: 路径（往往是真实路由）。这条规则就是那件事的落点：只有**匹配到的**段被替换。
 
 
+#: **段折叠的常量表 —— 这一张表就是折叠规则的全部内容。**
+#:
+#: 表是**有序的**，顺序即优先级，四条纪律都写在这里：
+#:
+#: 1. **UUID / 日期排在纯数字前面**。`20260101` 同时匹配 `[0-9]{8}`（日期）与
+#:    `[0-9]{1,20}`（id）；顺序反了它会被折成 `{id}`，"这是个日期"这件事就没了。
+#: 2. **纯数字排在 hex 前面**。`1234567890123456` 是"一个很长的 id"，不是指纹；
+#:    反过来把 id 折成 `{hash}` 会让指纹镜头把每条记录都当成新指纹。
+#: 3. **没匹配到的段一律原样保留**。`v1` / `abc` / `logo.png` / `2024-13-99`
+#:    都是字面量 —— 折叠少了只是行数多，**折叠多了是静默丢信息**（接口镜头里
+#:    两条不同的接口并成一条，而没有任何信号）。
+#: 4. 正则里的数字一律写 `[0-9]` 而**不是** `\d`（`\d` 是 Unicode 感知的，
+#:    全角 `１２３` 与阿拉伯-印度数字 `٣٤٥` 都会被折成 `{id}`）。
+#:
+#: ⚠️ 这张表**故意**不含"文件名段"（`logo.png`）、"查询串"、"多段路径"这几类：
+#: 它们要么无法与真实路由区分（`.json` 结尾的路径真实存在），要么本来就该留在
+#: 证据层（查询串，见 `endpoint_identity` 的裁定）。
+SEGMENT_TEMPLATES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("{uuid}", _UUID_RE),
+    ("{date}", _DATE_COMPACT_RE),
+    ("{date}", _ISODATE_RE),
+    ("{id}", _NUMERIC_RE),
+    ("{hash}", _HEX_RE),
+)
+
+
 def path_template(path: object, *, keep_query: bool = False) -> str:
     """`/user/123/profile` → `/user/{id}/profile`。
 
@@ -301,20 +334,12 @@ def path_template(path: object, *, keep_query: bool = False) -> str:
 
 
 def _fold_segment(segment: str) -> str:
+    """按 `SEGMENT_TEMPLATES` 逐条试；**没匹配到就原样返回**（表里有理由）。"""
     if not segment:
         return segment
-    if _UUID_RE.match(segment):
-        return "{uuid}"
-    if _DATE_COMPACT_RE.match(segment):
-        return "{date}"
-    if _ISODATE_RE.match(segment):
-        return "{date}"
-    # 纯数字先于 hex：`1234567890123456` 是"一个很长的 id"，不是指纹。
-    # 反过来把 id 折成 {hash} 会让指纹镜头把每条记录都当成新指纹。
-    if _NUMERIC_RE.match(segment):
-        return "{id}"
-    if _HEX_RE.match(segment):
-        return "{hash}"
+    for replacement, pattern in SEGMENT_TEMPLATES:
+        if pattern.match(segment):
+            return replacement
     return segment
 
 
@@ -645,7 +670,9 @@ def _split_authority(authority: str) -> tuple[str, str]:
     `2001:db8:` 加一个端口 `1` —— 一个谁也不会发现它错了的目标。
     """
     if not authority:
-        raise NormalizeError("漏洞目标里没有主机名")
+        # 措辞对两个调用方都成立：vuln 的 `matched-at` 与 endpoint 的 URL 都会
+        # 走到这里，"`https://` 后面什么都没有"是同一件事。
+        raise NormalizeError("目标里没有主机名（`://` 后面是空的）")
     if authority.startswith("["):
         end = authority.find("]")
         if end < 0:
@@ -671,10 +698,258 @@ def _normalize_target_host(raw: str) -> str:
     """
     text = raw.strip()
     if not text:
-        raise NormalizeError("漏洞目标里没有主机名")
+        raise NormalizeError("目标里没有主机名（host 是空的）")
     if text.startswith("[") and text.endswith("]"):
         return normalize_ip(text[1:-1])
     ip = try_ip(text)
     if ip is not None:
         return ip
     return normalize_domain(text)
+
+
+# ---------------------------------------------------------------------------
+# 接口（endpoint）· 3.3 dirsearch / katana / gau / ffuf
+# ---------------------------------------------------------------------------
+#
+# 这一节是 `endpoint` 这个 kind 的**身份规则本身**（登记在
+# `kind_registry.identity_rule` 里），所以它必须住在 `normalize.py` ——
+# 解析器只调用它（`check.py` 的 PARSE-NORM 守着这条）。
+#
+#     endpoint 身份 = 主机[:非默认端口] + 路径模板
+#
+# ---------------------------------------------------------------------------
+# 裁定一：查询串与片段**不进**身份，但原始串必须留证据
+# ---------------------------------------------------------------------------
+# `/user/123?tab=posts#top` 的 key 是 `/user/{id}`，`?tab=posts#top` 不算 key 的
+# 一部分。**这是一个裁定，不是默认值**，理由两条：
+#
+#   * 查询串常带一次性 token / 分页 / 时间戳。进身份的话，同一个接口每抓一次就
+#     多一个实体，接口镜头当场爆掉（这正是路径模板折叠要防的那件事的另一面）；
+#   * 但"这个 endpoint 见过哪些真实路径"是**证据**，3.5 的镜头与 3.6 的体检都要
+#     用它 —— 所以原始串（含查询与片段）由解析器原样写进 `path` 观测。
+#
+# 折叠掉的只是**身份**，不是**事实**。
+#
+# ---------------------------------------------------------------------------
+# 裁定二：scheme 不进身份（数据模型修订稿 v3.1 §4.4 写死的）
+# ---------------------------------------------------------------------------
+# `http://x/a` 与 `https://x/a` 是同一个接口。身份里带上 scheme，同一个接口就会
+# 因为换过一次协议而分裂成两个实体。
+#
+# ⚠️ 默认端口同理，而且这里有一个**必须写下来的坑**：不能按 scheme 取默认端口
+# （`http→80` / `https→443`）。那样算的话 `http://a:80/x` 折成 `a/x` 而
+# `https://a:80/x` 保留成 `a:80/x` —— scheme 又从后门进了身份。
+# 所以折叠的是 `WEB_DEFAULT_PORTS` = {80, 443} 这**两个"默认 web 端口"**，
+# 与 scheme 无关：省略、写 80、写 443 在身份上是同一件事。
+# 8080 / 8443 / 3389 这些**保留** —— 它们确实区分服务。
+#
+# ---------------------------------------------------------------------------
+# 裁定三：折叠是**保守**的，宁可少折
+# ---------------------------------------------------------------------------
+# 具体哪些段算模板段见 `SEGMENT_TEMPLATES` 的常量表。两条被点名守着的反例：
+#
+#   * `/user/abc` **不折** —— 不是所有段都是占位符，`abc` 往往是一条真实路由；
+#   * `/api/v1/users` 与 `/api/v2/users` **不折** —— `v1` / `v2` 不是纯数字，
+#     表里没有一条匹配它们。折掉版本号等于把"两代接口"这件事抹掉，而"哪些还在
+#     用 v1"正是这份工具存在的理由之一。
+
+#: 在 endpoint 身份里被折叠掉的端口。**刻意与 scheme 无关** —— 见上面裁定二。
+#: 这两个是"默认 web 端口"：写成它、或省略，说的是同一个接口。
+WEB_DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
+
+
+def endpoint_identity(raw: object, *, base: object | None = None) -> dict[str, object]:
+    """一条 URL 或一条相对路径 + base → endpoint 的规范身份与全部部件。
+
+    返回 `{"key", "scheme", "host", "host_kind", "port", "path", "raw_path",
+    "template"}`：
+
+    * `key` —— **身份**：`主机[:非默认端口] + 路径模板`（如
+      `app.example.com/user/{id}`）。观测与关系挂的都是它；
+    * `host` —— 不含方括号的 IP / 域名（调用方要拿它去算 `service` 的 key）；
+    * `port` —— **有效端口**（显式端口缺失时按 scheme 补齐，补齐表见
+      `_DEFAULT_PORTS`）。它与 `key` 里那个端口**不是一回事**：key 用的是
+      "非默认才写出来"的那一个，而 `port` 要给 `httpx.service_key` 用，必须与
+      httpx / nmap / nuclei 算出同一个 service；
+    * `path` —— 去掉查询串与片段之后的路径（身份这一侧）；
+    * `raw_path` —— **原样**的路径 + 查询串 + 片段（证据这一侧，`?`/`#` 都还在）；
+    * `template` —— `path_template(path)` 的结果，单独给出来是因为 3.5 的镜头页
+      与 3.6 的体检都要按"模板"分组，让它们不必再算一遍。
+
+    `base` 只给**相对路径**用（dirsearch 的 `Target:` 是唯一的真实场景）：传进来的
+    相对路径必须以 `/` 开头，且 base 的路径必须是根 —— 否则报错而不是猜。
+    "把 `/admin` 拼到 `http://a/sub/` 后面"这件事有多种合理答案，猜错的代价是
+    一整个子树的 endpoint 全部落到错误的 key 上，而且不会有任何信号。
+    """
+    text = _clean_endpoint_text(raw)
+    if "://" in text:
+        scheme, rest = text.split("://", 1)
+        scheme = scheme.lower()
+        _require_scheme(scheme, text)
+        authority, slash, tail = rest.partition("/")
+        raw_path = "/" + tail if slash else "/"
+    else:
+        if not text.startswith("/"):
+            raise NormalizeError(f"endpoint 不是 URL，也不是以 / 开头的路径：{text!r}")
+        scheme, authority = _split_base(base)
+        raw_path = text
+
+    if "@" in authority:                     # userinfo：凭据，不进身份（§4.5）
+        authority = authority.rsplit("@", 1)[1]
+    raw_host, raw_port = _split_authority(authority)
+    host = _normalize_target_host(raw_host)
+    port = _port_or_none(raw_port)
+
+    effective = port if port is not None else _DEFAULT_PORTS.get(scheme)
+    identity_port = None if effective in (None,) or effective in WEB_DEFAULT_PORTS \
+        else effective
+
+    # 查询串与片段在这里被丢掉 —— 它们进的是 `raw_path`（证据），不是身份。
+    # 顺序是 `#` 先还是 `?` 先无所谓：两者都会截断，先撞上哪个都一样。
+    path = raw_path.split("#", 1)[0].split("?", 1)[0]
+    template = path_template(path)
+    key = _bracket(host) + (f":{identity_port}" if identity_port else "") + template
+
+    return {"key": key, "scheme": scheme, "host": host,
+            "host_kind": "ip" if try_ip(host) is not None else "domain",
+            "port": effective, "path": path, "raw_path": raw_path,
+            "template": template}
+
+
+def endpoint_key(raw: object, *, base: object | None = None) -> str:
+    """`endpoint_identity` 的字符串面 —— 身份规则本身，夹具执行的就是它。"""
+    return str(endpoint_identity(raw, base=base)["key"])
+
+
+#: HTTP 方法（RFC 9110 的 token）：全 ASCII 字母，允许内部的 `-`
+#: （`M-SEARCH` 是真实存在的）。长度上限防的是一条畸形行塞进一段长文本。
+_METHOD_RE = re.compile(r"^[A-Za-z]{2,16}(?:-[A-Za-z]{2,16})?$")
+
+
+def http_method(raw: object) -> str:
+    """HTTP 方法归一化：折成大写，`get` / `Get` / `GET` 是同一个方法。
+
+    方法**不进 endpoint 的身份**（`GET /x` 与 `POST /x` 是同一个接口的两件事，
+    而不是两个接口 —— 接口是"那个地址上能被调用的东西"）。它落成一条观测，
+    所以这里归一化的是**观测值**：不折的话 `get` 与 `GET` 会变成两条观测，
+    接口镜头里表现为一个假的冲突。
+
+    工具没给方法时**调用方不要调它** —— 返回空串在这里等于"没得归一化"，
+    而不是"方法未知"（把缺失写成 `UNKNOWN` 是解析器的裁定，不是归一化的）。
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise NormalizeError(f"HTTP 方法必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if not text:
+        return ""
+    _require_no_homoglyphs(text, "HTTP 方法")
+    if not _METHOD_RE.match(text):
+        raise NormalizeError(f"不是合法的 HTTP 方法：{text!r}")
+    return text.upper()
+
+
+def _clean_endpoint_text(raw: object) -> str:
+    """URL / 路径的公共前置校验。错误信息要能指出**是哪个原始串**不合法。"""
+    if not isinstance(raw, str):
+        raise NormalizeError(f"endpoint 必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if not text:
+        raise NormalizeError("空 endpoint（没有它就算不出接口的身份）")
+    if "\x00" in text:
+        raise NormalizeError("endpoint 含 NUL 字节")
+    if any(ch.isspace() for ch in text):
+        raise NormalizeError(f"endpoint 含空白字符：{text!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise NormalizeError("endpoint 含控制字符")
+    _require_no_homoglyphs(text, "endpoint")
+    return text
+
+
+def _require_scheme(scheme: str, text: str) -> None:
+    if not scheme or not all(ch in _SCHEME_CHARS for ch in scheme):
+        raise NormalizeError(f"endpoint 的 scheme 不合法：{text!r}")
+    if scheme[0].isdigit():
+        raise NormalizeError(f"endpoint 的 scheme 不合法（以数字开头）：{text!r}")
+
+
+def endpoint_base(raw: object) -> str:
+    """`Target:` 那一行 → **规范的 base**（`scheme://host[:port]/`）。
+
+    相对路径**必须**有一个 base 才知道主机是谁（dirsearch 的 `Target:` 是它唯一的
+    来源）。这个函数存在的理由是**报错的位置**：有了它，写坏的 `Target:` 在读到那
+    一行时就被指出，而不是等到后面某条结果行才报一条指向"`/admin` 有问题"的错误。
+
+    base 自己必须是一个**绝对的、根路径的** URL：`http://a/` 可以，
+    `http://a/sub/` 不行 —— 把 `/admin` 拼到 `http://a/sub/` 后面有多种合理答案，
+    猜错的代价是一整棵子树的 endpoint 落到错误的 key 上，而且不会有任何信号。
+    """
+    text = _clean_endpoint_text(raw)
+    if "://" not in text:
+        raise NormalizeError(f"base 必须是绝对 URL（带 scheme）：{text!r}")
+    scheme, rest = text.split("://", 1)
+    scheme = scheme.lower()
+    _require_scheme(scheme, text)
+    authority, slash, tail = rest.partition("/")
+    if slash and tail.strip("/"):
+        raise NormalizeError(
+            f"base 的路径必须是根（`http://a/`），收到 {text!r} ——"
+            f"把相对路径拼到一个子目录后面有多种合理答案，猜错的代价是一整棵子树"
+            f"落到错误的 key 上")
+    if "@" in authority:                     # userinfo 是凭据，不进 base（§4.5）
+        authority = authority.rsplit("@", 1)[1]
+    raw_host, raw_port = _split_authority(authority)
+    host = _normalize_target_host(raw_host)
+    port = _port_or_none(raw_port)
+    return f"{scheme}://{_bracket(host)}" + (f":{port}" if port else "") + "/"
+
+
+def is_absolute_url(raw: object) -> bool:
+    """这一行是不是一条**绝对的** URL（`scheme://…`，且不含空白）。
+
+    **它不是归一化** —— 归一化回答"怎么写才唯一"，这个函数回答"这是什么形状"
+    （`normalize` 的文件头把这条边界写死了）。它住在这里的理由只有一条：scheme
+    的字符集必须**只有一处定义**（`_SCHEME_CHARS`）。解析器各写一份"冒号前是
+    字母就算 scheme"的判据时，两边会在遇到 `1http://a` 或 `ht_tp://a` 的那天分叉，
+    而分叉的表现是"嗅探认领了整份文件、解析器一行都读不出来"。
+
+    scheme 的判据刻意**不**是"http / https 白名单"：白名单会让 `ftp://…` 那样的
+    一行掉进坏行，而它是真实存在的一种发现结果 —— 拒绝一份真实数据比放过一个
+    陌生的 scheme 贵得多（与 `_SCHEME_CHARS` 的注释同一条理由）。
+    """
+    if not isinstance(raw, str):
+        return False
+    if "://" not in raw or any(ch.isspace() for ch in raw):
+        return False
+    head, _, rest = raw.partition("://")
+    if not head or not rest:
+        return False
+    return all(ch in _SCHEME_CHARS for ch in head) and not head[0].isdigit()
+
+
+def _split_base(base: object | None) -> tuple[str, str]:
+    """相对路径的 base → `(scheme, authority)`。校验与规范写法见 `endpoint_base`。"""
+    if base is None:
+        raise NormalizeError(
+            "相对路径需要 base（dirsearch 的 `Target:` 是它的唯一来源）——"
+            "没有 base 就无法知道这是哪台主机上的接口")
+    scheme, _, rest = endpoint_base(base).partition("://")
+    authority = rest.rstrip("/")
+    return scheme, authority
+
+
+def _port_or_none(raw_port: str) -> int | None:
+    """`host:` 后面的那段 → 端口。空 → `None`。
+
+    只认 **ASCII** 数字：`str.isdigit()` 是 Unicode 感知的，`int("٣٤") == 34`，
+    于是一个谁也不认识的端口会被静默当成 34（与 `_strip_port` 同一条理由）。
+    """
+    if not raw_port:
+        return None
+    if not raw_port.isascii() or not raw_port.isdigit():
+        raise NormalizeError(f"endpoint 的端口不是数字：{raw_port!r}")
+    port = int(raw_port)
+    if not 0 < port <= 65535:
+        raise NormalizeError(f"endpoint 的端口越界：{port}")
+    return port

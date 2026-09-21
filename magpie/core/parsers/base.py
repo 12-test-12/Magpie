@@ -326,20 +326,24 @@ class RelationSpec:
     inverse: str = ""
 
 
-#: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`）。刻意先窄
-#: 后宽：每个登记的 kind 都要带三件套，而 `endpoint` / `apischema` 之流的三件套
-#: 只有在阶段 3 各自的解析器里才有真实形状。提前登记它们等于凭空设计一套必然
-#: 要返工的约束（计划书 §3.3 的教训）。
+#: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`
+#: + 3.3 的 `endpoint`）。刻意先窄后宽：每个登记的 kind 都要带三件套，而
+#: `apischema` / `param` / `flow` 之流的三件套只有在阶段 3 / 4 各自的解析器里
+#: 才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束（计划书 §3.3 的
+#: 教训）。
 #:
 #: `cidr` 是这条纪律的正面例子：`ip` 的身份规则里 2.4 就写着"网段是另一种
 #: kind"，但**那时没有产出者**，所以它一直没有被登记；3.1 的 nmap `<target>`
 #: 是第一个真实产出者，三件套同期到位（迁移 `schema/004_kind_cidr.sql`）。
-#: 3.2 的 `vuln` 走的是同一条路（迁移 `schema/005_kind_vuln.sql`）。
+#: 3.2 的 `vuln`（迁移 `schema/005_kind_vuln.sql`）与 3.3 的 `endpoint`
+#: （迁移 `schema/006_kind_endpoint.sql`）走的是同一条路。
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
-             produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1")),
+             produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
     KindSpec(kind="ip", fixture="fixtures/kinds/ip.json", lens="assets",
-             produced_by=("httpx@1", "nmap@1", "nuclei@1")),
+             produced_by=("httpx@1", "nmap@1", "nuclei@1",
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -347,7 +351,8 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("nmap@1",)),
     KindSpec(kind="host", fixture="fixtures/kinds/host.json", lens="assets"),
     KindSpec(kind="service", fixture="fixtures/kinds/service.json", lens="services",
-             produced_by=("httpx@1", "nmap@1", "nuclei@1")),
+             produced_by=("httpx@1", "nmap@1", "nuclei@1",
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
              produced_by=("httpx@1", "nmap@1")),
     #: 漏洞（3.2 起有产出者：nuclei 的 `-jsonl`）。**镜头归属是 003 里已冻结的
@@ -360,6 +365,19 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: `undo` 之后留下幻影行（迁移 005 的文件头把这条说透了）。
     KindSpec(kind="vuln", fixture="fixtures/kinds/vuln.json", lens="vuln",
              produced_by=("nuclei@1",)),
+    #: 接口（3.3 起有产出者：dirsearch / katana / gau / ffuf 四个"路径列表"来源）。
+    #:
+    #: **镜头归属是 `api`**，按 003 的 `lens` CHECK 取值 —— 注意《数据模型修订稿
+    #: v3.1》§10 写的是 `endpoints`，与库不一致。**以 003 为准**（R4 不许改它，
+    #: 新增 lens id 会被 DB 直接拒）。GUI 上想显示"接口"就做显示别名。
+    #:
+    #: 身份是 `主机[:非默认端口] + 路径模板`（`normalize.endpoint_key`）。折叠
+    #: 规则本身在 `normalize.SEGMENT_TEMPLATES`（单点，PARSE-NORM 守着）；而
+    #: **原始路径原样留在 `path` 观测里** —— 折叠是身份的事，不是事实的事，
+    #: 否则"这个 endpoint 到底见过哪些真实路径"就永远答不出来（3.5 镜头、
+    #: 3.6 体检都要用那份证据）。
+    KindSpec(kind="endpoint", fixture="fixtures/kinds/endpoint.json", lens="api",
+             produced_by=("dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。
@@ -384,6 +402,11 @@ RELATION_VOCABULARY: tuple[RelationSpec, ...] = (
         verb="found_on",
         description="漏洞落在某个资产上（CVE-2021-44228@https://app.example.com:443/ --found_on--> app.example.com:443）。端点 kind 是 vuln 与 service（目标里没有 scheme 也没有端口时退化为 domain / ip）。",
         inverse="has_finding",
+    ),
+    RelationSpec(
+        verb="served_by",
+        description="接口归属它所在的服务（app.example.com/user/{id} --served_by--> app.example.com:443）。端点 kind 是 endpoint 与 service —— 3.3 的四个来源都给出 scheme，所以有效端口总能补齐，service 与 httpx / nmap / nuclei 落的是同一个实体。",
+        inverse="serves",
     ),
 )
 

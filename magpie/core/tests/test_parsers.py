@@ -37,7 +37,8 @@ from pathlib import Path
 import pytest
 
 from magpie.core import ingest, normalize, ops, store
-from magpie.core.parsers import base, domainlist, httpx, nmap, nuclei
+from magpie.core.parsers import base, dirsearch, domainlist, ffuf, gau, httpx, \
+    katana, nmap, nuclei
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KINDS = FIXTURES / "kinds"
@@ -118,7 +119,11 @@ def fixtures_for_kind(kind: str) -> list[Path]:
 GOLDEN = [("domainlist", domainlist.DomainListParser),
           ("httpx", httpx.HttpxParser),
           ("nmap", nmap.NmapParser),
-          ("nuclei", nuclei.NucleiParser)]
+          ("nuclei", nuclei.NucleiParser),
+          ("gau", gau.GauParser),
+          ("katana", katana.KatanaParser),
+          ("dirsearch", dirsearch.DirsearchParser),
+          ("ffuf", ffuf.FfufParser)]
 
 
 @pytest.mark.parametrize("tool,cls", GOLDEN)
@@ -407,9 +412,16 @@ def test_unknown_field_reaches_the_ingest_report(db, project, tmp_path):
 
 
 def test_unregistered_kind_is_rejected_by_the_database(db, project):
-    """反例红→绿：未登记的 kind **必然被拒**（不是靠自觉）。"""
+    """反例红→绿：未登记的 kind **必然被拒**（不是靠自觉）。
+
+    ⚠️ 3.3 把这条反例从 `endpoint` 换成了 `apischema`：`endpoint` 在 3.3 被正式
+    登记了，而**一个被转正的反例就不再是反例** —— 它会让这条测试永远绿，同时
+    悄悄失去它唯一的作用。所以换一个仍然未登记的 kind 接着守
+    （`test_unregistered_kind_gets_a_readable_python_error_too` 用的也是它）。
+    `apischema` 要等到 3.4 的接口来源落地才会被登记，那时它同样要再换一次。
+    """
     with pytest.raises(sqlite3.IntegrityError) as exc:
-        store.new_entity(db, project_id=project, kind="endpoint", entity_key="x")
+        store.new_entity(db, project_id=project, kind="apischema", entity_key="x")
     assert "未登记的 kind" in str(exc.value)
 
 
@@ -521,6 +533,9 @@ def _identity_rules() -> dict:
         # 落点 —— 夹具要能分别证明"目标怎么规范化"与"身份怎么拼"。
         "normalize.normalize_vuln_target": normalize.normalize_vuln_target,
         "normalize.vuln_key": normalize.vuln_key,
+        # 3.3 的 endpoint 身份规则（登记在 `kind_registry.identity_rule` 里）。
+        # 折叠规则本身在 `normalize.SEGMENT_TEMPLATES`，这个函数是它的字符串面。
+        "normalize.endpoint_key": normalize.endpoint_key,
         "httpx.service_key": httpx.service_key,
         "httpx.product_key": httpx.product_key,
         "domainlist.accepts": domainlist.accepts,
@@ -659,7 +674,9 @@ def test_load_parsers_finds_every_parser_and_retires_the_bridge():
     """
     parsers, source = ingest.load_parsers()
     assert source == "magpie.core.parsers"
-    assert [p.tool for p in parsers] == ["domainlist", "httpx", "nmap", "nuclei"]
+    assert [p.tool for p in parsers] == [
+        "dirsearch", "domainlist", "ffuf", "gau", "httpx", "katana", "nmap",
+        "nuclei"]
 
 
 def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
@@ -679,6 +696,13 @@ def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
         # nuclei 与 httpx **都是 JSONL**，而 nuclei 的行也带 `host`（3.2 之前
         # httpx 的判据是"有 host 就算我的"）。这一条就是那句话的反例。
         "nuclei": (FIXTURES / "nuclei" / "1" / "input.jsonl").read_text(encoding="utf-8"),
+        # 3.3 的四个"路径列表"来源：两种文本（gau / dirsearch）与两种 JSON
+        # （katana 的 JSONL / ffuf 的整份 JSON）。**四个两两都要拉得开** ——
+        # 它们的判据刻意互不相交，抢错了不会有别的测试发现（这一条就是那个测试）。
+        "gau": (FIXTURES / "gau" / "1" / "input.txt").read_text(encoding="utf-8"),
+        "katana": (FIXTURES / "katana" / "1" / "input.jsonl").read_text(encoding="utf-8"),
+        "dirsearch": (FIXTURES / "dirsearch" / "1" / "input.txt").read_text(encoding="utf-8"),
+        "ffuf": (FIXTURES / "ffuf" / "1" / "input.json").read_text(encoding="utf-8"),
     }
     for name, sample in samples.items():
         ranked = ingest.sniff_rank(sample[:ingest.SAMPLE_BYTES], f"{name}.txt",
@@ -725,7 +749,8 @@ def test_parsers_never_list_the_whole_file():
             raise AssertionError("parse() 把行迭代器物化成列表了 —— 大文件会吃内存")
 
     for cls in (domainlist.DomainListParser, httpx.HttpxParser, nmap.NmapParser,
-                nuclei.NucleiParser):
+                nuclei.NucleiParser, gau.GauParser, katana.KatanaParser,
+                dirsearch.DirsearchParser, ffuf.FfufParser):
         ctx = base.OfflineContext()
         list(cls().parse(NotAList(["app.example.com"]), ctx))
 
@@ -733,7 +758,8 @@ def test_parsers_never_list_the_whole_file():
 def test_parser_class_attributes_are_complete():
     """§5.3 的四个类属性一个都不能少 —— `ingest` 按鸭子类型认它们。"""
     for cls in (domainlist.DomainListParser, httpx.HttpxParser, nmap.NmapParser,
-                nuclei.NucleiParser):
+                nuclei.NucleiParser, gau.GauParser, katana.KatanaParser,
+                dirsearch.DirsearchParser, ffuf.FfufParser):
         assert cls.tool and cls.format_version
         assert isinstance(cls.known_fields, frozenset)
         assert 0.0 < cls.max_confidence <= 1.0
@@ -1473,3 +1499,387 @@ def test_nuclei_severity_drift_is_reported_not_silently_clamped():
     values = [r.value for r in records
               if isinstance(r, base.RawObservation) and r.type == "severity"]
     assert values == ["catastrophic"]
+
+
+# ---------------------------------------------------------------------------
+# 3.3 · **路径模板折叠**：一个是身份、三条是证据（本步的核心交付标准）
+# ---------------------------------------------------------------------------
+#
+# 这一节是 3.3 最值得看的那几行。判据刻意**不是**"有没有产出 endpoint" ——
+# 一个把每条 URL 都建成一个新实体的实现同样有产出，而且更简单。判据是：
+#
+#   * `/user/123`、`/user/456`、`/user/789` → 库里**只有一个** endpoint 实体，
+#     但**三条** `path` 观测，且三条的原始路径逐条可见；
+#   * `/user/abc` 与 `/user/123` **不**归并（不是所有段都是占位符）；
+#   * `/api/v1/users` 与 `/api/v2/users` **不**归并（折掉版本号等于把"两代接口"
+#     这件事抹掉）；
+#   * 查询串进证据、不进身份；scheme 完全不进身份。
+#
+# 没有这四条，"折叠"就只是一个可以被"全都折成一个 {id}"冒充的说法 —— 而那种
+# 实现是**静默丢信息**：接口镜头里两条不同的接口并成一条，谁也不会发现。
+
+_ENDPOINT_FOLDING = "\n".join([
+    "https://app.example.com/user/123",
+    "https://app.example.com/user/456",
+    "https://app.example.com/user/789",
+    "https://app.example.com/user/abc",
+    "http://app.example.com/api/v1/users",
+    "http://app.example.com/api/v2/users",
+]) + "\n"
+
+def _write(tmp_path, name: str, text: str):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _obs_values(db, project_id: int, kind: str, key: str, field: str) -> list:
+    return sorted(str(r[0]) for r in db.execute(
+        "SELECT o.value FROM observations o"
+        "  JOIN entities e ON e.id = o.entity_id"
+        "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
+        " WHERE o.project_id=? AND o.is_current=1 AND e.kind=? AND ek.entity_key=?"
+        "   AND o.semantic_field=?", (project_id, kind, key, field)))
+
+
+def test_endpoint_folding_merges_the_identity_and_keeps_every_raw_path(db, project,
+                                                                      tmp_path):
+    """**本步的核心交付标准**：三个 id 一个实体，三条原始路径逐条可见。
+
+    ⚠️ 这两件事必须**同时**成立，只做到一件都不算：
+    折了身份但没留证据 = 永久答不出"这个 endpoint 到底见过哪些真实路径"（3.5 的
+    镜头页与 3.6 的体检都要用那份证据）；留了证据但没折身份 = 接口列表每抓一次
+    就膨胀一轮，那正是折叠要解决的事。
+    """
+    report = ingest.ingest_file(
+        db, options(db, project, tmp_path),
+        _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+
+    assert report["parser"] == "gau@1", report
+    assert report["state"] == "done", report
+    assert report["reconcile"]["ok"], report["reconcile"]
+
+    keys = _keys(db, project, "endpoint")
+    folded = "app.example.com/user/{id}"
+    assert folded in keys, sorted(keys)
+    # 三个不同的数字 id **没有**留下三个实体：`/user/` 底下只剩模板与那条字面量
+    # 路由（`/user/abc` 是**故意**不折的，见下一条用例）。
+    assert sorted(k for k in keys if k.startswith("app.example.com/user/")) == [
+        "app.example.com/user/abc", folded], sorted(keys)
+
+    assert _obs_values(db, project, "endpoint", folded, "path") == [
+        "/user/123", "/user/456", "/user/789"]
+    assert _obs_values(db, project, "endpoint", folded, "path_template") == [
+        "/user/{id}"]
+
+    # 接口挂在服务上，而那个服务与 httpx / nmap / nuclei 落的是**同一个**实体
+    # （`httpx.service_key` 只在 httpx 里实现一次的意义）。
+    assert "app.example.com:443" in _keys(db, project, "service")
+    assert db.execute(
+        "SELECT COUNT(*) FROM relations r"
+        "  JOIN entity_keys s ON s.entity_id = r.src_id"
+        "  JOIN entity_keys d ON d.entity_id = r.dst_id"
+        " WHERE r.project_id=? AND r.is_current=1 AND r.rel='served_by'"
+        "   AND s.entity_key=? AND d.entity_key='app.example.com:443'",
+        (project, folded)).fetchone()[0] == 1
+
+
+def test_endpoint_never_folds_across_versions_or_literal_segments(db, project,
+                                                                  tmp_path):
+    """两条**反例**，它们比正向那一条更重要。
+
+    `/api/v1/users` 与 `/api/v2/users` 折在一起的话，"哪些还在用 v1"这个本工具
+    存在的理由之一就永远答不出来了；`/user/abc` 折进 `/user/{id}` 则会把一条真实
+    路由藏进模板里。两条都是**静默**的 —— 折叠少了只是行数多，折叠多了没人发现。
+    """
+    ingest.ingest_file(db, options(db, project, tmp_path),
+                       _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+    keys = _keys(db, project, "endpoint")
+
+    assert "app.example.com/user/abc" in keys, sorted(keys)
+    assert "app.example.com/user/{id}" in keys, sorted(keys)
+    # `http://app.example.com/api/v1/users` 的 80 是**默认 web 端口**，不进身份。
+    assert "app.example.com/api/v1/users" in keys, sorted(keys)
+    assert "app.example.com/api/v2/users" in keys, sorted(keys)
+    assert len([k for k in keys if "/api/v" in k]) == 2, sorted(keys)
+
+
+def test_endpoint_query_string_is_evidence_not_identity(db, project, tmp_path):
+    """`?id=1` **不算** key 的一部分（这是写下来的裁定，不是默认值）。
+
+    查询串常带一次性 token，进身份会让同一个接口每抓一次就多一个实体。但原始串
+    必须原样留在 `path` 观测里 —— 折叠的是身份，不是事实。
+    """
+    ingest.ingest_file(
+        db, options(db, project, tmp_path),
+        _write(tmp_path, "gau.txt",
+               "https://app.example.com/admin\n"
+               "https://app.example.com/admin?tab=users#list\n"
+               "https://app.example.com/admin?id=1\n"))
+    keys = _keys(db, project, "endpoint")
+    assert keys == {"app.example.com/admin"}, sorted(keys)
+    assert _obs_values(db, project, "endpoint", "app.example.com/admin",
+                       "path") == ["/admin", "/admin?id=1", "/admin?tab=users#list"]
+
+
+def test_endpoint_scheme_is_not_part_of_the_identity(db, project, tmp_path):
+    """同一台机器上的同一个路径，换过协议还是**同一个接口**（v3.1 §4.4）。
+
+    默认端口同理，而且这里有一处**必须写下来的坑**：折的不能是"按 scheme 取的
+    默认端口"（`http→80` / `https→443`），否则 `http://a:80/x` 折成 `a/x` 而
+    `https://a:80/x` 保留成 `a:80/x` —— scheme 又从后门进了身份。
+    """
+    ingest.ingest_file(
+        db, options(db, project, tmp_path),
+        _write(tmp_path, "gau.txt",
+               "http://app.example.com/x\n"
+               "https://app.example.com/x\n"
+               "http://app.example.com:80/x\n"
+               "https://app.example.com:443/x\n"
+               "https://app.example.com:8443/x\n"))
+    keys = _keys(db, project, "endpoint")
+    assert keys == {"app.example.com/x", "app.example.com:8443/x"}, sorted(keys)
+    # scheme 进了**证据**（观测），没进身份。
+    assert _obs_values(db, project, "endpoint", "app.example.com/x",
+                       "scheme") == ["http", "https"]
+    # 端口 80 与 443 是**两个**默认 web 端口，与 scheme 无关 —— 所以 service
+    # 有三个：80 / 443 / 8443。
+    assert _keys(db, project, "service") == {
+        "app.example.com:80", "app.example.com:443", "app.example.com:8443"}
+
+
+def test_endpoint_relative_path_is_resolved_against_the_report_target(db, project,
+                                                                      tmp_path):
+    """dirsearch 给的是**相对路径**，主机在 `Target:` 那一行上。
+
+    `Target:` 缺失时那条路径是**坏行**，不是"猜一个主机" —— 猜错的代价是一整批
+    接口挂到错误的主机上，而且不会有任何信号。
+    """
+    path = _write(tmp_path, "dirsearch.txt",
+                  "Target: http://app.example.com:8080/\n"
+                  "\n"
+                  "[12:00:00] Starting:\n"
+                  "[12:00:01] 200 -  123B  - /admin\n"
+                  "[12:00:02] 403 -  456B  - /.git/\n")
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["parser"] == "dirsearch@1", report
+    assert _keys(db, project, "endpoint") == {
+        "app.example.com:8080/admin", "app.example.com:8080/.git/"}
+    assert _obs_values(db, project, "endpoint", "app.example.com:8080/.git/",
+                       "status") == ["403"]
+
+    # 没有 Target 的同一批结果：全是坏行，**零事实**。
+    lines = ["[12:00:01] 200 -  123B  - /admin"]
+    records, ctx = parse_with(dirsearch.DirsearchParser, lines)
+    assert records == []
+    assert len(ctx.bad_lines) == 1, ctx.bad_lines
+    assert "base" in ctx.bad_lines[0]["reason"], ctx.bad_lines
+
+
+def test_endpoint_method_is_recorded_only_when_the_source_states_it():
+    """计划书 §4.3 的"无方法记 `UNKNOWN`"落在**渲染层**，不落成一条空观测。
+
+    写一条 `method=UNKNOWN` 是零信息噪声（它会实打实地抬高观测数与存储），
+    与 httpx 对 `failed=False` 的口径一致 —— 缺观测本来就表达了"这个来源不产出
+    方法"。反过来，katana / ffuf **给了**方法就必须记下来，而且要归一化
+    （`get` / `Get` / `GET` 是同一个方法，不折的话接口镜头里会出现假的冲突）。
+    """
+    lines = [
+        json.dumps({"request": {"method": "get",
+                                "endpoint": "https://a.example.com/x"},
+                    "response": {"status_code": 200}}),
+        json.dumps({"request": {"method": "GET",
+                                "endpoint": "https://a.example.com/y"},
+                    "response": {"status_code": 200}}),
+    ]
+    records, _ = parse_with(katana.KatanaParser, lines)
+    methods = [r.value for r in records
+               if isinstance(r, base.RawObservation) and r.type == "method"]
+    assert methods == ["GET", "GET"], methods
+
+    # gau 不产出方法 → **一条 method 观测都没有**（不是 `UNKNOWN` 那种占位）。
+    records, _ = parse_with(gau.GauParser, ["https://a.example.com/x"])
+    assert not [r for r in records
+                if isinstance(r, base.RawObservation) and r.type == "method"]
+
+
+def test_endpoint_reimport_of_the_same_facts_adds_no_rows(db, project, tmp_path):
+    """同一批事实换一份字节 → 一行新的都不该出现。
+
+    这一条比"同一份文件导两遍"强：后者会走 sha256 幂等短路，**不足以**证明事实层
+    的去重。这里字节真的变了（多一行注释），去重只能靠事实键。
+    """
+    ingest_opts = options(db, project, tmp_path)
+    first = ingest.ingest_file(db, ingest_opts,
+                               _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+    assert first["counts"]["added"] > 0, first["counts"]
+    rows_before = _row_counts(db, project)
+
+    again = ingest.ingest_file(
+        db, ingest_opts,
+        _write(tmp_path, "gau-again.txt",
+               _ENDPOINT_FOLDING
+               + "# 多一行注释：字节变了，事实没变\n"))
+    assert again["counts"]["records"] > 0, again["counts"]
+
+    rows_after = _row_counts(db, project)
+    drifted = {k: (rows_before[k], rows_after[k]) for k in rows_before
+               if rows_before[k] != rows_after[k]}
+    assert not drifted, f"重导（不同字节、同一批事实）造出了新行：{drifted}"
+
+
+def test_endpoint_undo_removes_every_endpoint_fact(db, project, tmp_path):
+    """`undo` 该 job → endpoint / service / served_by / 观测全部归零，不留 Inbox。
+
+    "归零"用**逐行指纹**比而不是"某张表没有行"：撤销之后 `entities` 里的行还在
+    （它是历史事实），只是 `is_current=0` —— 指纹比的是有效状态。
+    """
+    baseline = _fingerprint(db)
+    report = ingest.ingest_file(db, options(db, project, tmp_path),
+                                _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+    assert _keys(db, project, "endpoint"), "先得有东西可撤"
+
+    ops.undo(db, job_id=report["job_id"], actor="test")
+
+    assert _keys(db, project, "endpoint") == set()
+    assert _keys(db, project, "service") == set()
+    assert db.execute(
+        "SELECT COUNT(*) FROM relations WHERE project_id=? AND is_current=1"
+        " AND rel='served_by'", (project,)).fetchone()[0] == 0
+    assert db.execute(
+        "SELECT COUNT(*) FROM observations WHERE project_id=? AND is_current=1"
+        " AND semantic_field='path'", (project,)).fetchone()[0] == 0
+
+    # ⚠️ 唯一一条 undo **撤不掉**的残渣，而且它有名字：折叠出来的 endpoint 在
+    # `path` 字段上有多个值，而模型的冲突检测把"同实体同字段多值"一律记成
+    # `value_conflict`（`v_field_conflicts` 没有"多值字段"这个概念）。
+    # 这条 Inbox 项的主体是 project 而不是 job（`created_by_job_id` 为 NULL），
+    # 所以 undo 碰不到它 —— 已单独报给发起人，见本节的
+    # `test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap`。
+    after = _fingerprint(db)
+    residue = sorted(t for t in after if after[t]["rows"] and after[t] != baseline[t])
+    assert residue == ["inbox_items"], f"undo 之后还有别的残留行：{residue}"
+    items = [{"kind": str(r["kind"]), "state": str(r["state"])} for r in db.execute(
+        "SELECT kind, state FROM inbox_items WHERE project_id=?", (project,))]
+    assert items == [{"kind": "value_conflict", "state": "open"}], items
+
+
+def test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap(
+        db, project, tmp_path):
+    """折叠出来的 endpoint 会撞上「一个字段只有一个真值」这条模型假设。
+
+    这条用例**不是**在描述一个正确行为，而是把一处**既有**的模型缺口钉在测试里，
+    让它是可见的、可以被人拍板的：
+
+    * `/user/123`、`/user/456`、`/user/789` 折成一个 endpoint，三条原始路径落在
+      **同一个** `path` 字段的**三个不同值**上 —— 而 `v_field_conflicts` 把
+      "同实体同字段多值"一律记成冲突（它没有"多值字段"这个概念），于是导入一个
+      折叠过的 endpoint 就会开一条 `value_conflict` Inbox 项；
+    * 那条 Inbox 项的主体是 project、不是 job，所以 **undo 撤不掉它**；
+    * 数据量一大，接口镜头里每一个被折过的 endpoint 都会开一条这样的项，
+      而 3.6 的体检页口径是"清空 Inbox 即干净"。
+
+    ⚠️ 这**不是** 3.3 引入的形状 —— httpx 对多值字段 `cname` 早就是同一个行为
+    （两条 CNAME → 一条 `cname` 冲突），本用例的两条断言把它一起证明了。
+    修它要动 `v_field_conflicts` 或 observations 的建模，属 001 的地界（R4 不改），
+    所以 3.3 的选择是：**如实按验收标准落三条观测**，把缺口原样报出来。
+    """
+    report = ingest.ingest_file(db, options(db, project, tmp_path),
+                                _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+    assert report["counts"]["conflicts"] == 1, report["counts"]
+    items = [json.loads(str(r["payload_json"])) for r in db.execute(
+        "SELECT payload_json FROM inbox_items WHERE project_id=? AND state='open'",
+        (project,))]
+    assert items == [{"field": "path",
+                      "values": ["/user/123", "/user/456", "/user/789"]}], items
+
+    # 既有先例：httpx 的多值 `cname` 走的是**同一条**路（所以缺口是模型的，
+    # 不是 3.3 的）。
+    other = _write(tmp_path, "httpx.jsonl", json.dumps(
+        {"host": "b.example.com", "port": "443", "scheme": "https",
+         "status_code": 200, "cname": ["x.cdn.net", "y.cdn.net"]}))
+    httpx_report = ingest.ingest_file(db, options(db, project, tmp_path), other)
+    assert httpx_report["counts"]["conflicts"] == 1, httpx_report["counts"]
+
+
+# ---------------------------------------------------------------------------
+# 3.3 · 负向输入（每个来源一组：空文件 / 截断 / 二进制 / 非 UTF-8）
+# ---------------------------------------------------------------------------
+
+#: 每个来源一条"截断"载荷 —— 各自截在**自己格式最脆的那一处**：
+#: 文本截在 scheme 上、JSONL 截在括号里、整份 JSON 直接断在半路。
+ENDPOINT_TRUNCATED = [
+    ("gau", "gau", b"https:/app.example.com/admin\n", "不是一条绝对 URL"),
+    ("katana", "katana", b'{"request": {"method": "GET", "endpo', "JSON 解析失败"),
+    ("dirsearch", "dirsearch", b"[12:00:01] 200 -  12", "没有路径"),
+    ("ffuf", "ffuf",
+     b'{"config": {"method": "GET"}, "results": [{"url": "http://a.example.com/x"',
+     "JSON 解析失败"),
+]
+
+_ENDPOINT_PARSERS = {"gau": gau.GauParser, "katana": katana.KatanaParser,
+                     "dirsearch": dirsearch.DirsearchParser,
+                     "ffuf": ffuf.FfufParser}
+
+
+@pytest.mark.parametrize("name,tool,payload,reason", ENDPOINT_TRUNCATED,
+                         ids=[c[0] for c in ENDPOINT_TRUNCATED])
+def test_endpoint_truncated_input_lands_nothing_and_says_why(name, tool, payload,
+                                                             reason):
+    """**解析层**的"一条事实都不落"：截断的行产出零记录 + 一句人话。
+
+    判据三件一起看才完整：零记录、恰好一条坏行（报出来了）、没有 Traceback。
+    """
+    lines = payload.decode("utf-8", "replace").splitlines()
+    records, ctx = parse_with(_ENDPOINT_PARSERS[tool], lines)
+    assert records == [], f"{name}: 截断的输入产出了记录"
+    assert len(ctx.bad_lines) == 1, ctx.bad_lines
+    assert reason in ctx.bad_lines[0]["reason"], ctx.bad_lines[0]["reason"]
+    assert "Traceback" not in ctx.bad_lines[0]["reason"]
+
+
+#: 每个来源四种坏输入：空文件 / 截断 / 二进制（zip） / 非 UTF-8（GBK）。
+#: 前三种在 ingest 的探测层就该被拦下（空文件、二进制魔数、编码），第四种是
+#: **能解码**的 —— 它走到解析器，然后在解析器里变成坏行。四条路径都要走一遍。
+_ENDPOINT_NEGATIVE = [
+    (f"{name}-{label}", tool, payload, label)
+    for name, tool, payload, _reason in ENDPOINT_TRUNCATED
+    for label, payload in (("empty", b""), ("truncated", payload),
+                           ("binary", b"PK\x03\x04" + b"\x00" * 64 + b"zip"),
+                           ("gbk", "中文路径\n".encode("gbk")))
+]
+
+
+@pytest.mark.parametrize("name,tool,payload,label", _ENDPOINT_NEGATIVE,
+                         ids=[c[0] for c in _ENDPOINT_NEGATIVE])
+def test_endpoint_negative_inputs_never_crash(db, project, tmp_path, name, tool,
+                                              payload, label):
+    """走**完整的 ingest 管线**（不是只调解析器）：可读报告，不是 Python 堆栈。"""
+    path = tmp_path / f"{name}.dat"
+    path.write_bytes(payload)
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+
+    assert isinstance(report, dict), label
+    assert report["state"] in {"done", "partial", "skipped", "failed",
+                               "needs_confirmation", "cancelled"}, (label, report)
+    assert "Traceback" not in json.dumps(report, ensure_ascii=False), label
+    # 这四种输入**没有一种**能算出接口来 —— 一条事实都不该落。
+    assert report["counts"]["records"] == 0, (name, report["counts"])
+    for kind in ("endpoint", "service", "domain", "ip"):
+        assert not _keys(db, project, kind), f"{name} 落了 {kind} 实体"
+
+
+def test_endpoint_ffuf_report_without_config_is_not_adopted(db, project, tmp_path):
+    """`results` 数组**不是** ffuf 的签名 —— `config` 才是那道分水岭。
+
+    一份"顶层有 results 但没有 config"的 JSON 不是 ffuf 的报告，ffuf 的 sniff
+    给它 0.0；别的解析器也不认领它，所以正确的结局是进人工裁决、零事实 ——
+    而不是被硬猜成一份目录爆破结果。
+    """
+    path = _write(tmp_path, "not-ffuf.json",
+                  json.dumps({"results": [{"url": "http://a.example.com/x",
+                                           "status": 200}]}, ensure_ascii=False))
+    assert ffuf.FfufParser.sniff(path.read_text(encoding="utf-8"), "x.json") == 0.0
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["counts"]["records"] == 0, report["counts"]
+    assert not _keys(db, project, "endpoint")

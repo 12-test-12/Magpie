@@ -1,0 +1,648 @@
+{
+  "tool": "gau",
+  "format_version": "1",
+  "input": "input.txt",
+  "bad_lines": [
+    {
+      "line": 15,
+      "reason": "不是一条绝对 URL（gau 每行一个 URL）"
+    },
+    {
+      "line": 16,
+      "reason": "不是一条绝对 URL（gau 每行一个 URL）"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/",
+      "display": "app.example.com/",
+      "attrs": {
+        "path_template": "/"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/"
+      ],
+      "field": "path",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/"
+      ],
+      "field": "path_template",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/admin",
+      "display": "app.example.com/admin",
+      "attrs": {
+        "path_template": "/admin"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "field": "path",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "field": "path_template",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/admin"
+      ],
+      "field": "path",
+      "value": "/admin?id=1#top"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/user/{id}",
+      "display": "app.example.com/user/{id}",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "path",
+      "value": "/user/123"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "path",
+      "value": "/user/456"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{id}"
+      ],
+      "field": "path",
+      "value": "/user/789"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/user/abc",
+      "display": "app.example.com/user/abc",
+      "attrs": {
+        "path_template": "/user/abc"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/user/abc"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/abc"
+      ],
+      "field": "path",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/abc"
+      ],
+      "field": "path_template",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/abc"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/abc"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/user/{uuid}",
+      "display": "app.example.com/user/{uuid}",
+      "attrs": {
+        "path_template": "/user/{uuid}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/user/{uuid}"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{uuid}"
+      ],
+      "field": "path",
+      "value": "/user/550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{uuid}"
+      ],
+      "field": "path_template",
+      "value": "/user/{uuid}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{uuid}"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/user/{uuid}"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/static/app.7f3a9c1d2e4b5a6f.css",
+      "display": "app.example.com/static/app.7f3a9c1d2e4b5a6f.css",
+      "attrs": {
+        "path_template": "/static/app.7f3a9c1d2e4b5a6f.css"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/static/app.7f3a9c1d2e4b5a6f.css"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/static/app.7f3a9c1d2e4b5a6f.css"
+      ],
+      "field": "path",
+      "value": "/static/app.7f3a9c1d2e4b5a6f.css"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/static/app.7f3a9c1d2e4b5a6f.css"
+      ],
+      "field": "path_template",
+      "value": "/static/app.7f3a9c1d2e4b5a6f.css"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/static/app.7f3a9c1d2e4b5a6f.css"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/static/app.7f3a9c1d2e4b5a6f.css"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com/feed/{date}",
+      "display": "app.example.com/feed/{date}",
+      "attrs": {
+        "path_template": "/feed/{date}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com/feed/{date}"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/feed/{date}"
+      ],
+      "field": "path",
+      "value": "/feed/20260101"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/feed/{date}"
+      ],
+      "field": "path_template",
+      "value": "/feed/{date}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/feed/{date}"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com/feed/{date}"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8080",
+      "display": "app.example.com:8080",
+      "subtitle": "http"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/api/v1/users",
+      "display": "app.example.com:8080/api/v1/users",
+      "attrs": {
+        "path_template": "/api/v1/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "path",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "path_template",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v1/users"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.com:8080/api/v2/users",
+      "display": "app.example.com:8080/api/v2/users",
+      "attrs": {
+        "path_template": "/api/v2/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "path",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "path_template",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.com:8080/api/v2/users"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "cdn.example.com",
+      "display": "cdn.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "cdn.example.com:443",
+      "display": "cdn.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "cdn.example.com/assets/logo.png",
+      "display": "cdn.example.com/assets/logo.png",
+      "attrs": {
+        "path_template": "/assets/logo.png"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "cdn.example.com/assets/logo.png"
+      ],
+      "dst": [
+        "service",
+        "cdn.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/assets/logo.png"
+      ],
+      "field": "path",
+      "value": "/assets/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/assets/logo.png"
+      ],
+      "field": "path_template",
+      "value": "/assets/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/assets/logo.png"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/assets/logo.png"
+      ],
+      "field": "port",
+      "value": 443
+    }
+  ]
+}
