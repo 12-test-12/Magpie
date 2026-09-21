@@ -84,20 +84,34 @@ export const patch = (path, payload) => call(path, {
   body: JSON.stringify(payload === undefined ? {} : payload),
 })
 
+export const put = (path, payload) => call(path, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload === undefined ? {} : payload),
+})
+
 /** SSE 的 URL —— 唯一一处把 token 放进查询串的地方（EventSource 发不了头）。 */
 export function eventsUrl(importId) {
   return `${API_PREFIX}/imports/${encodeURIComponent(importId)}/events` +
     `?token=${encodeURIComponent(token.value)}`
 }
 
+/** 一次**批量跑**的进度流。与导入同构，只是流的 id 是 `run-{id}`。 */
+export function runEventsUrl(runId) {
+  return `${API_PREFIX}/runs/${encodeURIComponent(runId)}/events` +
+    `?token=${encodeURIComponent(token.value)}`
+}
+
 /**
- * 订阅一次导入的事件流。返回一个 `close()`。
+ * 订阅一条事件流。返回一个 `close()`。
  *
  * 批事件里带 `dropped` 计数：慢消费者丢帧是**允许**的（背压策略，见 2.7），
  * 但**丢帧不能静默** —— 这里把丢了多少条原样转给调用方，由界面说给用户听。
+ *
+ * 导入与批量跑共用这一段：两条流的**帧形状是同一个**（`{events: [...]}`），
+ * 各写一份迟早会出现"导入的坏行能看见、批量跑的看不见"。
  */
-export function watchImport(importId, onBatch, onOpen, onClose) {
-  const source = new EventSource(eventsUrl(importId))
+function watchStream(source, onBatch, onOpen, onClose) {
   let closed = false
   const close = () => {
     if (!closed) {
@@ -121,4 +135,12 @@ export function watchImport(importId, onBatch, onOpen, onClose) {
     onClose && onClose()
   }
   return close
+}
+
+export function watchImport(importId, onBatch, onOpen, onClose) {
+  return watchStream(new EventSource(eventsUrl(importId)), onBatch, onOpen, onClose)
+}
+
+export function watchRun(runId, onBatch, onOpen, onClose) {
+  return watchStream(new EventSource(runEventsUrl(runId)), onBatch, onOpen, onClose)
 }

@@ -1038,6 +1038,134 @@ def raw_file_states(conn: sqlite3.Connection) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# 管线定义与运行（3.7b）
+# ---------------------------------------------------------------------------
+#
+# 这一节的存在理由与 3.5 把两条 SQL 收敛进 `core/query.py` 逐字相同：`/api/v1`
+# 的读侧不许在路由里写 SQL（红线 `SQL-FREE` 扫 `api/routes.py` 与
+# `cli/read.py`），而"同一份数据、两种答案"没有任何症状，直到有人按错的那一半
+# 行动。查询写在这里，路由只负责 HTTP 形状。
+
+
+#: 管线定义 / 运行的列表列。与 `JOB_COLUMNS` 同一条纪律：显式列出、顺序稳定
+#: （`SELECT *` 的顺序跟着 schema 走，加一列就让每个消费者的字段顺序变一次）。
+#:
+#: `definition` 在列里，因为列表也要报 `step_count`（它只存在于 JSON 里）；
+#: 列表端点算完之后把它**弹掉**再出信封 —— 定义本身走 `GET /pipelines/{id}`，
+#: 列表不需要把每一份定义都背过去。`report` 不在列里：它只属于 run 详情。
+_PIPELINE_COLUMNS = ("id, project_id, name, format_version, definition_hash,"
+                     " revision, definition, created_at, created_by, updated_at,"
+                     " updated_by, archived_at")
+_RUN_COLUMNS = ("id, project_id, pipeline_id, definition_hash, format_version,"
+                " applied, state, step_count, job_count, actor, started_at,"
+                " finished_at")
+
+
+def _decorate_run(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    item["applied"] = bool(item["applied"])
+    # `can_undo` / `can_redo` 与 `_decorate_job` 同构 —— 界面据此决定按钮，
+    # 而不是自己记一本账（两本账不会同时错，只会各错一半）。
+    item["can_undo"] = bool(item["applied"])
+    item["can_redo"] = not bool(item["applied"])
+    return item
+
+
+def pipelines(conn: sqlite3.Connection, project_id: int, *,
+              include_archived: bool = False,
+              limit: int = DEFAULT_PAGE) -> list[dict]:
+    """定义列表（含各自最近一次 run 的摘要）。
+
+    `step_count` 由**解析定义 JSON** 得出：定义是**输入**，它没有一份"事实的"
+    步骤数可以冗余存储（`pipeline_runs.step_count` 是另一样东西 —— 那一次跑
+    真的跑了几个步骤）。定义的数量级是个位数，"一次列表解析几个 JSON"远小于
+    "为了省它再开一张会和定义对不上的表"。
+    """
+    where = ["d.project_id=?"]
+    params: list[Any] = [int(project_id)]
+    if not include_archived:
+        where.append("d.archived_at IS NULL")
+    rows = []
+    for raw in conn.execute(
+            f"SELECT {_PIPELINE_COLUMNS} FROM pipeline_definitions d"
+            f" WHERE {' AND '.join(where)} ORDER BY d.name LIMIT ?",
+            (*params, page_size(limit))):
+        item = _decorate_definition(raw)
+        item.pop("definition", None)          # 见 `_PIPELINE_COLUMNS` 的说明
+        rows.append(item)
+
+    # 最近一次 run：一条子查询取 id，再一次 `IN (...)` 取明细 —— 不做 N+1。
+    last_ids = [int(r["id"]) for r in conn.execute(
+        "SELECT MAX(id) AS id FROM pipeline_runs WHERE project_id=?"
+        " GROUP BY pipeline_id HAVING MAX(id) IS NOT NULL", (int(project_id),))]
+    if last_ids:
+        marks = ",".join("?" * len(last_ids))
+        latest = {int(r["pipeline_id"]): _decorate_run(r) for r in conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM pipeline_runs WHERE id IN ({marks})"
+            f" ORDER BY id DESC", tuple(last_ids))}
+        for item in rows:
+            item["last_run"] = latest.get(int(item["id"]))
+    else:                                               # pragma: no cover —— 空库
+        for item in rows:
+            item["last_run"] = None
+    return rows
+
+
+def _decorate_definition(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    definition = json_or_none(item.get("definition"))
+    item["step_count"] = len((definition or {}).get("steps") or [])
+    return item
+
+
+def pipeline_detail(conn: sqlite3.Connection, project_id: int,
+                    pipeline_id: int) -> dict[str, Any]:
+    """一条定义 + `definition_hash` + `revision` + 解析好的定义本身。"""
+    row = conn.execute(
+        f"SELECT {_PIPELINE_COLUMNS} FROM pipeline_definitions"
+        f" WHERE id=? AND project_id=?",
+        (int(pipeline_id), int(project_id))).fetchone()
+    if row is None:
+        raise QueryError("E_PIPELINE_NOT_FOUND",
+                         f"管线定义 {pipeline_id} 不存在（项目 {project_id}）",
+                         hint="GET /api/v1/pipelines 看这个项目里有哪些定义")
+    item = _decorate_definition(row)
+    item["definition"] = json_or_none(item.get("definition"))
+    return item
+
+
+def pipeline_runs(conn: sqlite3.Connection, project_id: int, pipeline_id: int, *,
+                  limit: int = DEFAULT_JOB_LIMIT) -> list[dict]:
+    """一条定义的运行历史（最近的在前）。**不带报告** —— 报告在详情里。"""
+    return [_decorate_run(r) for r in conn.execute(
+        f"SELECT {_RUN_COLUMNS} FROM pipeline_runs"
+        f" WHERE project_id=? AND pipeline_id=? ORDER BY id DESC LIMIT ?",
+        (int(project_id), int(pipeline_id), page_size(limit)))]
+
+
+def pipeline_run_detail(conn: sqlite3.Connection, project_id: int,
+                        run_id: int) -> dict[str, Any]:
+    """单个 run（含完整报告）。步骤 → job 的映射就活在 `report.steps[].job_ids`。"""
+    row = conn.execute(
+        f"SELECT {_RUN_COLUMNS}, report FROM pipeline_runs"
+        f" WHERE id=? AND project_id=?",
+        (int(run_id), int(project_id))).fetchone()
+    if row is None:
+        raise QueryError("E_PIPELINE_RUN_NOT_FOUND",
+                         f"管线运行 {run_id} 不存在（项目 {project_id}）",
+                         hint="GET /api/v1/pipelines/{id}/runs 看一条定义的运行历史")
+    item = _decorate_run(row)
+    item["report"] = json_or_none(item.get("report"))
+    return item
+
+
+def pipeline_run_jobs(conn: sqlite3.Connection, run_id: int) -> list[int]:
+    """这次 run 挂着的 job id（正序）。"""
+    return [int(r["id"]) for r in conn.execute(
+        "SELECT id FROM jobs WHERE pipeline_run_id=? ORDER BY id", (int(run_id),))]
+
+
+# ---------------------------------------------------------------------------
 # 增量 diff（`magpie diff` / `GET /diff` 的数据侧）
 # ---------------------------------------------------------------------------
 

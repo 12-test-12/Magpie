@@ -61,6 +61,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     # domain / ip / service / endpoint 的 produced_by。
     # 同样**新增迁移、不改 003–006**（红线 R4）。
     Migration(7, "kind_apischema", SCHEMA_DIR / "007_kind_apischema.sql"),
+    # 管线**定义**与管线**运行**（3.7b）: 两张新表 + `jobs.pipeline_run_id`
+    # + 跨项目触发器。它与 004–007 不同 —— 那四个是往**词表**里加一行，这一个
+    # 是给一个新的持久化产物落表。同样**新增迁移、不改 003–007**（R4）。
+    Migration(8, "pipeline_definitions", SCHEMA_DIR / "008_pipeline_definitions.sql"),
 )
 
 

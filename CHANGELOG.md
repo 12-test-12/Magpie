@@ -12,6 +12,100 @@
 
 ---
 
+## 0.7.0 — 3.7b 编排模式（可编辑管线画布：可保存 / 可复用 / 可批量跑）
+
+**十条新路由 + schema 迁移 008 + 前端第二个模式。** 对 `magpie/core` 的改动
+几乎全是追加：新函数（`pipeline.normalize_definition` / `upgrade_definition`、
+`ops.save_pipeline` / `start_pipeline_run` / `finish_pipeline_run` / `undo_run`
+/ `redo_run`、`query.pipelines` 等），以及 `check.py` 多了一条静态红线
+（10 → 11 条）。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · `/api/v1` 的 `/jobs/{id}` 的 `data` 多一个键 `pipeline_run_id`。**
+
+这是本步唯一一处**改到既有响应形状**的地方。来源是迁移 008 给 `jobs` 加了
+`pipeline_run_id` 列，而 `query.job_row` 用的是 `SELECT *` —— 那个函数返回什么
+列，接口就多什么键。值多为 `null`（用 `magpie import` / GUI 导入建出来的作业
+不属于任何一次批量跑）。
+
+```json
+"job": { "id": 3, "project_id": 1, "kind": "ingest", "...": "...",
+         "pipeline_run_id": 7 }
+```
+
+`query.JOB_COLUMNS`（**列表**用的那一串显式列）**不加**它 —— 作业列表不需要它，
+而 `SELECT *` 的顺序不稳定的坑已经记在那个常量上面了。
+
+**2 · 新增十一条路由**（3.7a §4.5 冻结的形状，此前一律 501 `E_NOT_IMPLEMENTED`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET`    | `/api/v1/pipelines` | 定义列表（含各自最近一次 run 的摘要） |
+| `POST`   | `/api/v1/pipelines` | 建定义（body = 规范形态的 JSON） |
+| `GET`    | `/api/v1/pipelines/{id}` | 定义 + `definition_hash` + `revision` |
+| `PUT`    | `/api/v1/pipelines/{id}` | 保存（body 带 `revision`，不匹配 → 409） |
+| `POST`   | `/api/v1/pipelines/{id}/archive` | 归档（软删，**不提供 DELETE**） |
+| `POST`   | `/api/v1/pipelines/{id}/run` | `{dry_run, base_dir?, data_dir?}` |
+| `GET`    | `/api/v1/pipelines/{id}/runs` | 这个定义的运行历史 |
+| `GET`    | `/api/v1/runs/{run_id}` | 单个 run（含完整报告） |
+| `GET`    | `/api/v1/runs/{run_id}/events` | **SSE**：这次批量跑的进度（流 id 是 `run-{id}`） |
+| `POST`   | `/api/v1/runs/{run_id}/undo` | `{dry_run}` |
+| `POST`   | `/api/v1/runs/{run_id}/redo` | `{dry_run}` |
+
+两条 `run` 的形状**刻意不同**，因为两件事本来就不一样：
+
+* **真跑 → `202` + `{run_id, state, events}`**，跑在写线程里异步进行，进度走
+  SSE。它可能跑几分钟，报告落在 `pipeline_runs.report` 里等着。
+* **干跑 → `200` + `{run_id: null, state, report}`**，**同步**返回完整报告。
+  干跑的硬性标准是"跑完一行都不留"（冻结 F10：它**不写 `pipeline_runs` 行**），
+  所以它没有 run_id 可以订阅、也没有东西可以事后撤销 —— 同步返回是"报告照旧
+  交付给调用方"唯一说得通的形状。与 `/jobs/{id}/undo` 的 `dry_run=true` 同形。
+
+**3 · 新增三个错误码**：`E_PIPELINE_NOT_FOUND`（404）、
+`E_PIPELINE_RUN_NOT_FOUND`（404）、`E_PIPELINE_CONFLICT`（409）；定义本身的
+校验错误一律 `400`，`code` 复用 core 的（`E_PIPELINE_BAD_DEFINITION` /
+`E_PIPELINE_BAD_FORMAT` / `E_PIPELINE_FORMAT_TOO_NEW` / `E_SOURCE_NOT_FOUND`）。
+
+**4 · schema 迁移到 008**（`schema/008_pipeline_definitions.sql`：两张新表
+`pipeline_definitions` / `pipeline_runs` + `jobs.pipeline_run_id` + 一个跨项目
+触发器）。`magpie schema --json` 的 `schema_version` 与 `applied` 因此变成 8。
+
+**5 · 管线定义有了规范形态**（`format_version: 1`）。`source` 从"一个字符串"
+变成"一个带 `kind` 的对象"（`file` / `glob` / `dir`），来源名搬到 `source_name`
+—— 旧写法（`source_glob` + 字符串 `source`）读得懂并被归一化，但**只写了
+`source: "名字"` 这一种会报错**（它有两种读法，而"猜"在这里没有依据）。这条
+影响 `magpie pipeline run <yaml>` 的**报告**：每个 step 的 `source_glob` 键变成
+`source`（对象），并新增 `source_name` 与顶层 `base_dir`。
+
+### 数据库层面新增的能力
+
+* `pipeline_definitions` —— 一条**可复用的管线定义**。它**不是事实**：保存 /
+  改名 / 归档不建 job、不产生贡献、不参与 undo / redo（3.7a 冻结 F4）。
+* `pipeline_runs` —— 一次"批量跑"。**1 个 run + N 个 job**（job 的粒度不变，
+  永远是一个文件一个 job）：run 是**分组**，不是新的一种 job。
+
+### 前端（构建产物已随包入库，`magpie app` 不需要用户装 node）
+
+* `VIEWS` 多一个 `'pipeline'`（编排模式）—— 它只是 `store.view` 的一个新取值，
+  **没有第二套路由状态**。
+* 新画布 `PipelineCanvas.vue` 是**受控**的（图完全由 `store.pipeline.definition`
+  算出来），且**手势只表达依赖（边）**：增删步骤是表单动作。
+* 探索模式**一个字没改**：`GraphCanvas.vue` 仍然 `nodes-connectable=false`、
+  没有 `Handle`、没有连线回调。它的根元素与编排画布一样带 `data-mode`，两条
+  一起构成"这两种模式真的是两个模式"的可断言形式。
+
+### `check.py` 的红线（10 → 11 条）
+
+`READONLY` 从"`frontend/src/**` 里不许出现 18 个名字"**收窄**成"……**除了**
+一个文件里的一个名字"（`_EDITABLE_CANVAS`），并配一条新的
+`READONLY-REVERSE`：白名单每一格必须指向一个真存在的文件、实际命中的名字必须
+⊆ 声明的名字、**声明的名字必须都真的被用到**（这一条防的是"开一个洞，然后把
+新代码都搬进洞里"）、探索模式那一路的文件清单逐个存在且命中 0 个。**只收窄，
+不删除** —— 删掉 READONLY 等于把"探索模式只读"这条不变量丢掉。
+
+---
+
 ## 0.6.0 — 3.6 数据体检页 + Inbox 页（五类问题可见）
 
 **纯新增**：`/api/v1` 没有任何既有字段被改名、改类型或删除；`magpie doctor`

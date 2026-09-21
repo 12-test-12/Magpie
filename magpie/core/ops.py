@@ -9,10 +9,11 @@ dry-run 必须走**同一代码路径**（只有 COMMIT 变成 ROLLBACK），否
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Iterator, Sequence
 
 from . import scope as scope_module
 from . import store
@@ -39,6 +40,231 @@ from .store import (
     sha256_hex,
     transaction,
 )
+
+
+# ---------------------------------------------------------------------------
+# 批量操作的事务外壳 + 管线定义 / 运行（3.7b）
+# ---------------------------------------------------------------------------
+
+
+class PipelineConflict(InvariantError):
+    """乐观锁不匹配 / 名字已被占用。API 层翻成 409 `E_PIPELINE_CONFLICT`。"""
+
+
+class PipelineNotFound(InvariantError):
+    """定义 / 运行不存在。API 层翻成 404 `E_PIPELINE_NOT_FOUND`。"""
+
+
+@contextlib.contextmanager
+def batch_txn(conn: sqlite3.Connection, dry_run: bool,
+              shared: bool) -> Iterator[None]:
+    """批量操作（N 个 job 的 undo / redo）的**命令级**事务外壳。
+
+    `shared=True` 时**不碰边界** —— 边界在上一级（`ingest.dry_run_scope` 那条
+    命令级的）。这条判断只写一次：`undo` / `redo` 各自 `if shared` 一遍，迟早
+    会出现"一个判了、一个没判"，而症状是干跑到第二个 job 才炸。
+
+    与 `_JobTxn` 的 `shared` 是同一条纪律："预演看得见前一个的效果"是干跑
+    说真话的前提。第 2 个 job 的预演必须看得见第 1 个 job 的撤销效果 ——
+    否则"预演说撤 12 条、真跑撤 15 条"就是一份会说假话的预览，而 LARI-34 的
+    结论很直白：**一个会说假话的干跑比没有干跑更糟。**
+    """
+    if shared:
+        yield
+        return
+    with transaction(conn, dry_run=dry_run):
+        yield
+
+
+def _resolve_pipeline(conn: sqlite3.Connection, pipeline_id: int,
+                      project_id: int | None = None) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM pipeline_definitions WHERE id=?",
+                       (int(pipeline_id),)).fetchone()
+    if row is None:
+        raise PipelineNotFound(f"管线定义 {pipeline_id} 不存在")
+    if project_id is not None and int(row["project_id"]) != int(project_id):
+        # 跨项目访问必须响亮 —— 静默返回"没找到"会让调用方去建一个同名的，
+        # 于是同一个 id 在两个项目里各有一份谁也不知道的定义。
+        raise PipelineNotFound(
+            f"管线定义 {pipeline_id} 不属于项目 {project_id}"
+            f"（它属于项目 {int(row['project_id'])}）")
+    return row
+
+
+def _pipeline_row(row: sqlite3.Row, *, created: bool = False) -> dict[str, Any]:
+    return {"id": int(row["id"]), "project_id": int(row["project_id"]),
+            "name": str(row["name"]), "format_version": int(row["format_version"]),
+            "definition_hash": str(row["definition_hash"]),
+            "revision": int(row["revision"]),
+            "created_at": str(row["created_at"]), "created_by": str(row["created_by"]),
+            "updated_at": str(row["updated_at"]), "updated_by": str(row["updated_by"]),
+            "archived_at": None if row["archived_at"] is None else str(row["archived_at"]),
+            "created": bool(created)}
+
+
+def save_pipeline(conn: sqlite3.Connection, *, project_id: int,
+                  definition: dict[str, Any], actor: str = "cli",
+                  pipeline_id: int | None = None,
+                  expected_revision: int | None = None) -> dict[str, Any]:
+    """建（`pipeline_id is None`）或保存（带 `expected_revision`）一条定义。
+
+    【冻结 F4 —— 定义不是事实】**保存一个定义不建 job、不产生 contribution、
+    不参与 undo / redo。** 它的审计走 `activity_log`（`pipeline.save`）与
+    `revision` 乐观锁 —— 那两个机制已经够回答"谁在什么时候改了什么"，而把定义
+    塞进 job 会让"撤到哪"这个问题同时有两个答案。
+
+    `definition` 会先过一遍 `pipeline.canonical_definition`（去掉 `_path` 一类
+    运行时键），再算 `definition_hash`。**这是唯一算 hash 的地方** —— 存进去的
+    文本与 hash 由同一段代码产出，所以"hash 与它声称的那份定义对不上"这件事
+    在结构上不可能发生。
+    """
+    from . import pipeline as pipeline_module               # 延迟导入，避免环
+
+    if hasattr(definition, "keys") and "format_version" not in definition:
+        raise InvariantError("定义缺少 format_version（库里的定义一律带版本）")
+    canonical = pipeline_module.canonical_definition(dict(definition))
+    version = int(canonical.get("format_version") or 0)
+    if version < 1:
+        raise InvariantError("定义缺少 format_version（库里的定义一律带版本）")
+    digest = pipeline_module.definition_hash(canonical)
+    name = str(canonical.get("name") or "")
+    if not name:
+        raise InvariantError("管线定义必须带 name")
+    text = canonical_json(canonical)
+    stamp = now()
+
+    if pipeline_id is None:
+        try:
+            cur = conn.execute(
+                "INSERT INTO pipeline_definitions(project_id, name, format_version,"
+                " definition, definition_hash, revision, created_at, created_by,"
+                " updated_at, updated_by) VALUES (?,?,?,?,?,1,?,?,?,?)",
+                (int(project_id), name, version, text, digest, stamp, actor,
+                 stamp, actor))
+        except sqlite3.IntegrityError as exc:
+            if "pipeline_definitions.project_id, pipeline_definitions.name" in str(exc):
+                raise PipelineConflict(
+                    f"项目 {project_id} 里已经有一条叫 {name!r} 的管线定义。",
+                    ) from exc
+            raise
+        pipeline_id = int(cur.lastrowid)
+        log_activity(conn, actor=actor, action="pipeline.save",
+                     target_kind="pipeline", target_id=pipeline_id,
+                     detail={"created": True, "name": name, "revision": 1,
+                             "definition_hash": digest,
+                             "format_version": version})
+        return _pipeline_row(_resolve_pipeline(conn, pipeline_id, project_id),
+                             created=True)
+
+    current = _resolve_pipeline(conn, pipeline_id, project_id)
+    if expected_revision is None:
+        raise InvariantError(
+            "保存一条既有定义必须带 expected_revision（乐观锁）—— "
+            "不带它就是「最后写的人赢」，而两个编辑器互相覆盖不会有任何症状。")
+    if int(current["revision"]) != int(expected_revision):
+        raise PipelineConflict(
+            f"管线定义 {pipeline_id} 的版本已经变了：你手上是 revision="
+            f"{expected_revision}，库里是 {int(current['revision'])}。",
+            )
+    try:
+        conn.execute(
+            "UPDATE pipeline_definitions SET name=?, format_version=?, definition=?,"
+            " definition_hash=?, revision=revision+1, updated_at=?, updated_by=?"
+            " WHERE id=? AND project_id=? AND archived_at IS NULL",
+            (name, version, text, digest, stamp, actor, int(pipeline_id),
+             int(project_id)))
+    except sqlite3.IntegrityError as exc:
+        if "pipeline_definitions.project_id, pipeline_definitions.name" in str(exc):
+            raise PipelineConflict(
+                f"项目 {project_id} 里已经有一条叫 {name!r} 的管线定义。") from exc
+        raise
+    log_activity(conn, actor=actor, action="pipeline.save",
+                 target_kind="pipeline", target_id=int(pipeline_id),
+                 detail={"created": False, "name": name,
+                         "revision": int(current["revision"]) + 1,
+                         "definition_hash": digest, "format_version": version})
+    return _pipeline_row(_resolve_pipeline(conn, pipeline_id, project_id))
+
+
+def archive_pipeline(conn: sqlite3.Connection, pipeline_id: int, *,
+                     project_id: int | None = None, actor: str = "cli") -> dict[str, Any]:
+    """归档（软删）。**不提供 DELETE** —— 已经跑过的 run 靠 `pipeline_id` 指向它，
+    物理删除会让历史 run 指向一个不存在的定义。
+
+    幂等：已经归档的定义再归档一次不写第二行审计、不改 `archived_at`。
+    """
+    row = _resolve_pipeline(conn, pipeline_id, project_id)
+    if row["archived_at"] is None:
+        conn.execute("UPDATE pipeline_definitions SET archived_at=?, updated_at=?,"
+                     " updated_by=? WHERE id=?",
+                     (now(), now(), actor, int(pipeline_id)))
+        log_activity(conn, actor=actor, action="pipeline.archive",
+                     target_kind="pipeline", target_id=int(pipeline_id),
+                     detail={"name": str(row["name"])})
+    return _pipeline_row(_resolve_pipeline(conn, pipeline_id, project_id))
+
+
+def start_pipeline_run(conn: sqlite3.Connection, *, project_id: int,
+                       pipeline_id: int, definition_hash: str,
+                       format_version: int, step_count: int = 0,
+                       actor: str = "cli") -> int:
+    """建一行 `pipeline_runs`（state='running'），返回 run_id。
+
+    一次"批量跑" = **1 行 run + N 行 jobs**（冻结 F9）。job 的粒度不变 ——
+    永远是一个文件一个 job：`raw_files` 的 UNIQUE(project_id, sha256)、
+    evidence 的 per-file 归属、`job_counts`、`explain_job_scope`、GUI 的
+    `can_undo` / `can_redo` 全部建立在它上面。run 是**分组**，不是新的一种 job。
+    """
+    row = _resolve_pipeline(conn, pipeline_id, project_id)
+    cur = conn.execute(
+        "INSERT INTO pipeline_runs(project_id, pipeline_id, definition_hash,"
+        " format_version, applied, state, step_count, job_count, actor, started_at)"
+        " VALUES (?,?,?,?,1,'running',?,0,?,?)",
+        (int(project_id), int(pipeline_id), str(definition_hash),
+         int(format_version), int(step_count), str(actor), now()))
+    return int(cur.lastrowid)
+
+
+def finish_pipeline_run(conn: sqlite3.Connection, run_id: int, *,
+                        state: str, report: dict[str, Any] | None = None,
+                        job_ids: Sequence[int] = (), actor: str = "cli") -> dict[str, Any]:
+    """给一次 run 收尾：写报告、把 N 个 job 挂到它上面、记一条 `pipeline.run`。
+
+    **job 的挂载走 UPDATE**，因此 `schema/008` 的 `trg_job_run_same_project`
+    守着它（跨项目的 job 挂不上来）。挂载放在收尾而不是开头，是因为 job 的 id
+    要等 `run_pipeline` 跑完才知道 —— 中间崩溃留下的是一条 state='running' 的
+    run 与若干没有归属的 job，那是**如实**的：那一次确实没跑完。
+    """
+    if state not in ("running", "done", "failed", "partial", "aborted"):
+        raise InvariantError(f"bad pipeline run state {state!r}")
+    run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (int(run_id),)).fetchone()
+    if run is None:
+        raise PipelineNotFound(f"管线运行 {run_id} 不存在")
+    ids = [int(j) for j in job_ids]
+    if ids:
+        marks = ",".join("?" * len(ids))
+        conn.execute(f"UPDATE jobs SET pipeline_run_id=? WHERE id IN ({marks})",
+                     (int(run_id), *ids))
+    conn.execute(
+        "UPDATE pipeline_runs SET state=?, report=?, job_count=?, finished_at=?"
+        " WHERE id=?",
+        (str(state), None if report is None else canonical_json(report), len(ids),
+         now(), int(run_id)))
+    log_activity(conn, actor=actor, action="pipeline.run", target_kind="pipeline_run",
+                 target_id=int(run_id),
+                 detail={"pipeline_id": int(run["pipeline_id"]), "state": state,
+                         "job_count": len(ids), "applied": int(run["applied"])})
+    return pipeline_run_row(conn, int(run_id))
+
+
+def pipeline_run_row(conn: sqlite3.Connection, run_id: int) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (int(run_id),)).fetchone()
+    if row is None:
+        raise PipelineNotFound(f"管线运行 {run_id} 不存在")
+    out = dict(row)
+    out["report"] = query.json_or_none(out.get("report"))
+    out["applied"] = bool(out["applied"])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +673,8 @@ def _dst_of(field_value: Any) -> int:
 
 
 def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
-         dry_run: bool = False, purge: bool = True) -> dict[str, Any]:
+         dry_run: bool = False, purge: bool = True,
+         _shared_txn: bool = False) -> dict[str, Any]:
     """撤销一个 job（T2）。v3.2-r4: **完全可逆** —— 与 `redo` 对称。
 
     事实层: 追加 retract 抑制事实（不删贡献、不改贡献，INV-01 无例外）。
@@ -464,13 +691,18 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
     前置条件: `conn` 必须是 `store.connect()` 建出来的连接。本函数按列名取值
     （`row["contribution_kind"]` 等），裸 `sqlite3.connect()` 的行是 tuple，
     会以 `TypeError` 坏在内部 —— 因此入口先守卫（审核 LARI-21）。
+
+    `_shared_txn` 是**内部**参数（3.7b）：为真时本函数不自持事务边界，由调用方
+    （`undo_jobs` / `undo_run`）持着 —— 批量撤销时每个 job 各开一次事务的话，
+    干跑的"预演"就看不见前一个 job 已经撤掉的东西，于是"预演说撤 12 条、真跑
+    撤 15 条"成了一句假话。见 `ingest._JobTxn` 的同一套 `shared` 纪律。
     """
     store.require_row_factory(conn, caller="ops.undo")
     job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if job is None:
         raise InvariantError(f"job {job_id} not found")
 
-    with transaction(conn, dry_run=dry_run):
+    with batch_txn(conn, dry_run, _shared_txn):
         # ---- 1. impact_set ----
         subjects = _recompute_subjects_of_job(conn, job_id)
         impacted_ids = [int(r["id"]) for r in conn.execute(
@@ -579,7 +811,7 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
 
 
 def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
-         dry_run: bool = False) -> dict[str, Any]:
+         dry_run: bool = False, _shared_txn: bool = False) -> dict[str, Any]:
     """重新应用一个被 undo 的 job（T2′）。`redo` 与 `undo` 严格互逆。
 
     动作 = **清掉所有指向 J 的生命周期边** + `jobs.applied = 1`：
@@ -598,7 +830,7 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
     幂等: 已经没有 retract 行且 `applied=1` 时，返回 `{"noop": True}` 报告。
 
     前置条件: 同 `undo` —— `conn` 必须是 `store.connect()` 建出来的连接
-    （入口守卫，审核 LARI-21）。
+    （入口守卫，审核 LARI-21）。`_shared_txn` 的语义同 `undo`。
     """
     store.require_row_factory(conn, caller="ops.redo")
     job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -606,7 +838,7 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
         raise InvariantError(f"job {job_id} not found")
     project_id = int(job["project_id"])
 
-    with transaction(conn, dry_run=dry_run):
+    with batch_txn(conn, dry_run, _shared_txn):
         retract_ids = [int(r["id"]) for r in conn.execute(
             "SELECT id FROM contribution_supersessions WHERE superseded_by_job_id=?"
             " AND reason='retract'", (job_id,))]
@@ -721,6 +953,172 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
         log_activity(conn, actor=actor, action="redo", target_kind="job",
                      target_id=job_id, job_id=job_id, detail=report["impact"])
         return report
+
+
+# ---------------------------------------------------------------------------
+# 批量跑的撤销与重放（3.7b）—— 唯一可逆原语仍然是 **job**
+# ---------------------------------------------------------------------------
+#
+# `undo` 的单位永远是 job（冻结 F11）。一次"批量跑"的撤销 = 把这一批的 N 个
+# job **逐个 undo**，不是发明一个"撤销一个 run"的新原语。这不是偷懒，是唯一
+# 说得通的选法：2.6 冻结的 undo / redo 精确互逆，其证据是**逐行指纹相等**
+# （B 组用例），而逐行指纹是每个 job 的贡献算出来的 —— 任何自己实现一套状态
+# 迁移的"批量撤销"，都必须独立地再证一遍它与 redo 互逆，而那份证明会与 job
+# 的那份分叉。
+#
+# **顺序是冻结的**：撤销**逆序**（job id 从大到小 —— 后写的先撤，从栈顶往下
+# 拆）；重放**正序**（从小到大 —— 按原来的顺序）。撤销是拆栈，重放是重放，
+# 两个方向各有各的对，都写死。
+
+
+def _run_job_ids(conn: sqlite3.Connection, run_id: int, *,
+                 order: str = "DESC") -> list[int]:
+    direction = "DESC" if order.upper() == "DESC" else "ASC"
+    return [int(r["id"]) for r in conn.execute(
+        f"SELECT id FROM jobs WHERE pipeline_run_id=? ORDER BY id {direction}",
+        (int(run_id),))]
+
+
+def _applied_ids(conn: sqlite3.Connection, job_ids: Sequence[int],
+                 applied: int) -> list[int]:
+    ids = [int(j) for j in job_ids]
+    if not ids:
+        return []
+    marks = ",".join("?" * len(ids))
+    return [int(r["id"]) for r in conn.execute(
+        f"SELECT id FROM jobs WHERE id IN ({marks}) AND applied=? ORDER BY id",
+        (*ids, applied))]
+
+
+def undo_jobs(conn: sqlite3.Connection, job_ids: Sequence[int], *,
+              actor: str = "cli", dry_run: bool = False,
+              _shared_txn: bool = False) -> dict[str, Any]:
+    """**撤销一批 job 的唯一实现**（逆序：后写的先撤，从栈顶往下拆）。
+
+    `imports.ImportRegistry.undo`（`/imports/{id}/undo`）与 `undo_run`
+    （`/runs/{id}/undo`）**都调它**。理由与 3.5 把两条 SQL 收敛进
+    `core/query.py` 逐字相同：两份实现不会同时出错，也不会以同样的方式出错，
+    而"同一批作业、两种撤销结果"没有任何症状。
+
+    **部分失败**：第 k 个抛了 → **停下**，不继续。**不假装原子** —— 数据层从不
+    假装（"取消：已提交部分保留，仍可 undo"是同一条哲学），它做的是把状态
+    说清楚：哪几个撤了、卡在哪一个、为什么。`stopped_at` + `error` 就是那句话说
+    出来的地方，可重入：再调一次会从剩下的接着撤。
+    """
+    ordered = sorted({int(j) for j in job_ids}, reverse=True)
+    reports: list[dict[str, Any]] = []
+    undone: list[int] = []
+    stopped_at: int | None = None
+    error: str | None = None
+    with batch_txn(conn, dry_run, _shared_txn):
+        for jid in ordered:
+            try:
+                reports.append(undo(conn, jid, actor=actor, dry_run=dry_run,
+                                    _shared_txn=True))
+            except Exception as exc:                       # noqa: BLE001 —— 见 docstring
+                stopped_at, error = jid, f"{type(exc).__name__}: {exc}"
+                break
+            undone.append(jid)
+    return {"op": "undo.jobs", "dry_run": dry_run, "undone": undone,
+            "reports": reports, "stopped_at": stopped_at, "error": error}
+
+
+def redo_jobs(conn: sqlite3.Connection, job_ids: Sequence[int], *,
+              actor: str = "cli", dry_run: bool = False,
+              _shared_txn: bool = False) -> dict[str, Any]:
+    """`undo_jobs` 的镜像：**正序**重放（按原来的顺序），部分失败同样停下。"""
+    ordered = sorted({int(j) for j in job_ids})
+    reports: list[dict[str, Any]] = []
+    redone: list[int] = []
+    stopped_at: int | None = None
+    error: str | None = None
+    with batch_txn(conn, dry_run, _shared_txn):
+        for jid in ordered:
+            try:
+                reports.append(redo(conn, jid, actor=actor, dry_run=dry_run,
+                                    _shared_txn=True))
+            except Exception as exc:                       # noqa: BLE001
+                stopped_at, error = jid, f"{type(exc).__name__}: {exc}"
+                break
+            redone.append(jid)
+    return {"op": "redo.jobs", "dry_run": dry_run, "redone": redone,
+            "reports": reports, "stopped_at": stopped_at, "error": error}
+
+
+def undo_run(conn: sqlite3.Connection, run_id: int, *, actor: str = "cli",
+             dry_run: bool = False, _shared_txn: bool = False) -> dict[str, Any]:
+    """撤销一次"批量跑" = **把这一批的 N 个 job 逐个 undo**（冻结 F11）。
+
+    刻意**不发明一个"撤销一个 run"的新原语**：2.6 冻结的 `undo` / `redo` 精确
+    互逆，其证据是**逐行指纹相等**（B 组用例），而逐行指纹是每个 job 的贡献算
+    出来的。任何"批量撤销"如果自己实现一套状态迁移，就必须独立地再证一遍它与
+    redo 互逆 —— 而那份证明会与 job 的那份分叉。
+
+    **已经单独撤过的 job**：只撤 `applied = 1` 的那些，已撤的列进
+    `already_undone` 并在报告里如实列出。这样"撤一次撤到哪"的答案是稳定的
+    —— **撤到这次跑之前**，即使中间有人单独撤过几个。
+
+    **部分失败**：`run.applied` 保持 1（这一批还没整体失效），下一个
+    `undo_run` 会从剩下的接着撤 —— 幂等且可重入。整批撤完才翻 0。
+
+    `run.applied` 只动这一列，**不把 `state` 改成 aborted**（冻结 F12）：
+    "跑完了但后来被撤销" 与 "执行失败" 是两件事。
+    """
+    store.require_row_factory(conn, caller="ops.undo_run")
+    run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (int(run_id),)).fetchone()
+    if run is None:
+        raise PipelineNotFound(f"管线运行 {run_id} 不存在")
+    order = _run_job_ids(conn, run_id, order="DESC")           # 逆序：后写的先撤
+    targets = _applied_ids(conn, order, 1)
+    already = [j for j in order if j not in set(targets)]
+
+    batch = undo_jobs(conn, targets, actor=actor, dry_run=dry_run,
+                      _shared_txn=_shared_txn)
+    applied = 1
+    with batch_txn(conn, dry_run, _shared_txn):
+        remaining = _applied_ids(conn, order, 1)
+        if batch["stopped_at"] is None and not remaining:
+            conn.execute("UPDATE pipeline_runs SET applied=0 WHERE id=?", (int(run_id),))
+            applied = 0
+        log_activity(conn, actor=actor, action="pipeline.undo_run",
+                     target_kind="pipeline_run", target_id=int(run_id),
+                     detail={"undone": batch["undone"], "already_undone": already,
+                             "stopped_at": batch["stopped_at"], "applied": applied})
+    return {"op": "undo.run", "run_id": int(run_id), "dry_run": bool(dry_run),
+            "pipeline_id": int(run["pipeline_id"]),
+            "undone": batch["undone"], "already_undone": already,
+            "stopped_at": batch["stopped_at"], "error": batch["error"],
+            "reports": batch["reports"], "applied": applied}
+
+
+def redo_run(conn: sqlite3.Connection, run_id: int, *, actor: str = "cli",
+             dry_run: bool = False, _shared_txn: bool = False) -> dict[str, Any]:
+    """重新应用一次被撤销的批量跑。**正序**（从小到大 —— 按原来的顺序重放）。"""
+    store.require_row_factory(conn, caller="ops.redo_run")
+    run = conn.execute("SELECT * FROM pipeline_runs WHERE id=?", (int(run_id),)).fetchone()
+    if run is None:
+        raise PipelineNotFound(f"管线运行 {run_id} 不存在")
+    order = _run_job_ids(conn, run_id, order="ASC")
+    targets = _applied_ids(conn, order, 0)
+    already = [j for j in order if j not in set(targets)]
+
+    batch = redo_jobs(conn, targets, actor=actor, dry_run=dry_run,
+                      _shared_txn=_shared_txn)
+    applied = 0
+    with batch_txn(conn, dry_run, _shared_txn):
+        remaining = _applied_ids(conn, order, 0)
+        if batch["stopped_at"] is None and not remaining:
+            conn.execute("UPDATE pipeline_runs SET applied=1 WHERE id=?", (int(run_id),))
+            applied = 1
+        log_activity(conn, actor=actor, action="pipeline.redo_run",
+                     target_kind="pipeline_run", target_id=int(run_id),
+                     detail={"redone": batch["redone"], "already_applied": already,
+                             "stopped_at": batch["stopped_at"], "applied": applied})
+    return {"op": "redo.run", "run_id": int(run_id), "dry_run": bool(dry_run),
+            "pipeline_id": int(run["pipeline_id"]),
+            "redone": batch["redone"], "already_applied": already,
+            "stopped_at": batch["stopped_at"], "error": batch["error"],
+            "reports": batch["reports"], "applied": applied}
 
 
 # ---------------------------------------------------------------------------

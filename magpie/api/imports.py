@@ -146,15 +146,32 @@ class ImportRegistry:
         return record
 
     def undo(self, import_id: str) -> WriteTicket | None:
-        """撤销这个导入请求的**全部** job（按 id 倒序：后写的先撤）。"""
+        """撤销这个导入请求的**全部** job（按 id 倒序：后写的先撤）。
+
+        「逆序」与「部分失败就停下」这两条语义在 `ops.undo_jobs` —— **唯一一份
+        实现**，`/runs/{id}/undo` 走的是同一段。这里只把这一批的 id 交过去，
+        并把报告的对外形状保持成 `{import_id, undone, reports}`（3.7a §4.5：
+        本步唯一一处改到既有响应形状的是 `/jobs/{id}` 多出来的
+        `pipeline_run_id`，这一条不在其中）。
+
+        中途停下时**抛错**，而不是返回一份少了后半段的 `undone` 列表：一份
+        "看起来撤完了、其实停在中间"的 200 比一个错误坏得多。错误信息里带着
+        停在哪一个、为什么 —— 这比今天那条裸的异常更具体，而形状一个字没变。
+        """
         record = self.get(import_id)
         if record is None:
             return None
-        job_ids = sorted(record.job_ids, reverse=True)
+        job_ids = list(record.job_ids)
 
         def task(conn):
-            reports = [ops.undo(conn, jid, actor=self.actor) for jid in job_ids]
-            return {"import_id": record.id, "undone": job_ids, "reports": reports}
+            batch = ops.undo_jobs(conn, job_ids, actor=self.actor)
+            if batch["stopped_at"] is not None:
+                raise ops.InvariantError(
+                    f"撤销导入请求 {record.id} 在 job {batch['stopped_at']} 处停下："
+                    f"{batch['error']}\n"
+                    f"  已撤：{batch['undone']}。已撤部分保留，可对剩下的重试。")
+            return {"import_id": record.id, "undone": batch["undone"],
+                    "reports": batch["reports"]}
 
         return self.writer.submit(f"undo {record.id}", task)
 

@@ -340,6 +340,11 @@ ACTION_NAMESPACE = frozenset({
     "parser.register", "parser.set", "parser.rollback",
     "source.register", "evidence.degrade",
     "schema.migrate",
+    # 管线编排（3.7b）。**定义不是事实**（3.7a 冻结 F4）：保存 / 归档一个定义
+    # 只写审计与乐观锁，不建 job、不产生贡献。`pipeline.run` 记的是"跑了一次"，
+    # 它挂着的 N 个 job 各自仍写自己的 `job.start` / `job.finish`。
+    "pipeline.save", "pipeline.archive", "pipeline.run",
+    "pipeline.undo_run", "pipeline.redo_run",
 })
 
 

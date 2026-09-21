@@ -48,11 +48,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, query, store
+from ..core import ingest, ops, pipeline, query, store
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -91,6 +91,11 @@ _QUERY_STATUS: dict[str, int] = {
     "E_ENTITY_NOT_FOUND": 404,
     "E_JOB_NOT_FOUND": 404,
     "E_PROJECT_NOT_FOUND": 404,
+    # 3.7b：管线定义 / 运行的两种"找不到"。定义与运行是两个东西（一个定义可以
+    # 跑很多次），所以是两个 code —— 合起来会让"定义不存在"和"这次跑不存在"
+    # 在调用方那里变成同一句话。
+    "E_PIPELINE_NOT_FOUND": 404,
+    "E_PIPELINE_RUN_NOT_FOUND": 404,
 }
 
 #: 路由上的读查询把 `QueryError` 翻成 `ApiError` 的**唯一装饰器**。
@@ -925,17 +930,453 @@ def paste() -> dict[str, Any]:
     raise not_implemented("粘贴导入", plan="2.6 的写路径 + 阶段 3 的解析器扩张")
 
 
-@router.get("/pipelines", summary="管线列表（尚未实现）")
-def list_pipelines() -> dict[str, Any]:
-    raise not_implemented("管线列表", plan="2.6（管线定义目前只有 core.pipeline 的 YAML 入口）")
+# ---------------------------------------------------------------------------
+# 管线编排（3.7b）—— 定义是可以存的**输入**，不是事实
+# ---------------------------------------------------------------------------
+#
+# 十条路由在这里落地（3.7a §4.5 冻结的形状）。三条纪律：
+#
+#   1. **写定义只走单写队列**（R1）。`POST/PUT /pipelines` 与归档都提交给
+#      `ctx.writer`，本模块一条写库的 SQL 都没有（SQL-FREE 红线也扫这里）。
+#   2. **跑一次 = 调既有的 `core.pipeline.run_pipeline`**。它落到底还是
+#      `ingest.ingest_paths` —— 与 `magpie import`、GUI 导入**同一条**代码路径。
+#      R1"写入口唯一"的全部价值就在这里：批量跑不新开旁路，它只是"按一条定义
+#      依次调同一个入口"。
+#   3. **定义不是事实**（冻结 F4）：保存 / 改名 / 归档不建 job、不产生贡献、
+#      不参与 undo / redo。跑一次也不改定义 —— 跑是读定义、写事实。
+#
+# 真跑与干跑走**两条不同的交付路径**，这是刻意的：
+#
+#   * 真跑 → 202 + `run_id` + SSE 事件流。它可能跑几分钟，报告在
+#     `pipeline_runs.report` 里等着，界面按 run 分组看。
+#   * 干跑 → 200 + 完整报告，**同步**返回。干跑不写 `pipeline_runs` 行
+#     （冻结 F10：跑完一行都不留），所以它没有 run_id 可以订阅，也没有东西
+#     可以事后撤销；"报告照旧交付给调用方"这条要求，同步返回是它唯一说得通
+#     的形状。它与 `/jobs/{id}/undo` 的 `dry_run=true` 是同一个形状。
 
 
-@router.post("/pipelines", summary="建管线（尚未实现）")
-def create_pipeline() -> dict[str, Any]:
-    raise not_implemented("建管线", plan="2.6")
+#: 一次 run 的文件状态里，哪些算"这一轮没成功"。与 `imports._BAD_FILE_STATES`
+#: 同一条纪律：口径只写一次，别在第二个地方再判一遍。
+_RUN_BAD_STATES = frozenset({"failed", "needs_confirmation"})
 
 
-@router.post("/pipelines/{pipeline_id}/run", summary="跑管线（尚未实现）")
-def run_pipeline(pipeline_id: str) -> dict[str, Any]:
-    raise not_implemented(f"跑管线 {pipeline_id!r}",
-                          plan="2.6（现在请用 core.pipeline 的 YAML 入口）")
+def _run_state(report: dict[str, Any]) -> str:
+    """报告 → `pipeline_runs.state`。**`state` 说的是执行结果**，与 `applied`
+    （应用状态）是两件事（冻结 F12）。
+
+    `needs_confirmation` 算"没成功"：它为"待人工裁决"建了一个 job，却一条事实
+    都没落 —— 把它算成 done 会让一份**看着成功、实际漏了一段**的批量跑进历史。
+    """
+    states = [str(f.get("state"))
+              for step in report.get("steps") or []
+              for f in step.get("files") or []]
+    bad = [s for s in states if s in _RUN_BAD_STATES]
+    if bad and len(bad) == len(states):
+        return "failed"
+    if bad:
+        return "partial"
+    return "done"
+
+
+def _definition_error(exc: Any) -> ApiError:
+    """`pipeline.DefinitionError` → 400。`code` 原样带出去（core 只有一份码表，
+    这里不另造一个）。"""
+    return ApiError(400, str(getattr(exc, "code", "E_PIPELINE_BAD_DEFINITION")),
+                    str(exc), hint=getattr(exc, "hint", None))
+
+
+def _normalize_body(conn: sqlite3.Connection, project_id: int, body: dict[str, Any],
+                    request: Request) -> dict[str, Any]:
+    """请求体 → 规范形态。**走 `pipeline.normalize_definition`**（唯一定义校验处）。
+
+    库入口缺省的 `base_dir` 是项目的 data_dir —— 库里的定义没有"所在目录"，
+    不把它显式化的话，"同一份定义从 YAML 跑和从库跑会扫两个不同的目录"，而
+    这种分歧没有任何症状。
+    """
+    rows = query.projects(conn)
+    name = next((r["name"] for r in rows if int(r["id"]) == int(project_id)), None)
+    if name is None:
+        raise ApiError(404, "E_PROJECT_NOT_FOUND", f"项目 {project_id} 不存在")
+    try:
+        definition = pipeline.normalize_definition(body, project=name,
+                                                   base_dir=_ctx(request).data_dir)
+    except pipeline.DefinitionError as exc:
+        raise _definition_error(exc) from exc
+    if not definition.get("name"):
+        # 文件入口允许没有 name（`run_pipeline` 退回文件名），**库入口不允许**：
+        # 定义列表按名字排序、按名字找，一条没有名字的定义在列表里是一行空。
+        raise ApiError(400, "E_PIPELINE_BAD_DEFINITION", "管线定义缺少 name",
+                       hint="给一个能一眼认出它是什么的名字，例如「常规一轮（域名+指纹）」。")
+    return definition
+
+
+@router.get("/pipelines", summary="管线定义列表（含各自最近一次 run 的摘要）")
+@_translating
+def list_pipelines(project: str | None = None, include_archived: bool = False,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    items = query.pipelines(conn, project_id, include_archived=include_archived)
+    return ok(items, count=len(items), project_id=project_id)
+
+
+@router.post("/pipelines", status_code=201, summary="建一条管线定义")
+def create_pipeline(body: dict[str, Any], request: Request,
+                    project: str | None = None,
+                    conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    definition = _normalize_body(conn, project_id, body, request)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.save_pipeline(conn_, project_id=project_id,
+                                 definition=definition, actor=ctx.writer.actor)
+
+    try:
+        saved = ctx.writer.submit("create pipeline", task).result(timeout=30)
+    except ops.PipelineConflict as exc:
+        raise ApiError(409, "E_PIPELINE_CONFLICT", str(exc)) from exc
+    return ok(saved, project_id=project_id)
+
+
+@router.get("/pipelines/{pipeline_id}", summary="一条定义（含 hash 与 revision）")
+@_translating
+def get_pipeline(pipeline_id: int, project: str | None = None,
+                 conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    return ok(query.pipeline_detail(conn, project_id, pipeline_id),
+              project_id=project_id)
+
+
+@router.put("/pipelines/{pipeline_id}", summary="保存定义（乐观锁：body 带 revision）")
+def save_pipeline(pipeline_id: int, body: dict[str, Any], request: Request,
+                  project: str | None = None,
+                  conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """`revision` 不匹配 → 409 `E_PIPELINE_CONFLICT`。
+
+    乐观锁不是洁癖：两个编辑器互相覆盖**不会有任何症状** —— 后保存的那个人
+    看到的是自己刚写的，先保存的那个人认为自己写进去了，而库里只剩一份。
+    """
+    project_id = _resolve_project(conn, project)
+    revision = body.get("revision")
+    definition = {k: v for k, v in body.items() if k != "revision"}
+    if revision is None:
+        raise ApiError(400, "E_PIPELINE_BAD_DEFINITION",
+                       "保存定义必须带 revision（乐观锁）",
+                       hint="先 GET /api/v1/pipelines/{id} 拿到当前的 revision，"
+                            "把它原样带回。")
+    canonical = _normalize_body(conn, project_id, definition, request)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.save_pipeline(conn_, project_id=project_id,
+                                 definition=canonical, actor=ctx.writer.actor,
+                                 pipeline_id=pipeline_id,
+                                 expected_revision=int(revision))
+
+    try:
+        saved = ctx.writer.submit(f"save pipeline {pipeline_id}", task).result(timeout=30)
+    except ops.PipelineConflict as exc:
+        raise ApiError(409, "E_PIPELINE_CONFLICT", str(exc)) from exc
+    except ops.PipelineNotFound as exc:
+        raise ApiError(404, "E_PIPELINE_NOT_FOUND", str(exc)) from exc
+    return ok(saved, project_id=project_id)
+
+
+@router.post("/pipelines/{pipeline_id}/archive", summary="归档定义（软删，没有 DELETE）")
+@_translating
+def archive_pipeline(pipeline_id: int, request: Request,
+                     project: str | None = None,
+                     conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """**不提供 DELETE**：已经跑过的 run 靠 `pipeline_id` 指向它，物理删除会让
+    历史 run 指向一个不存在的定义 —— 于是"这次跑的是哪一版"再也答不上来。"""
+    project_id = _resolve_project(conn, project)
+    query.pipeline_detail(conn, project_id, pipeline_id)      # 找不到就在这里 404
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.archive_pipeline(conn_, pipeline_id, project_id=project_id,
+                                    actor=ctx.writer.actor)
+
+    try:
+        archived = ctx.writer.submit(f"archive pipeline {pipeline_id}",
+                                     task).result(timeout=30)
+    except ops.PipelineNotFound as exc:
+        raise ApiError(404, "E_PIPELINE_NOT_FOUND", str(exc)) from exc
+    return ok(archived, project_id=project_id)
+
+
+class RunBody(BaseModel):
+    """跑一次。`dry_run=True` → 同步返回完整报告，库里的行数一行不变。
+
+    `base_dir` / `data_dir` 可以覆盖定义里的值：GUI 上"换项目 / 换路径再跑"就是
+    它（§4.5 的"可复用"）。**覆盖只作用于这一次跑** —— 不改定义（冻结 F4）。
+    """
+
+    dry_run: bool = False
+    base_dir: str | None = None
+    data_dir: str | None = None
+
+
+def _run_once(ctx: Any, conn: sqlite3.Connection, stored: dict[str, Any],
+              *, dry: bool, base_dir: str | None, data_dir: str | None,
+              stream_id: str | None, run_id: int | None = None) -> dict[str, Any]:
+    """**在写线程里**跑一次管线。真跑与干跑走的是同一个函数、同一份定义。
+
+    `base_dir` / `data_dir` 是**这一次跑**的覆盖（GUI 上"换路径再跑"），它们
+    在算完 hash **之后**才写进定义 —— 一次运行时覆盖不该让"这次跑的是哪一版
+    定义"变成第三个数。定义本身一个字没改（冻结 F4）。
+
+    `run_id` 由调用方**预先建好**时原样使用（真跑走这条路：HTTP 要先把 run id
+    回给客户端，才谈得上立刻订阅 SSE）。没给才就地建 —— 干跑永远不给，所以它
+    一行 `pipeline_runs` 都不写（冻结 F10）。
+    """
+    #: 报告里记的是**库里那一版**定义。覆盖只影响这一次执行。
+    run_hash = pipeline.definition_hash(stored)
+    definition = dict(stored)
+    if base_dir:
+        definition["base_dir"] = str(base_dir)
+
+    def publish(payload: dict[str, Any]) -> None:
+        if stream_id is not None:
+            ctx.broker.publish(stream_id, str(payload.get("event") or "progress"),
+                               payload)
+
+    def on_progress(payload: dict[str, Any]) -> None:
+        # 进度只有一个来源：ingest 的回调。API 层不自己数数 —— 那样迟早会出现
+        # "进度条说 80%，报告说 100%"（`imports.py` 的原话）。
+        publish(payload)
+
+    if not dry and run_id is None:
+        # 干跑**不写** `pipeline_runs` 行（冻结 F10）：一份"预演发生过"的持久
+        # 记录不是事实，而干跑的硬性标准是"跑完一行都不留"。这也是
+        # `pipeline_runs` 上没有 `dry_run` 列的原因 —— 一列永远等于 0 的数字
+        # 比没有这一列更糟，它会被读成"查过了，没有干跑"。
+        run_id = ops.start_pipeline_run(
+            conn, project_id=int(stored["_project_id"]),
+            pipeline_id=int(stored["_pipeline_id"]),
+            definition_hash=run_hash,
+            format_version=int(stored["format_version"]),
+            step_count=len(stored["steps"]), actor=str(ctx.writer.actor))
+    if run_id is not None:
+        publish({"event": "run_start", "run_id": run_id})
+    try:
+        report = pipeline.run_pipeline(conn, definition, data_dir=data_dir,
+                                       dry_run=dry, actor=str(ctx.writer.actor),
+                                       on_progress=on_progress)
+    except Exception as exc:                                # noqa: BLE001
+        message = f"{type(exc).__name__}: {exc}"
+        if run_id is not None:
+            ops.finish_pipeline_run(conn, run_id, state="failed",
+                                    report={"error": message},
+                                    actor=str(ctx.writer.actor))
+        publish({"event": "error", "error": message, "run_id": run_id})
+        if stream_id is not None:
+            ctx.broker.publish(stream_id, "error",
+                               {"run_id": run_id, "error": message}, terminal=True)
+        raise
+    state = _run_state(report)
+    if run_id is not None:
+        ops.finish_pipeline_run(conn, run_id, state=state, report=report,
+                                job_ids=list(report.get("job_ids") or []),
+                                actor=str(ctx.writer.actor))
+        report = dict(report, run_id=run_id, state=state)
+    if stream_id is not None:
+        ctx.broker.publish(stream_id, "done", {
+            "run_id": run_id, "state": state,
+            "job_ids": list(report.get("job_ids") or []),
+            "totals": dict(report.get("totals") or {}),
+        }, terminal=True)
+    return report
+
+
+def _definition_for_run(conn: sqlite3.Connection, project_id: int,
+                        pipeline_id: int) -> dict[str, Any]:
+    """把库里的定义还原成一份**能跑的定义**（规范形态 + 两个运行期标记）。
+
+    `_project_id` / `_pipeline_id` 是**运行期键**（`pipeline.RUNTIME_KEYS`）：
+    它们让 `_run_once` 知道该把 run 行的外键指向谁，而它们不在
+    `canonical_definition` 的产物里，所以 `definition_hash` 算的是定义本身、
+    不含这两个。
+    """
+    detail = query.pipeline_detail(conn, project_id, pipeline_id)
+    definition = detail.get("definition")
+    if not isinstance(definition, dict):
+        raise ApiError(409, "E_PIPELINE_BAD_FORMAT",
+                       f"管线定义 {pipeline_id} 的 definition 列读不出 JSON")
+    return dict(definition, _project_id=int(project_id),
+                _pipeline_id=int(pipeline_id))
+
+
+@router.post("/pipelines/{pipeline_id}/run", status_code=202,
+             summary="跑一条管线（dry_run=true 时同步返回报告）",
+             responses={200: {"description":
+                              "dry_run=true：同步返回完整报告，库里的行数一行不变"}})
+@_translating
+def run_pipeline(pipeline_id: int, body: RunBody, request: Request,
+                 response: Response, project: str | None = None,
+                 conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    definition = _definition_for_run(conn, project_id, pipeline_id)
+    ctx, dry = _ctx(request), bool(body.dry_run)
+
+    if dry:
+        # 干跑**同步**：没有 run_id 可订阅、没有东西可以事后撤销，而"报告照旧
+        # 交付给调用方"是冻结 F10 对干跑唯一的要求。它与 `/jobs/{id}/undo` 的
+        # `dry_run=true` 是同一个形状。
+        report = ctx.writer.submit(
+            f"dry-run pipeline {pipeline_id}",
+            lambda conn_: _run_once(ctx, conn_, definition, dry=True,
+                                    base_dir=body.base_dir, data_dir=body.data_dir,
+                                    stream_id=None)).result(timeout=600)
+        response.status_code = 200
+        return ok({"run_id": None, "state": _run_state(report), "report": report},
+                  project_id=project_id)
+
+    # 真跑分两张票：第一张只建 run 行（快，回给 HTTP 一个 run_id），第二张真跑。
+    # 合成一张的话，202 就得等到整条管线跑完才返回 —— 那正是"异步"要避免的事。
+    def open_run(conn_: sqlite3.Connection) -> int:
+        run_id = ops.start_pipeline_run(
+            conn_, project_id=project_id, pipeline_id=int(pipeline_id),
+            definition_hash=pipeline.definition_hash(definition),
+            format_version=int(definition["format_version"]),
+            step_count=len(definition["steps"]), actor=str(ctx.writer.actor))
+        return int(run_id)
+
+    try:
+        run_id = ctx.writer.submit(f"open run for pipeline {pipeline_id}",
+                                   open_run).result(timeout=30)
+    except ops.PipelineNotFound as exc:
+        raise ApiError(404, "E_PIPELINE_NOT_FOUND", str(exc)) from exc
+
+    stream_id = f"run-{run_id}"
+    ctx.broker.open(stream_id)           # 先开流：迟到订阅者能拿到回放
+    ctx.broker.publish(stream_id, "queued", {
+        "run_id": run_id, "pipeline_id": int(pipeline_id), "project_id": project_id,
+    })
+    ctx.writer.submit(
+        f"run pipeline {pipeline_id}",
+        lambda conn_: _run_once(ctx, conn_, definition, dry=False,
+                                base_dir=body.base_dir, data_dir=body.data_dir,
+                                stream_id=stream_id, run_id=run_id))
+    return ok({"run_id": run_id, "state": "running",
+               "events": f"{API_PREFIX}/runs/{run_id}/events"},
+              project_id=project_id)
+
+
+@router.get("/pipelines/{pipeline_id}/runs", summary="一条定义的运行历史")
+@_translating
+def list_pipeline_runs(pipeline_id: int, project: str | None = None,
+                       limit: int = DEFAULT_JOB_LIMIT,
+                       conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    items = query.pipeline_runs(conn, project_id, pipeline_id, limit=limit)
+    return ok(items, count=len(items), project_id=project_id)
+
+
+@router.get("/runs/{run_id}", summary="单个 run（含完整报告）")
+@_translating
+def get_run(run_id: int, project: str | None = None,
+            conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    row = query.pipeline_run_detail(conn, project_id, run_id)
+    row["job_ids"] = query.pipeline_run_jobs(conn, run_id)
+    return ok(row, project_id=project_id)
+
+
+@router.get("/runs/{run_id}/events", summary="★ SSE：这次批量跑的进度")
+async def run_events(run_id: int, request: Request) -> StreamingResponse:
+    """与 `/imports/{id}/events` 同构，只是流的 id 换成了 `run-{id}`。
+
+    带前缀是为了让人一眼看出它**不是** `job_id`（与 `imp-1` 同一条纪律）。
+    """
+    ctx = _ctx(request)
+    stream_id = f"run-{run_id}"
+    subscription = ctx.broker.subscribe(stream_id)
+
+    async def stream():
+        idle = 0.0
+        try:
+            yield _sse_frame("open", {"run_id": run_id,
+                                      "batch_ms": int(SSE_BATCH_SECONDS * 1000)})
+            while True:
+                if await request.is_disconnected():
+                    break
+                batch, dropped = subscription.drain(SSE_MAX_BATCH)
+                if batch:
+                    idle = 0.0
+                    yield _sse_frame("batch", {
+                        "run_id": run_id, "dropped": dropped,
+                        "events": [e.as_dict() for e in batch],
+                    })
+                    if any(e.terminal for e in batch):
+                        break
+                else:
+                    idle += SSE_BATCH_SECONDS
+                    if idle >= SSE_HEARTBEAT_SECONDS:
+                        idle = 0.0
+                        yield ": keep-alive\n\n"
+                await asyncio.sleep(SSE_BATCH_SECONDS)
+        finally:
+            ctx.broker.unsubscribe(subscription)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    })
+
+
+class RunAction(BaseModel):
+    """`/runs/{id}/undo|redo` 的体。与 `JobAction` 同形（干跑 = 预览）。"""
+
+    dry_run: bool = False
+
+
+def _run_action(ctx: Any, run_id: int, dry: bool, *, undo: bool,
+                actor: str) -> dict[str, Any]:
+    """撤销 / 重放一次批量跑。**整批跑在一个事务里**（冻结 F5.3）。
+
+    `ops.undo` 的实现是 `with transaction(...)`，而 `store.transaction` 无条件
+    `BEGIN IMMEDIATE` —— 嵌套会当场炸。所以入口用 `ingest.dry_run_scope` 开一次
+    命令级的边界（与 `pipeline run --dry-run` 用的是同一个），并把 yield 出来的
+    布尔**原样**传下去。
+
+    不这么做的话："预演说撤掉 12 条贡献、真跑撤掉 15 条"就成了一条会说假话的
+    预览 —— 而一个会说假话的干跑比没有干跑更糟。
+    """
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        with ingest.dry_run_scope(conn_, dry) as command_txn:
+            if undo:
+                return ops.undo_run(conn_, run_id, actor=actor, dry_run=dry,
+                                    _shared_txn=command_txn)
+            return ops.redo_run(conn_, run_id, actor=actor, dry_run=dry,
+                                _shared_txn=command_txn)
+
+    label = f"{'dry-run ' if dry else ''}{'undo' if undo else 'redo'} run {run_id}"
+    return ctx.writer.submit(label, task).result(timeout=120)
+
+
+@router.post("/runs/{run_id}/undo", summary="撤销一次批量跑（逆序逐个 undo）")
+@_translating
+def undo_run(run_id: int, body: RunAction, request: Request,
+             project: str | None = None,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    query.pipeline_run_detail(conn, project_id, run_id)       # 找不到就在这里 404
+    ctx = _ctx(request)
+    return ok(_run_action(ctx, run_id, bool(body.dry_run), undo=True,
+                          actor=str(ctx.writer.actor)),
+              project_id=project_id)
+
+
+@router.post("/runs/{run_id}/redo", summary="重放一次被撤销的批量跑（正序逐个 redo）")
+@_translating
+def redo_run(run_id: int, body: RunAction, request: Request,
+             project: str | None = None,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    query.pipeline_run_detail(conn, project_id, run_id)
+    ctx = _ctx(request)
+    return ok(_run_action(ctx, run_id, bool(body.dry_run), undo=False,
+                          actor=str(ctx.writer.actor)),
+              project_id=project_id)

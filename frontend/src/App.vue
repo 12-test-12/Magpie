@@ -23,6 +23,7 @@ import CommandPalette from './components/CommandPalette.vue'
 import GraphCanvas from './components/GraphCanvas.vue'
 import EmptyGuide from './components/EmptyGuide.vue'
 import LensView from './views/LensView.vue'
+import PipelineView from './views/PipelineView.vue'
 import JobsView from './views/JobsView.vue'
 import InboxView from './views/InboxView.vue'
 import DoctorView from './views/DoctorView.vue'
@@ -103,6 +104,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             </template>
           </GraphCanvas>
         </template>
+        <!-- 编排模式（`store.view` 的第二个取值）。**可编辑只在这一支里**：
+             `GraphCanvas.vue` 那一边的只读保证一个字没动。右栏详情
+             （`showDetail`）只跟着 `explore` 出现，所以这里不用改它 ——
+             它已经是对的。 -->
+        <PipelineView v-else-if="store.view === 'pipeline'" />
         <LensView v-else-if="store.view === 'assets'" lens="assets" label="资产" />
         <LensView v-else-if="store.view === 'services'" lens="services"
                   label="服务与中间件" />

@@ -99,7 +99,11 @@ defineExpose({ fitView })
 </script>
 
 <template>
-  <div ref="host" class="canvas">
+  <!-- `data-mode` 是「两种模式真的不同」这条交付标准的**可断言形式**（3.7a
+       §3.4）：`PipelineCanvas.vue` 的根元素上是 `"pipeline"`。靠一个徽标区分
+       听起来很薄，但它的作用是让人在拖完一个节点之后不产生"我刚才是不是改了
+       数据"的疑问 —— 而这个疑问本身才是混乱的来源。 -->
+  <div ref="host" class="canvas" data-mode="explore">
     <div class="mode-badge">
       <span class="lock">🔒</span>
       <span>探索模式 · 只读</span>

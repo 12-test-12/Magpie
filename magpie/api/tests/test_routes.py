@@ -376,9 +376,9 @@ def test_agent_context_is_markdown_plus_json(loaded):
     ("GET", "/api/v1/search?q=x"),
     ("GET", "/api/v1/diff?since=last"),
     ("POST", "/api/v1/paste"),
-    ("GET", "/api/v1/pipelines"),
-    ("POST", "/api/v1/pipelines"),
-    ("POST", "/api/v1/pipelines/1/run"),
+    # 三条 `/pipelines` 从 3.7b 起是**真端点**（编排模式落地），这里的 501 断言
+    # 相应地删掉 —— 留下它们就等于在断言"这一块还没做"，而那句话已经不成立。
+    # 它们的行为由 `test_pipelines.py` 接管。
 ])
 def test_unimplemented_endpoints_are_loud(client, method, path):
     """501 + 结构化错误，**不是**空数组 —— 空数组会被读成"这里就是没有"。"""

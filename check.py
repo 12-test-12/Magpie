@@ -42,6 +42,8 @@
     PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
     FLOOR     不超出声明下限的语法 / 标准库 API / 运行时求值
     READONLY  探索模式只读：frontend/src/** 不得出现增删节点与边的名字（2.8）
+    READONLY-REVERSE  ↑ 那条红线的**收窄**是"文件级 × 名字级"白名单，
+              这一条反向证明它没被滥用（3.7b）
     SQL-FREE  cli/read.py 与 api/routes.py 不得出现 SQL（读这条路只有一份实现，3.5）
 
 关于 PARSE-RO / PARSE-NORM（2.4 的两条硬线）:
@@ -976,6 +978,207 @@ def _selftest_readonly() -> list:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# READONLY 的**收窄**（3.7b）：文件级 × 名字级白名单
+# ---------------------------------------------------------------------------
+#
+# 3.7 是整个阶段里唯一一处把画布从只读变成可编辑的改动。加上可编辑画布之后
+# READONLY 必然变红，而**不许删掉它** —— 删掉等于把"探索模式只读"这条不变量
+# 丢掉，而那是 2.8 的核心承诺，也是这个工具面向自用场景时唯一的安全边界。
+#
+# 所以：**只收窄，不删除，并且收窄之后要比原来多一条反向断言。**
+#
+# 洞有多大是**算出来的**，不是估的。编排画布真正需要"图的 API"的动作只有一个
+# —— 从一个步骤的 Handle 拖一条线到另一个步骤；而连线本身还不走 `addEdges`
+# （受控画布把 `connect` 事件翻译成 `store.connectSteps`，改的是**定义**，节点
+# 与边随后由 `computed` 重新算出来）。于是白名单是**一个文件 × 一个名字**。
+#
+# **一个手势换一个洞，这笔账划得来。** 一开始就放开一整族，是把决定权交了
+# 出去 —— 而"开一个洞，然后所有新代码都搬进洞里"正是这个洞唯一的下场。
+
+#: 编排模式画布的**文件级 × 名字级**白名单。两条纪律，都不是风格：
+#:
+#:   * **文件级，不是目录级** —— 目录级白名单等于把洞挖成一个房间：任何新文件
+#:     放进那个目录就自动免检。文件级让每一次扩张都必须改下面这一行，而那是一次
+#:     要过 review 的 diff。"洞"的代价应该落在**写代码的人**身上，不是落在
+#:     下一个读这条规则的人身上。
+#:   * **名字级，不是整表放开** —— 只放开该文件真的用到的那几个名字。放开整表
+#:     之后，"这个文件为什么需要 addNodes"这个问题就再也没有地方问了。
+#:
+#: 已知边界：把 onConnect 存进变量再间接调用、或从 Vue Flow 的 composable 里
+#: 换一个没列进清单的别名，都绕得过去（见 _GRAPH_MUTATION_NAMES 上方那段）。
+#: 这条收窄没有、也不可能提高那个上限 —— 它只把"哪里允许出现什么"写清楚。
+_EDITABLE_CANVAS = {
+    Path("frontend") / "src" / "components" / "PipelineCanvas.vue":
+        frozenset({"onConnect"}),
+}
+
+#: **探索模式那一路的文件清单**（不是目录）—— 反向断言的锚点。
+#: 它们是"看数据"这条路的全部入口：图的状态、纯逻辑、两个组件、外壳。
+#: 这份清单钉的是"这条路必须一直是干净的"，而不是"某个目录必须干净" ——
+#: 把 `GraphCanvas.vue` 改名或搬家都不会让它静默失效。
+_EXPLORE_CANVAS_FILES = (
+    Path("frontend") / "src" / "store.js",
+    Path("frontend") / "src" / "graph.js",
+    Path("frontend") / "src" / "components" / "GraphCanvas.vue",
+    Path("frontend") / "src" / "components" / "EntityNode.vue",
+    Path("frontend") / "src" / "App.vue",
+)
+
+
+def _readonly_audit(sources: dict, editable: dict, explore) -> dict:
+    """把白名单的**三条规则**跑在一份给定源码上。**本函数不读盘。**
+
+    不读盘是为了能自检：规则读盘的话，"自检"就只能靠"改一个真文件、跑完再改
+    回来"，而那种自检会在某次跑挂时把仓库留在脏状态。生产调用把真的扫描结果
+    递进来，自检递一份构造出来的小样本 —— 验的是同一段代码。
+
+    返回四组发现，对应 §6.3 的 (a)–(d) 加上 READONLY 本身：
+
+        violations       白名单**之外**的名字（READONLY 报的就是它）
+        whitelist_missing 白名单指向一个不存在 / 不在 frontend/src 下的文件
+        undeclared        白名单文件里出现了**没声明**的名字（洞偷偷变大）
+        unused            声明的名字**没有真的被用到**（白名单提前扩张）
+    """
+    #: {相对路径: [命中的名字]}（去重后排序）—— 只统计**出现过**的名字。
+    hits: dict = {}
+    for rel, text in sources.items():
+        names = sorted({name for _, name in _readonly_violations(text)})
+        if names:
+            hits[rel] = names
+
+    report = {"violations": [], "whitelist_missing": [], "undeclared": [],
+              "unused": [], "explore": []}
+
+    for rel in sorted(sources, key=lambda item: item.as_posix()):
+        allowed = editable.get(rel, frozenset())
+        for lineno, name in _readonly_violations(sources[rel]):
+            if name in allowed:
+                continue
+            report["violations"].append((rel, lineno, name))
+        extra = [name for name in hits.get(rel, []) if name not in allowed]
+        if rel in editable and extra:
+            report["undeclared"].append((rel, extra))
+
+    frontend_src = _FRONTEND_SRC.relative_to(ROOT)
+    for rel in sorted(editable, key=lambda item: item.as_posix()):
+        declared = editable[rel]
+        if rel not in sources or not rel.is_relative_to(frontend_src):
+            # 指向不存在的文件、或指向 frontend/src 之外 —— 两者都是同一种坏：
+            # 这个条目**不参与扫描**，于是白名单成了装饰。
+            report["whitelist_missing"].append((rel, "不存在或不在 frontend/src 下"))
+            continue
+        unknown = sorted(name for name in declared
+                         if name not in _GRAPH_MUTATION_NAMES)
+        if unknown:
+            # 白名单只能写 `_GRAPH_MUTATION_NAMES` 里的名字 —— 否则它可以被写成
+            # 一份谁都看不懂的清单（写个 `doThing` 进去，规则永远不报）。
+            report["whitelist_missing"].append(
+                (rel, f"声明了 18 个名字之外的东西：{unknown}"))
+        unused = sorted(name for name in declared
+                        if name not in set(hits.get(rel) or ()))
+        if unused:
+            # **这一条防的是"开一个洞，然后所有新代码都搬进洞里"。** 一个
+            # "留着以后用"的白名单条目就是洞的**预授权**：它让下一次加写操作
+            # 变成"只是用了已经允许的名字"。要求每个声明的名字都真的被用到，
+            # 等于要求白名单每一条都有当下的理由。
+            report["unused"].append((rel, unused))
+
+    for rel in explore:
+        if rel not in sources:
+            # 文件没了也算失败：这几条路的下场不是"规则静默变绿"，而是"看数据
+            # 这条路被搬去了别处" —— 那时要改的是这份清单，不是让它空转。
+            report["explore"].append((rel, "不存在（清单要跟着代码走）"))
+            continue
+        if rel in editable:
+            # 两个清单求交集：非空即红。它挡住的是"把探索模式的组件搬进白名单"。
+            report["explore"].append((rel, "同时出现在可编辑白名单里"))
+        if hits.get(rel):
+            report["explore"].append((rel, f"命中了写操作名 {hits[rel]}"))
+    return report
+
+
+def _frontend_sources() -> dict:
+    """扫 `frontend/src/**` 的 .js / .vue，返回 {相对路径: 文本}。
+
+    扫的是**源码**（不是构建产物）：产物是压缩过的一行，名字全被改了，扫它等于
+    什么都没扫。源码才是"有没有人写下这个能力"的地方，而"能力存不存在"正是
+    只读与否的分界。
+    """
+    sources: dict = {}
+    for path in sorted(_FRONTEND_SRC.rglob("*")):
+        if not path.is_file() or path.suffix not in (".js", ".vue"):
+            continue
+        try:
+            sources[path.relative_to(ROOT)] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):          # pragma: no cover
+            continue
+    return sources
+
+
+def _selftest_readonly_scope() -> list:
+    """白名单的**反例自检**：五个反例逐条验（没有自检的静态规则很可能是
+    "碰巧永远不报"，那和没写没有区别）。
+
+    | 反例 / 对照                                              | 期望 |
+    |----------------------------------------------------------|------|
+    | 白名单文件里出现**未声明**的名字                           | 报   |
+    | 白名单文件里出现**已声明**的名字                           | 不报 |
+    | 非白名单文件里出现任意一个名字                             | 报   |
+    | 白名单条目指向一个不存在的文件                             | 报   |
+    | 白名单条目落在 18 个名字之外（写个 `doThing`）             | 报   |
+    """
+    problems = []
+    canvas = Path("frontend") / "src" / "components" / "PipelineCanvas.vue"
+    storejs = Path("frontend") / "src" / "store.js"
+
+    def audit(sources, editable):
+        return _readonly_audit(sources, editable, ())
+
+    declared = {canvas: frozenset({"onConnect"})}
+
+    case = audit({canvas: "flow.addNodes(x)\n"}, declared)
+    if not case["undeclared"]:
+        problems.append("READONLY-SCOPE 自检失败：白名单文件里的**未声明**名字没被检出")
+
+    case = audit({canvas: "const { onConnect } = useVueFlow()\nonConnect(cb)\n"},
+                 declared)
+    if case["violations"] or case["undeclared"] or case["unused"]:
+        problems.append(f"READONLY-SCOPE 自检失败：已声明的名字被误报 —— {case}")
+
+    case = audit({storejs: "flow.addNodes(x)\n"}, declared)
+    if not case["violations"]:
+        problems.append("READONLY-SCOPE 自检失败：非白名单文件里的名字没被检出")
+
+    case = audit({canvas: "const { onConnect } = useVueFlow()\n"},
+                 {Path("frontend") / "src" / "components" / "Ghost.vue":
+                  frozenset({"onConnect"})})
+    if not case["whitelist_missing"]:
+        problems.append("READONLY-SCOPE 自检失败：白名单指向不存在的文件没被检出")
+
+    # 白名单指向 frontend/src 之外 → 它根本不参与扫描，同样是"静默的洞"
+    case = audit({canvas: "const { onConnect } = useVueFlow()\n"},
+                 {Path("tools") / "Canvas.vue": frozenset({"onConnect"})})
+    if not case["whitelist_missing"]:
+        problems.append("READONLY-SCOPE 自检失败：白名单指向 frontend/src 之外没被检出")
+
+    case = audit({canvas: "const { onConnect } = useVueFlow()\n"},
+                 {canvas: frozenset({"doThing"})})
+    if not case["whitelist_missing"]:
+        problems.append("READONLY-SCOPE 自检失败：白名单里 18 个名字之外的名字没被检出")
+
+    # 反向断言 (c) 自己的反例：声明的名字**没被用到** → 必须报
+    case = audit({canvas: "const x = 1\n"}, declared)
+    if not case["unused"]:
+        problems.append("READONLY-SCOPE 自检失败：声明了却没用到的名字没被检出")
+
+    # 反向断言 (d) 自己的反例：探索模式的清单里出现一个写操作名 → 必须报
+    case = _readonly_audit({storejs: "flow.addNodes(x)\n"}, declared, (storejs,))
+    if not case["explore"]:
+        problems.append("READONLY-SCOPE 自检失败：探索模式清单里的写操作名没被检出")
+    return problems
+
+
 def _rule_readonly() -> list:
     bad = _selftest_readonly()
     if not _FRONTEND_SRC.is_dir():
@@ -983,19 +1186,52 @@ def _rule_readonly() -> list:
         # 静默变绿"的断言，会在某次重构把目录改名之后继续绿着。
         return bad + [f"未找到 {_FRONTEND_SRC.relative_to(ROOT)} —— "
                       f"READONLY 断言无从谈起（2.8 起前端源码必须在这里）"]
-    for path in sorted(_FRONTEND_SRC.rglob("*")):
-        if not path.is_file() or path.suffix not in (".js", ".vue"):
-            continue
-        rel = path.relative_to(ROOT)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):          # pragma: no cover
-            continue
-        for lineno, name in _readonly_violations(text):
-            bad.append(_v(rel, lineno,
-                          f"{name} —— READONLY：探索模式不能增删节点与边"
-                          f"（计划书 §7.2 / 2.8 交付标准）。画布的内容只能来自 "
-                          f"GET /graph；可编辑的是将来的编排模式"))
+    audit = _readonly_audit(_frontend_sources(), _EDITABLE_CANVAS,
+                            _EXPLORE_CANVAS_FILES)
+    for rel, lineno, name in audit["violations"]:
+        bad.append(_v(rel, lineno,
+                      f"{name} —— READONLY：探索模式不能增删节点与边"
+                      f"（计划书 §7.2 / 2.8 交付标准）。画布的内容只能来自 "
+                      f"GET /graph；编排模式的白名单见 _EDITABLE_CANVAS"))
+    return bad
+
+
+def _rule_readonly_reverse() -> list:
+    """**反向断言**：白名单不是"这里随便写"，是"这里只允许这几个名字"。
+
+    四组，全部会变红：
+
+      (a) **存在性** —— 白名单每一格都指向一个真的存在的 `frontend/src` 下的
+          文件。一个指向不存在文件的白名单条目是**静默的洞**：`rglob` 扫不到
+          它，规则永远绿。同时禁止白名单指向 `frontend/src` 之外 —— 否则它
+          根本不参与扫描，白名单就成了装饰。
+      (b) **实际 ⊆ 声明** —— 防的是洞在实现期自己长大。没有它，白名单文件里
+          写 `addNodes` 不会有任何反应，而"反正这个文件已经豁免了"正是最自然
+          的一步。
+      (c) **声明 ⊆ 实际** —— 防"开一个洞，然后所有新代码都搬进洞里"。
+      (d) **探索模式清单** —— 逐个：存在、不在白名单里、命中 0 个。它不依赖
+          目录布局，钉的是"看数据这条路的那几个文件"，同时挡住"把探索模式的
+          组件搬进白名单"这个动作（两个清单求交集，非空即红）。
+    """
+    bad = _selftest_readonly_scope()
+    if not _FRONTEND_SRC.is_dir():                      # pragma: no cover —— 同上
+        return bad
+    audit = _readonly_audit(_frontend_sources(), _EDITABLE_CANVAS,
+                            _EXPLORE_CANVAS_FILES)
+    for rel, why in audit["whitelist_missing"]:
+        bad.append(f"READONLY 反向断言(a)失败：白名单条目 {rel.as_posix()} —— {why}。"
+                   f"一个扫不到的白名单条目是**静默的洞**，规则会永远绿")
+    for rel, names in audit["undeclared"]:
+        bad.append(f"READONLY 反向断言(b)失败：{rel.as_posix()} 出现了**没声明**的"
+                   f"名字 {names} —— 白名单只允许它声明的那几个，"
+                   f"「反正这个文件已经豁免了」正是洞长大的那一步")
+    for rel, names in audit["unused"]:
+        bad.append(f"READONLY 反向断言(c)失败：{rel.as_posix()} 声明了 {names}，"
+                   f"但它并没有被用到 —— 一个「留着以后用」的条目就是洞的"
+                   f"预授权。不用了就删掉这一行")
+    for rel, why in audit["explore"]:
+        bad.append(f"READONLY 反向断言(d)失败：探索模式的清单里 {rel.as_posix()} "
+                   f"{why} —— 这条清单钉的是「看数据这条路必须一直是干净的」")
     return bad
 
 
@@ -1144,8 +1380,15 @@ RULES = (
     ("FLOOR", "不超出声明下限（pyproject.toml 的 requires-python）的语法 / 标准库 API / "
               "运行时求值",
      _rule_floor),
-    ("READONLY", "探索模式只读：frontend/src/** 不得出现增删节点与边的名字",
+    ("READONLY", "探索模式只读：frontend/src/** 不得出现增删节点与边的名字"
+                 "（编排画布的白名单见 _EDITABLE_CANVAS）",
      _rule_readonly),
+    # 3.7b：白名单必须**被反向证明**是"只允许这几个"，而不是"这里随便写"。
+    # 没有这一条，收窄就只是把洞从"18 个名字"换成"一个文件"，而那个文件会
+    # 慢慢变成第二套画布 API 的落脚点。
+    ("READONLY-REVERSE", "白名单是「只允许这几个」：存在 / 实际⊆声明 / 声明⊆实际 "
+                         "/ 探索模式清单逐个干净",
+     _rule_readonly_reverse),
     ("SQL-FREE", "读这条路只有一份实现：cli/read.py 与 api/routes.py 不得出现 SQL",
      _rule_sql_free),
 )

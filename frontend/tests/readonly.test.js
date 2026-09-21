@@ -118,6 +118,78 @@ describe('画布把连线入口关死了', () => {
   })
 })
 
+describe('两种模式在属性上就是两个模式（3.7b）', () => {
+  /** 两个画布共用的窥探壳：断言落在**我们传进去的属性**上，不落在 Vue Flow
+   *  的内部实现上。 */
+  const STUBS = {
+    VueFlow: {
+      name: 'VueFlow',
+      props: ['nodes', 'edges', 'nodesConnectable', 'edgesUpdatable',
+              'nodesDraggable', 'nodeTypes'],
+      template: '<div class="vue-flow-stub" />',
+    },
+    Background: true,
+    Controls: true,
+  }
+
+  it('探索模式画布：data-mode=explore，且连线入口是关死的', async () => {
+    const GraphCanvas = (await import('../src/components/GraphCanvas.vue')).default
+    const wrapper = mount(GraphCanvas, { global: { stubs: STUBS } })
+    await nextTick()
+    expect(wrapper.find('.canvas').attributes('data-mode')).toBe('explore')
+    const flow = wrapper.findComponent({ name: 'VueFlow' })
+    expect(flow.props('nodesConnectable')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('编排模式画布：data-mode=pipeline，且连线入口是打开的', async () => {
+    // 编排画布的图来自草稿 —— 组件挂载之前先给它一份（空定义也算一份）。
+    store.newPipelineDraft()
+    store.patchDefinition({ name: '模式断言用例' })
+    store.addStep()
+    await nextTick()
+
+    const PipelineCanvas = (await import('../src/components/PipelineCanvas.vue')).default
+    const wrapper = mount(PipelineCanvas, { global: { stubs: STUBS } })
+    await nextTick()
+    expect(wrapper.find('.canvas').attributes('data-mode')).toBe('pipeline')
+    const flow = wrapper.findComponent({ name: 'VueFlow' })
+    expect(flow.props('nodesConnectable')).toBe(true)
+    // 边仍然不可改接：这个模式需要的是**拉一条新线**，不是把已有的线挪个地方。
+    expect(flow.props('edgesUpdatable')).toBe(false)
+    // 受控：节点来自 store 里的草稿，组件自己不算图。
+    expect(flow.props('nodes')).toHaveLength(1)
+    wrapper.unmount()
+  })
+})
+
+describe('编排模式的草稿改动作不改库', () => {
+  it('addStep / removeStep / connectSteps 只改草稿，不碰探索模式的图', () => {
+    store.newPipelineDraft()
+    store.addStep()
+    store.addStep()
+    expect(store.pipeline.definition.steps).toHaveLength(2)
+    const [first, second] = store.pipeline.definition.steps.map((s) => s.id)
+    store.connectSteps(first, second)
+    expect(store.pipeline.definition.steps[1].after).toEqual([first])
+    store.removeStep(first)
+    expect(store.pipeline.definition.steps).toHaveLength(1)
+    expect(store.pipeline.definition.steps[0].after).toEqual([])
+    // 探索模式的图（`_raw` 的派生物）一个节点都没多出来
+    expect(store.counts.entities).toBe(0)
+  })
+
+  it('连线会挡住成环', () => {
+    store.newPipelineDraft()
+    store.addStep()
+    store.addStep()
+    const [a, b] = store.pipeline.definition.steps.map((s) => s.id)
+    store.connectSteps(a, b)
+    store.connectSteps(b, a)                       // 会成环 → 应当被拒
+    expect(store.pipeline.definition.steps[0].after).toEqual([])
+  })
+})
+
 describe('筛选是只读的第四种操作', () => {
   it('toggleKind 幂等来回，不会碰图的内容', () => {
     const before = store.counts.entities

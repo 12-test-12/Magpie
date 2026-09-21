@@ -26,8 +26,12 @@
  */
 
 import { computed, reactive, ref, shallowRef } from 'vue'
-import { get, patch, post } from './api.js'
+import { get, patch, post, put, watchRun } from './api.js'
 import { buildAggregate, filterGraph, shouldAggregate, toFlow } from './graph.js'
+import {
+  canonical, definitionToFlow, emptyDefinition, withAddedStep, withConnection,
+  withDisconnection, withRemovedStep, withStepPatch,
+} from './pipeline.js'
 
 // ---------------------------------------------------------------------------
 // 内部状态
@@ -56,6 +60,40 @@ const _drawerOpen = ref(true)
 const _activeImportId = ref(null)
 const _importProgress = reactive({ state: '', records: 0, line: 0, badLines: 0,
                                    stage: '', dropped: 0 })
+
+// ---------------------------------------------------------------------------
+// 编排模式的草稿（`view === 'pipeline'`）
+// ---------------------------------------------------------------------------
+//
+// **定义是唯一的事实来源，画布不持有自己的图状态**（3.7a 冻结 F6）。
+// `_pipelineFlow` 是 `definition` 的一次 `computed`，与探索模式的
+// `GraphCanvas.vue` 拿 `store.visible` 是同构的。
+//
+// 让画布组件自己持图状态会引入**第二个事实来源**，而两份状态之间同步的 bug
+// 没有任何症状，直到有人保存了一份少了一块的管线。
+const _pipeline = reactive({
+  id: null,             // 当前打开的定义 id；null = 还没存过的新草稿
+  revision: null,       // 乐观锁。保存时原样带回，不匹配就是 409
+  list: [],             // 左栏的管线列表
+  definition: null,     // 草稿（唯一事实来源）
+  saved: null,          // 上一次保存/载入的那一份 —— `dirty` 拿它来比
+  flow: { nodes: [], edges: [] },
+  selectedStepId: null,
+  runs: [],             // 这条定义的运行历史
+  activeRunId: null,
+  //: 真跑的进度。**全部来自 SSE**（也就是数据层的 `on_progress`）——
+  //: 界面自己记的账迟早会出现"进度条说 80%，报告说 100%"。
+  progress: { records: 0, line: 0, file: '', done: 0, total: 0 },
+  loading: false,
+  saving: false,
+  error: '',
+})
+
+/** 一次**深比较**（冻结 F8）。不用手维护的布尔位 —— 那种位会在某个分支里忘记
+ *  翻转，然后"未保存"标记开始说谎。 */
+const _pipelineDirty = computed(() => (
+  _pipeline.definition !== null
+  && canonical(_pipeline.definition) !== canonical(_pipeline.saved)))
 
 const LOG_CAP = 500
 
@@ -87,6 +125,14 @@ const _lensRows = computed(() => _lensKeys.value.map((key) => ({
   data: _lenses[key],
 })))
 
+/** 编排画布该渲染什么：**完全由草稿算出来**（见上面 F6 那段）。
+ *  定义是空的时候给一张空图，而不是 `null` —— 组件的 props 契约里没有"可能
+ *  是 null"这一条，少一个分支就少一处只在空库上才炸的地方。 */
+const _pipelineFlow = computed(() => (
+  _pipeline.definition
+    ? definitionToFlow(_pipeline.definition, { selectedId: _pipeline.selectedStepId })
+    : { nodes: [], edges: [] }))
+
 /** 当前该渲染什么：聚合后的类型节点，还是逐个实体。 */
 const _visible = computed(() => {
   const filtered = filterGraph(_raw.nodes, _raw.edges, {
@@ -109,6 +155,10 @@ const _visible = computed(() => {
 
 export const VIEWS = [
   { key: 'explore', label: '画布', hint: '探索模式（只读）' },
+  // 编排模式只是 `store.view` 的**一个新取值**（冻结 F5）—— 不新增第二套路由
+  // 状态。第二套路由状态的表现是"刷新之后回到另一个页面"，而那在本地工具里
+  // 会被当成"偶发"。
+  { key: 'pipeline', label: '编排', hint: '管线编排（可编辑）' },
   { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段' },
   { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品' },
   { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）' },
@@ -153,6 +203,7 @@ export const store = reactive({
   drawerOpen: _drawerOpen,
   activeImportId: _activeImportId,
   importProgress: _importProgress,
+  pipeline: _pipeline,
 
   // -- 派生 --
   counts: _counts,
@@ -160,6 +211,8 @@ export const store = reactive({
   visible: _visible,
   lensRows: _lensRows,
   lensKeys: _lensKeys,
+  pipelineFlow: _pipelineFlow,
+  pipelineDirty: _pipelineDirty,
 
   // -- 动作 --
   pushLog,
@@ -187,6 +240,23 @@ export const store = reactive({
   redoJob,
   undoImport,
   setView,
+  // 编排模式（可编辑只在这里）
+  loadPipelines,
+  newPipelineDraft,
+  selectPipeline,
+  selectStep,
+  patchDefinition,
+  patchStep,
+  addStep,
+  removeStep,
+  connectSteps,
+  disconnectSteps,
+  savePipeline,
+  archivePipeline,
+  runPipeline,
+  loadPipelineRuns,
+  undoRun,
+  redoRun,
 })
 
 // ---------------------------------------------------------------------------
@@ -293,6 +363,18 @@ export async function selectProject(name) {
   _project.value = name
   _selectedId.value = null
   _selectedDetail.value = null
+  // **换项目 = 丢弃草稿**（冻结 F8）。这是唯一真正危险的情况：草稿里的 `project`
+  // 与新的项目不是同一个，把它带过去就是在跨项目写事实 —— 而跨项目污染是这套
+  // 东西里唯一不能靠"小心一点"避免的错误。
+  _pipeline.id = null
+  _pipeline.revision = null
+  _pipeline.definition = null
+  _pipeline.saved = null
+  _pipeline.selectedStepId = null
+  _pipeline.list = []
+  _pipeline.runs = []
+  _pipeline.activeRunId = null
+  _pipeline.error = ''
   await reload()
 }
 
@@ -453,9 +535,249 @@ export function undoImport(importId) {
 }
 
 // ---------------------------------------------------------------------------
+// 编排模式：存下来的定义 / 草稿 / 跑一次
+// ---------------------------------------------------------------------------
+//
+// 这一节**只发请求，不写库**（写库只经服务端的单写队列，R1）。界面上"可编辑"
+// 的全部含义是"改这份草稿"：草稿在内存里，保存时才变成一次 `POST` / `PUT`。
+//
+// `_draft()` 返回草稿的一份**深拷贝** —— 变换函数都是纯函数（返回新对象），
+// 但 `_pipeline.definition` 是 reactive 的，把它的引用交给变换函数再赋回去，
+// 中间任何一步就地改都会绕过 Vue 的响应式。
+
+function _copy(value) {
+  return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value))
+}
+
+function _draft() {
+  return _copy(_pipeline.definition)
+}
+
+export async function loadPipelines() {
+  try {
+    const query = await _projectQuery()
+    _pipeline.list = await get(`/pipelines${query ? `?${query}` : ''}`)
+  } catch (err) {
+    _pipeline.error = err.message
+    pushLog(`读取管线列表失败：${err.message}`, 'pipeline', 'error')
+  }
+  return _pipeline.list
+}
+
+/** 开一份**没存过**的新草稿。它不落库 —— 直到用户按保存。 */
+export function newPipelineDraft() {
+  _pipeline.id = null
+  _pipeline.revision = null
+  _pipeline.definition = emptyDefinition(_project.value)
+  _pipeline.saved = null
+  _pipeline.selectedStepId = null
+  _pipeline.runs = []
+  _pipeline.activeRunId = null
+  _pipeline.error = ''
+  pushLog('新建了一份管线草稿（还没有保存）', 'pipeline')
+}
+
+export async function selectPipeline(id) {
+  _pipeline.loading = true
+  _pipeline.error = ''
+  try {
+    const query = await _projectQuery()
+    const detail = await get(`/pipelines/${id}${query ? `?${query}` : ''}`)
+    _pipeline.id = detail.id
+    _pipeline.revision = detail.revision
+    _pipeline.definition = detail.definition
+    // `saved` 是**另一份对象**：`dirty` 是这两份的深比较。让它们指向同一个
+    // 对象的话，改草稿会连"saved"一起改，"未保存"就永远不会亮。
+    _pipeline.saved = _copy(detail.definition)
+    _pipeline.selectedStepId = ((detail.definition || {}).steps || [])
+      .map((step) => String(step.id))[0] || null
+    _pipeline.runs = []
+    await loadPipelineRuns(detail.id)
+  } catch (err) {
+    _pipeline.error = err.message
+    pushLog(`打开管线 ${id} 失败：${err.message}`, 'pipeline', 'error')
+  } finally {
+    _pipeline.loading = false
+  }
+}
+
+export function selectStep(id) {
+  _pipeline.selectedStepId = id === null || id === undefined ? null : String(id)
+}
+
+/** 改定义**级**的字段（名字 / base_dir / data_dir）。步骤上的字段走 `patchStep`。 */
+export function patchDefinition(patch) {
+  _pipeline.definition = Object.assign({}, _draft(), patch)
+}
+
+export function patchStep(id, patch) {
+  _pipeline.definition = withStepPatch(_draft(), id, patch)
+}
+
+export function addStep() {
+  _pipeline.definition = withAddedStep(_draft())
+  const steps = _pipeline.definition.steps
+  _pipeline.selectedStepId = String(steps[steps.length - 1].id)
+}
+
+export function removeStep(id) {
+  _pipeline.definition = withRemovedStep(_draft(), id)
+  if (String(_pipeline.selectedStepId) === String(id)) _pipeline.selectedStepId = null
+}
+
+/** 画布上的一条连线 → 往 `after` 里加一个步骤 id。**只改这一个字段。** */
+export function connectSteps(source, target) {
+  const next = withConnection(_draft(), source, target)
+  _pipeline.definition = next
+}
+
+export function disconnectSteps(source, target) {
+  _pipeline.definition = withDisconnection(_draft(), source, target)
+}
+
+function _body() {
+  return Object.assign({}, _pipeline.definition,
+    _pipeline.id === null ? {} : { revision: _pipeline.revision })
+}
+
+export async function savePipeline() {
+  if (!_pipeline.definition) return null
+  _pipeline.saving = true
+  _pipeline.error = ''
+  try {
+    const query = await _projectQuery()
+    const body = _body()
+    const saved = _pipeline.id === null
+      ? await post(`/pipelines${query ? `?${query}` : ''}`, body)
+      : await put(`/pipelines/${_pipeline.id}${query ? `?${query}` : ''}`, body)
+    _pipeline.id = saved.id
+    _pipeline.revision = saved.revision
+    _pipeline.saved = _copy(_pipeline.definition)
+    pushLog(`管线「${saved.name}」已保存（revision ${saved.revision}）`, 'pipeline')
+    await loadPipelines()
+    return saved
+  } catch (err) {
+    _pipeline.error = err.message
+    pushLog(`保存管线失败：${err.message}`, 'pipeline', 'error')
+    return null
+  } finally {
+    _pipeline.saving = false
+  }
+}
+
+export async function archivePipeline(id) {
+  try {
+    const query = await _projectQuery()
+    const archived = await post(
+      `/pipelines/${id}/archive${query ? `?${query}` : ''}`, {})
+    if (_pipeline.id === archived.id) {
+      _pipeline.id = null
+      _pipeline.revision = null
+      _pipeline.definition = null
+      _pipeline.saved = null
+    }
+    pushLog(`管线「${archived.name}」已归档（没有删除，历史 run 还指着它）`, 'pipeline')
+    await loadPipelines()
+    return archived
+  } catch (err) {
+    pushLog(`归档管线失败：${err.message}`, 'pipeline', 'error')
+    return null
+  }
+}
+
+/**
+ * 跑一次。
+ *
+ *   * `dryRun=true` → **同步**返回完整报告，库里一行不留（冻结 F10）。界面拿
+ *     它渲染"预演"，与真跑的结果用同一段代码。
+ *   * 真跑 → 202 + `run_id`，进度走 SSE 推回来（**界面不自己数数**）。
+ */
+export async function runPipeline({ dryRun = false, baseDir = null, dataDir = null } = {}) {
+  if (!_pipeline.id) return null
+  const query = await _projectQuery()
+  const body = { dry_run: Boolean(dryRun) }
+  if (baseDir) body.base_dir = baseDir
+  if (dataDir) body.data_dir = dataDir
+  try {
+    const data = await post(
+      `/pipelines/${_pipeline.id}/run${query ? `?${query}` : ''}`, body)
+    if (dryRun) {
+      pushLog(`预演完成：${_totalsText(data.report)}（库里一行没写）`, 'pipeline')
+      return data
+    }
+    _pipeline.activeRunId = data.run_id
+    _pipeline.progress = { records: 0, line: 0, file: '', done: 0, total: 0 }
+    pushLog(`管线已开跑（run ${data.run_id}）`, 'pipeline')
+    await loadPipelineRuns(_pipeline.id)
+    return data
+  } catch (err) {
+    pushLog(`跑管线失败：${err.message}`, 'pipeline', 'error')
+    return null
+  }
+}
+
+function _totalsText(report) {
+  const totals = (report && report.totals) || {}
+  return `新增 ${totals.added || 0} / 更新 ${totals.updated || 0} / 跳过 ${totals.skipped || 0}`
+}
+
+/** 订阅一次真跑的进度流。返回一个 `close()`；跑完自动关。 */
+export function watchPipelineRun(runId) {
+  return watchRun(runId, (payload) => {
+    const progress = _pipeline.progress || {}
+    _pipeline.progress = {
+      records: payload.records !== undefined ? payload.records : progress.records,
+      line: payload.line !== undefined ? payload.line : progress.line,
+      file: payload.file !== undefined ? payload.file : progress.file,
+      done: payload.index !== undefined ? payload.index + 1 : progress.done,
+      total: payload.total !== undefined ? payload.total : progress.total,
+    }
+  }, () => {
+    pushLog(`run ${runId} 的事件流结束`, 'pipeline')
+    if (_pipeline.id !== null) loadPipelineRuns(_pipeline.id)
+  })
+}
+
+export async function loadPipelineRuns(id) {
+  try {
+    const query = await _projectQuery()
+    _pipeline.runs = await get(
+      `/pipelines/${id}/runs${query ? `?${query}` : ''}`)
+  } catch (err) {
+    pushLog(`读取运行历史失败：${err.message}`, 'pipeline', 'error')
+  }
+  return _pipeline.runs
+}
+
+export async function undoRun(runId, dryRun) {
+  const data = await post(`/runs/${runId}/undo`, { dry_run: Boolean(dryRun) })
+  pushLog(`${dryRun ? '预演：' : ''}撤销 run ${runId} —— 撤了 ${(data.undone || []).length} 个作业`
+    + (data.stopped_at ? `，停在作业 ${data.stopped_at}` : ''), 'pipeline')
+  if (_pipeline.id !== null) await loadPipelineRuns(_pipeline.id)
+  return data
+}
+
+export async function redoRun(runId, dryRun) {
+  const data = await post(`/runs/${runId}/redo`, { dry_run: Boolean(dryRun) })
+  pushLog(`${dryRun ? '预演：' : ''}重放 run ${runId} —— 放回 ${(data.redone || []).length} 个作业`
+    + (data.stopped_at ? `，停在作业 ${data.stopped_at}` : ''), 'pipeline')
+  if (_pipeline.id !== null) await loadPipelineRuns(_pipeline.id)
+  return data
+}
+
+// ---------------------------------------------------------------------------
 // 视图
 // ---------------------------------------------------------------------------
 
 export function setView(key) {
+  // 切模式**保留草稿**（冻结 F8）：切回来的时候它还在。不丢草稿是因为它本来
+  // 就不该丢 —— 也正因为如此，这里不需要一个阻塞式确认弹窗（那种弹窗唯一的
+  // 效果是训练人无脑点"确定"）。
   _view.value = key
+  if (key === 'pipeline' && _pipeline.definition === null && !_pipeline.loading) {
+    // 第一次进编排模式：把列表取回来，并开一份空草稿，别让画布是一片什么都没有
+    // 的空白 —— 空白会被读成"坏了"。
+    loadPipelines()
+    newPipelineDraft()
+  }
 }

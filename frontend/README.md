@@ -1,15 +1,16 @@
 # Magpie GUI（前端源码）
 
-Vue 3 + Vite 的只读探索画布（计划书 §7 / 2.8）。**这里的产物会落进
-`magpie/api/web/`，并随 Python 包一起发布。**
+Vue 3 + Vite 的两个画布（计划书 §7）：**探索模式**（只读，2.8）与**编排模式**
+（可编辑，3.7b）。**这里的产物会落进 `magpie/api/web/`，并随 Python 包一起发布。**
 
 ```
 frontend/               源码（这个目录）
-  src/graph.js          画布纯逻辑：配色 / 聚合 / 布局 / 筛选（无 Vue、无 DOM）
+  src/graph.js          探索画布纯逻辑：配色 / 聚合 / 布局 / 筛选（无 Vue、无 DOM）
+  src/pipeline.js       编排画布纯逻辑：定义 ↔ 图、依赖、增删步骤与连线（同上）
   src/store.js          共享状态。**只读保证就落在这个文件上**（见它的文件头）
   src/api.js            /api/v1 的唯一客户端
-  src/components/       外壳零件：顶部 / 左栏 / 卡片 / 画布 / 详情 / 抽屉 / 命令面板
-  src/views/            页面：镜头 / 作业历史 / Inbox / 体检 / 导入
+  src/components/       外壳零件：顶部 / 左栏 / 卡片 / 两个画布 / 详情 / 抽屉 / 命令面板
+  src/views/            页面：镜头 / 编排 / 作业历史 / Inbox / 体检 / 导入
   tests/                单测（`npm test`）
 magpie/api/web/         构建产物（**入库**，别手改）
 ```
@@ -39,7 +40,15 @@ npm test             # 前端单测（聚合 / 布局 / 只读断言）
    `GET /graph`：不能加节点、不能加边、不能删。三层一起守 ——
    `check.py lint` 的 READONLY 静态红线、`tests/readonly.test.js`、
    以及 `GraphCanvas.vue` / `EntityNode.vue` 里根本不存在那条入口。
-   可编辑的是**将来的编排模式**，不是把这里放开。
+
+   编排模式（3.7b）**没有把这里放开**：它是一支新的组件，而 READONLY 从
+   "`frontend/src/**` 里不许出现 18 个名字"**收窄**成"……除了一个文件里的
+   一个名字"（`check.py` 的 `_EDITABLE_CANVAS`，只有
+   `PipelineCanvas.vue` 的 `onConnect`）。收窄是**算出来的**：编排画布真正
+   需要图的 API 的动作只有一个 —— 拖一条线；增删步骤走表单动作。
+   配套的 `READONLY-REVERSE`（第 11 条红线）反向证明白名单没被滥用：
+   每一格都指向真文件、实际命中的名字 ⊆ 声明的、**声明的名字都真的被用到**、
+   探索模式那一路的文件清单逐个命中 0 个。
 3. **进度不自己数**。界面上的百分比、坏行数、阶段全部来自数据层的
    `on_progress`（经 SSE 推来）。界面自己记账迟早会出现"进度条说 80%，
    报告说 100%"，而两者都自称权威。
