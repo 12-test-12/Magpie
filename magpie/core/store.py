@@ -345,6 +345,12 @@ ACTION_NAMESPACE = frozenset({
     # 它挂着的 N 个 job 各自仍写自己的 `job.start` / `job.finish`。
     "pipeline.save", "pipeline.archive", "pipeline.run",
     "pipeline.undo_run", "pipeline.redo_run",
+    # 工作层的可撤销写入（3.8）。`lifecycle.set` 是"批量改状态"这一次操作；
+    # `work.revert` / `work.replay` 是 `ops.undo` / `ops.redo` 把 `work_journal`
+    # 放回去时留下的两行 —— **与 `undo` / `redo` 分开**，因为一次 undo 里
+    # "撤掉了几条贡献"与"把几个实体的状态放回去了"是两件事，混在一个 action 里
+    # 就没法只查其中一件。
+    "lifecycle.set", "work.revert", "work.replay",
 })
 
 

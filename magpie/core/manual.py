@@ -192,20 +192,69 @@ class ManualWriter:
             self.stats["writes"] += 1
 
     # -- layout ------------------------------------------------------------
-    def set_layout(self, *, project_id: int, entity_id: int, x: float, y: float,
-                   collapsed: bool = False) -> None:
+    def set_layout(self, *, project_id: int, entity_id: int,
+                   x: float | None = None, y: float | None = None,
+                   collapsed: bool | None = None) -> dict[str, Any]:
+        """位置 / 折叠的**部分**写入（3.8）。三个参数各自独立，`None` = 别动它。
+
+        为什么不能整行覆盖写（旧行为）: 拖一次节点会来几十个 move 事件，它们
+        **只知道坐标**，于是"顺手补一个 `collapsed=False`"就变成了事实上的
+        "拖一下就展开"。位置与折叠是两个互不相干的人工决定，各自有各自的入口
+        （拖拽 / 卡片上的折叠按钮），一个入口不该改写另一个入口的结果 ——
+        这就是"两列互不串位"在那条 API 上的形状。
+
+        行不存在时 `x` / `y` **必须都给**：只给 `collapsed` 建出一条 `(0,0)` 的
+        行，读侧会把它当成"用户把这个节点拖到原点了"，于是它下一次打开就跳到
+        左上角 —— 一个由"新建行时的默认值"造成的、看起来像随机漂移的 bug。
+        宁可在这里响亮地拒绝。
+        """
         with self._lock:
-            self.conn.execute(
-                "INSERT INTO entity_layout(project_id, entity_id, x, y, collapsed,"
-                " updated_at) VALUES (?,?,?,?,?,?)"
-                " ON CONFLICT(project_id, entity_id) DO UPDATE SET"
-                " x=excluded.x, y=excluded.y, collapsed=excluded.collapsed,"
-                " updated_at=excluded.updated_at",
-                (project_id, entity_id, float(x), float(y), 1 if collapsed else 0, now()))
-            log_activity(self.conn, actor=self.actor, action="manual.set",
+            conn = self.conn
+            row = conn.execute(
+                "SELECT collapsed FROM entity_layout WHERE project_id=? AND entity_id=?",
+                (project_id, entity_id)).fetchone()
+            if row is None:
+                if x is None or y is None:
+                    raise InvariantError(
+                        f"entity_layout 还没有 ({project_id}, {entity_id}) 这一行，"
+                        f"新建它必须同时给 x 与 y（只有 collapsed 的写入会让节点"
+                        f"下次打开时落在原点）")
+                conn.execute(
+                    "INSERT INTO entity_layout(project_id, entity_id, x, y, collapsed,"
+                    " updated_at) VALUES (?,?,?,?,?,?)",
+                    (project_id, entity_id, float(x), float(y),
+                     1 if collapsed else 0, now()))
+            else:
+                sets, params = [], []
+                if x is not None:
+                    sets.append("x=?")
+                    params.append(float(x))
+                if y is not None:
+                    sets.append("y=?")
+                    params.append(float(y))
+                if collapsed is not None:
+                    sets.append("collapsed=?")
+                    params.append(1 if collapsed else 0)
+                if not sets:
+                    # 三个都没给 = 一次什么都没说的写入。它不该悄悄成功 ——
+                    # 那会让调用方以为"存上了"。
+                    raise InvariantError("set_layout 至少要给 x / y / collapsed 之一")
+                sets.append("updated_at=?")
+                params.extend([now(), project_id, entity_id])
+                conn.execute(
+                    f"UPDATE entity_layout SET {', '.join(sets)}"
+                    f" WHERE project_id=? AND entity_id=?", params)
+            current = conn.execute(
+                "SELECT x, y, collapsed FROM entity_layout"
+                " WHERE project_id=? AND entity_id=?",
+                (project_id, entity_id)).fetchone()
+            log_activity(conn, actor=self.actor, action="manual.set",
                          target_kind="entity_layout", target_id=entity_id,
-                         detail={"x": x, "y": y, "collapsed": bool(collapsed)})
+                         detail={"x": current["x"], "y": current["y"],
+                                 "collapsed": bool(current["collapsed"])})
             self.stats["writes"] += 1
+            return {"x": current["x"], "y": current["y"],
+                    "collapsed": bool(current["collapsed"])}
 
     # -- inbox resolve -----------------------------------------------------
     def resolve_inbox(self, *, item_id: int, resolution: dict[str, Any] | None = None,

@@ -364,6 +364,69 @@ def patch_entity(entity_id: int, body: EntityPatch, request: Request,
               project_id=project_id)
 
 
+class LifecycleBody(BaseModel):
+    """`POST /entities/lifecycle` 的体 —— **批量**改状态（3.8）。"""
+
+    entity_ids: list[int] = Field(default_factory=list)
+    #: active / retired。词表的唯一声明处是 `ops.LIFECYCLES`（= schema 的 CHECK）。
+    #: 这里不写 `Literal[...]` —— 那样词表就有了第二份，而两份词表分叉的症状是
+    #: "schema 加了一个取值，HTTP 先把它拒了"。
+    lifecycle: str
+    reason: str | None = None
+    dry_run: bool = False
+
+
+@router.post("/entities/lifecycle", summary="批量改状态（active / retired）")
+def post_lifecycle(body: LifecycleBody, request: Request,
+                   project: str | None = None,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """一次点击改一组实体的生命周期。**一次调用 = 一个 job**（可 undo）。
+
+    为什么是"一个 job"而不是"N 个 job"，以及它与 3.7b 那条批量通路的关系，
+    写在 `ops.set_lifecycle` 的段落注释里 —— 那是这个决定唯一该被解释的地方。
+
+    校验（存在性 / 项目归属 / 词表）**在排队之前**做一遍：一个注定失败的批量
+    不该占一次写者，更不该在写者里炸掉一半。写者里那一遍仍然是必须的（真正的
+    守卫在那里），两遍不是重复 —— 一遍管"快速失败"，一遍管"真的不会半批成功"。
+    """
+    if body.lifecycle not in ops.LIFECYCLES:
+        raise ApiError(400, "E_BAD_LIFECYCLE",
+                       f"lifecycle 只能是 {list(ops.LIFECYCLES)} 之一，"
+                       f"收到 {body.lifecycle!r}")
+    if not body.entity_ids:
+        raise ApiError(400, "E_EMPTY_PATCH", "entity_ids 是空的",
+                       hint="批量改状态至少要给一个实体")
+    project_id = _resolve_project(conn, project)
+    missing = [eid for eid in sorted({int(e) for e in body.entity_ids})
+               if not query.entity_exists(conn, project_id, eid)]
+    if missing:
+        raise ApiError(404, "E_ENTITY_NOT_FOUND",
+                       f"这些实体不在项目 {project_id} 里：{missing}",
+                       hint="跨项目与不存在在这里是同一件事；整批一起拒，"
+                            "一个字都不写")
+    ctx = _ctx(request)
+    ids, lifecycle, reason = list(body.entity_ids), body.lifecycle, body.reason
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.set_lifecycle(conn_, project_id=project_id, entity_ids=ids,
+                                 lifecycle=lifecycle, reason=reason, actor="api",
+                                 dry_run=body.dry_run)
+
+    return ok(ctx.writer.submit(f"lifecycle {lifecycle}", task).result(timeout=120),
+              project_id=project_id)
+
+
+@router.get("/tags", summary="标签词表（项目里已经用过的词 + 计数）")
+@_translating
+def list_tags(project: str | None = None,
+              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """**只算活标签**。界面拿它渲染"这个词表里已经有哪些词" —— 显示的是库里的数，
+    不是"界面上见过的那些"（与镜头徽标同一条纪律）。"""
+    project_id = _resolve_project(conn, project)
+    rows = query.project_tags(conn, project_id)
+    return ok(rows, count=len(rows), project_id=project_id)
+
+
 class MergeBody(BaseModel):
     survivor_key: str
     member_keys: list[str] = Field(default_factory=list)
@@ -392,6 +455,64 @@ def merge_entity(entity_id: int, body: MergeBody, request: Request,
 
     return ok(ctx.writer.submit(f"merge {body.survivor_key}", task).result(timeout=60),
               project_id=project_id)
+
+
+@router.get("/entities/{entity_id}/merges", summary="这个实体参与过的合并事件")
+@_translating
+def get_entity_merges(entity_id: int, project: str | None = None,
+                      conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """`unmerge` 的入口：撤销一次合并要的是 `event_id`，而界面上人看到的只有
+    "这张卡片是合并出来的"。单独一条路由而不是塞进 `GET /entities/{id}` ——
+    后者的形状是对外契约，3.8 不动它。"""
+    project_id = _resolve_project(conn, project)
+    query.entity_row(conn, project_id, entity_id)          # 不存在 → 404
+    events = query.merge_events_of(conn, project_id, entity_id)
+    return ok(events, count=len(events), project_id=project_id,
+              entity_id=entity_id)
+
+
+class UnmergeBody(BaseModel):
+    """路径上的实体只是**入口**（它必须真的参与过这个事件），撤销的对象是事件。"""
+
+    event_id: int
+    dry_run: bool = False
+
+
+@router.post("/entities/{entity_id}/unmerge", summary="撤销一次合并（拆开）")
+@_translating
+def unmerge_entity(entity_id: int, body: UnmergeBody, request: Request,
+                   project: str | None = None,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """**必须**走 `ops.unmerge` —— 它是"再 merge 一次"的显式逆操作，事实层零变更
+    （INV-10），所以拆开之后逐行指纹自动回到合并前。
+
+    在 `api/routes.py` 里拼一个 `UPDATE entities SET merged_into=NULL` 看起来也能
+    "拆开"，但它会**同时丢掉两样东西**：`entity_merge_members.revoked_by_job_id`
+    那条生命周期边（于是 undo/redo 再也找不回这次合并），以及合并时登记下来的
+    `merge_conflict` inbox 项的关闭路径。而这两样的症状都要等到有人想再合回去的
+    时候才出现。
+    """
+    project_id = _resolve_project(conn, project)
+    query.entity_row(conn, project_id, entity_id)          # 不存在 → 404
+    # 路径上的实体必须真的参与过这个事件 —— 否则 `POST /entities/1/unmerge`
+    # 就成了"撤销任意一次合并"的后门，而它读起来像是在拆实体 1。
+    events = {e["event_id"]: e for e in
+              query.merge_events_of(conn, project_id, entity_id)}
+    event = events.get(int(body.event_id))
+    if event is None:
+        raise ApiError(404, "E_MERGE_EVENT_NOT_FOUND",
+                       f"实体 {entity_id} 没有生效中的合并事件 {body.event_id}",
+                       hint="先 GET /entities/{id}/merges 看它参与过哪些事件；"
+                            "已经拆开过的事件不会再列出来",
+                       merges=sorted(events))
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.unmerge(conn_, event_id=int(body.event_id), actor="api",
+                           dry_run=body.dry_run)
+
+    return ok(ctx.writer.submit(f"unmerge event {body.event_id}", task).result(timeout=60),
+              project_id=project_id, entity_id=entity_id)
 
 
 # ---------------------------------------------------------------------------
@@ -436,22 +557,54 @@ def get_neighbors(entity_id: int, depth: int = 1, project: str | None = None,
 
 
 class LayoutItem(BaseModel):
+    """一条布局写入。`x` / `y` / `collapsed` **都是可选的**（3.8）。
+
+    三个字段各自独立：拖位置只送 `x` / `y`，切换折叠只送 `collapsed`。
+    旧形状（三个都必填、`collapsed` 缺省 false）是**整行覆盖写** —— 于是拖一个
+    已经折叠的节点会把它悄悄展开，而"位置"与"折叠"是两个互不相干的人工决定。
+    新形状对老客户端**向后兼容**：老客户端照旧三个都送，行为逐字不变。
+    """
+
     entity_id: int
-    x: float
-    y: float
-    collapsed: bool = False
+    x: float | None = None
+    y: float | None = None
+    collapsed: bool | None = None
 
 
 class LayoutBody(BaseModel):
     items: list[LayoutItem] = Field(default_factory=list)
 
 
-@router.patch("/graph/layout", summary="布局持久化（批量）")
+@router.patch("/graph/layout", summary="布局持久化（批量，按列部分写入）")
 def patch_layout(body: LayoutBody, request: Request, project: str | None = None,
                  conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     project_id = _resolve_project(conn, project)
     if not body.items:
         raise ApiError(400, "E_EMPTY_PATCH", "items 是空的")
+    empty = [i.entity_id for i in body.items
+             if i.x is None and i.y is None and i.collapsed is None]
+    if empty:
+        raise ApiError(400, "E_EMPTY_PATCH",
+                       f"这些条目什么都没改：{empty}",
+                       hint="每条至少要给 x / y / collapsed 之一")
+    # 实体必须在这个项目里 —— **在排队之前**。不查的话，一个不存在的 id 会落到
+    # `entity_layout` 的复合外键上，变成一个 500；而 500 说不清"你写错了 id"。
+    missing = [i.entity_id for i in body.items
+               if not query.entity_exists(conn, project_id, i.entity_id)]
+    if missing:
+        raise ApiError(404, "E_ENTITY_NOT_FOUND",
+                       f"这些实体不在项目 {project_id} 里：{sorted(set(missing))}")
+    # 「只写 collapsed 且这一行还不存在」**在排队之前**就拒掉（理由见
+    # `ManualWriter.set_layout`）：不拦的话它会走到写者里抛 `InvariantError`，
+    # 而那在 HTTP 上是一个 500 —— 一个说得清原因的错误被降级成"服务器错误"。
+    known = query.layout_rows(conn, project_id, [i.entity_id for i in body.items])
+    orphan = [i.entity_id for i in body.items
+              if i.x is None and i.y is None and i.entity_id not in known]
+    if orphan:
+        raise ApiError(400, "E_LAYOUT_NEEDS_POSITION",
+                       f"这些实体还没有布局行，只写 collapsed 会建出一条位于原点的"
+                       f"记录：{sorted(set(orphan))}",
+                       hint="第一次写入必须同时给 x 与 y（拖过之后再切折叠就不必了）")
     items = [(i.entity_id, i.x, i.y, i.collapsed) for i in body.items]
     ctx = _ctx(request)
 
@@ -461,6 +614,8 @@ def patch_layout(body: LayoutBody, request: Request, project: str | None = None,
         for entity_id, x, y, collapsed in items:
             writer.set_layout(project_id=project_id, entity_id=entity_id,
                               x=x, y=y, collapsed=collapsed)
+        # 响应形状**逐字不变**（`{"stored": N}`）: 这是一条对外契约，而这次改动
+        # 只追加了请求体里可选字段（老客户端三个都送，行为逐字不变）。
         return {"stored": len(items)}
 
     return ok(ctx.writer.submit("layout", task).result(timeout=60),

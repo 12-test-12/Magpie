@@ -40,9 +40,11 @@ from magpie.core import ops, store                                   # noqa: E40
 # `007_kind_apischema.sql`（登记 `apischema` kind 与 `declared_in` 动词，并把四个
 # "接口描述"来源的指纹追加进既有 kind 的 `produced_by`）；3.7b 加了
 # `008_pipeline_definitions.sql`（管线定义 / 管线运行两张表 + `jobs.pipeline_run_id`
-# + 跨项目触发器）—— 新增迁移必须同步改这一行，否则 `schema --json` 的契约数字
-# 会与真实库对不上，而那条断言正是为"迁移与描述分叉"准备的。
-MIGRATIONS = 8
+# + 跨项目触发器）；3.8 加了 `009_work_journal.sql`（工作层写入的撤销日志 ——
+# `entities.lifecycle` 不是事实层，没有贡献可撤，撤销它需要"改之前的值"）。
+# 新增迁移必须同步改这一行，否则 `schema --json` 的契约数字会与真实库对不上，
+# 而那条断言正是为"迁移与描述分叉"准备的。
+MIGRATIONS = 9
 
 #: 子进程的公共环境（定义在 `conftest.py`，两个测试文件共用一份）。
 ENV = ENV

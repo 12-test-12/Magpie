@@ -10,6 +10,11 @@
  *
  * 这个组件**没有任何 Handle**。Vue Flow 的 `Handle` 是"从这里拉一条线出去"的
  * 入口，而探索模式里不存在这件事。不渲染它，连误操作的入口都没有。
+ *
+ * 卡片上唯一的按钮是**折叠**（3.8）。它是"改显示"而不是"改数据"：折叠过的
+ * 卡片淡下去、连着它的线也淡下去（把噪音收起来），一个事实都不动。它 `emit`
+ * 一个事件而不是直接调 store —— 卡片不需要知道 store 长什么样，而那个事件由
+ * `GraphCanvas` 转发给 `store.toggleCollapse`（顺带把坐标带上，见那边的注释）。
  */
 import { computed } from 'vue'
 import { NODE_HEIGHT, NODE_WIDTH, kindColor } from '../graph.js'
@@ -18,6 +23,8 @@ const props = defineProps({
   data: { type: Object, required: true },
   selected: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['toggle-collapse'])
 
 const color = computed(() => kindColor(props.data.kind))
 
@@ -36,9 +43,10 @@ const subtitle = computed(() => {
 <template>
   <div
     class="card"
-    :class="{ selected }"
+    :class="{ selected, folded: data.collapsed }"
     :style="{ width: NODE_WIDTH + 'px', height: NODE_HEIGHT + 'px', '--band': color }"
     :data-entity-id="data.entityId"
+    :data-collapsed="data.collapsed ? '1' : '0'"
     :title="data.key"
   >
     <span class="band" />
@@ -46,6 +54,11 @@ const subtitle = computed(() => {
       <div class="head">
         <span class="dot" :class="LIFECYCLE_TONE[data.lifecycle] || 'faint'" />
         <span class="key mono">{{ data.key || ('#' + data.entityId) }}</span>
+        <button v-if="!data.aggregated" class="fold"
+                :title="data.collapsed ? '展开' : '折叠（只是把它画轻一点）'"
+                @click.stop="emit('toggle-collapse')">
+          {{ data.collapsed ? '▸' : '▾' }}
+        </button>
       </div>
       <div class="foot">
         <span class="kind" :style="{ color }">{{ subtitle }}</span>
@@ -72,6 +85,12 @@ const subtitle = computed(() => {
   user-select: none;
 }
 .card.selected { box-shadow: var(--shadow-select); border-color: var(--accent); }
+.card.folded { opacity: .5; }
+.fold {
+  margin-left: auto; flex: none; border: 0; background: transparent;
+  color: var(--faint); cursor: pointer; font-size: 10px; padding: 0 2px;
+}
+.fold:hover { color: var(--text, #e6e6ea); }
 .band {
   position: absolute;
   inset: 0 0 auto 0;

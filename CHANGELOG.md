@@ -12,6 +12,102 @@
 
 ---
 
+## 0.8.0 — 3.8 标签 / 批量改状态 / 合并实体 / 布局持久化
+
+**四件写操作 + 迁移 009 + 前端探索模式补齐。** 对 `magpie/core` 的改动是
+**一张新表 + 三处追加**（`ops.set_lifecycle`、`ops` 的 `undo` / `redo` 各多一段
+工作层回放、`query` 里三个新的读）。
+
+四条落点各有各的出处，先说清楚，免得读者以为"探索模式怎么多出了写入口"：
+
+| 写什么 | 走哪条路 | 依据 |
+|---|---|---|
+| 标签（增 / 删） | **不变**，仍是 `PATCH /entities/{id}` | 3.7a §3.2 冻结表 |
+| 位置 / 折叠 | **不变**，仍是 `PATCH /graph/layout`（这次只加了可选的按列写入） | 3.7a §3.2 冻结表 |
+| 合并 / 拆开 | **新** `POST /entities/{id}/merge`（已有）与 `/unmerge`（新） | LARI-31 的裁定：必须走 `ops.merge` / `ops.unmerge` |
+| 批量改状态 | **新** `POST /entities/lifecycle` | LARI-31 的裁定：复用同一套 job/undo |
+
+后两条**明确扩写了 3.7a §3.2 的冻结表**（见 `Magpie-编排模式设计冻结.md` 那一行
+的扩写说明）—— 不是偷偷加一个写入口。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · `POST /jobs/{id}/undo` 的 `impact` 多一个键 `work_reverted`，
+`POST /jobs/{id}/redo` 的 `impact` 多一个键 `work_replayed`**（都是整数）。
+
+这是本步唯一一处**改到既有响应形状**的地方。来源：`ops.undo` / `ops.redo` 现在
+除了事实层 / 身份层 / inbox，还会把该 job 写下的 `work_journal`（工作层的人工
+状态）放回去或重放，而那一半的**明细**在 `activity_log`（`work.revert` /
+`work.replay`），`impact` 里只放一个计数。
+
+```json
+"impact": { "contributions": 0, "superseded": 0, "…": "…",
+            "work_reverted": 3 }
+```
+
+判据不变，仍是 2.6 的 B 组：**逐行指纹相等**（`store.effective_equivalent`，
+它本来就覆盖 `entity_layout` / `entity_tags`）。
+
+**2 · 新增四条路由：**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/v1/entities/lifecycle` | 批量改状态。`{entity_ids, lifecycle, reason?, dry_run?}` |
+| `GET`  | `/api/v1/entities/{id}/merges` | 这个实体参与过的**仍然生效**的合并事件（`unmerge` 的入口） |
+| `POST` | `/api/v1/entities/{id}/unmerge` | 拆开一次合并。`{event_id, dry_run?}` |
+| `GET`  | `/api/v1/tags` | 标签词表（**只算活标签**）+ 每个标签的实体数 |
+
+`POST /entities/lifecycle` 一次调用 = **一个 job**（不是 N 个）：
+`entity_ids` 整批在一个事务里，要么全成要么全不成。为什么是这个形状，
+写在 `ops.set_lifecycle` 的段落注释里；它对外的可见后果是**撤销就是那一个
+job 的撤销按钮**（`POST /jobs/{id}/undo`），与作业历史页上的其它按钮同一条路。
+
+**3 · `PATCH /graph/layout` 的请求体放宽：`x` / `y` / `collapsed` 都变成可选**
+（至少给一个），**响应形状逐字不变**（仍是 `{"stored": N}`）。
+
+旧形状（三个都送、`collapsed` 缺省 `false`）是**整行覆盖写**，而前端拖拽时恰好
+固定补一个 `collapsed: false` —— 于是"拖一下已经折叠的节点"会把它悄悄展开。
+**老客户端不受影响**（它照旧三个都送，行为逐字不变）。
+
+新增一个 `400 E_LAYOUT_NEEDS_POSITION`：对一条**还不存在**的布局行只写
+`collapsed` 会被拒（它需要 `x` / `y`）。放它过去的话那行会带着 `(0,0)` 出生，
+读侧把它当成"人把这个节点拖到了原点"，节点下次打开就跳到左上角。它在**排队
+之前**就拒（而不是走到写者里抛 `InternalError` → 500）。
+
+**4 · 新增两个错误码**：`E_MERGE_EVENT_NOT_FOUND`（404，路径上的实体没有参与
+过这个合并事件）、`E_LAYOUT_NEEDS_POSITION`（400）；批量改状态的词表错误复用
+`E_BAD_LIFECYCLE`（400），空批复用 `E_EMPTY_PATCH`（400），跨项目与不存在复用
+`E_ENTITY_NOT_FOUND`（404）。
+
+**5 · schema 迁移到 009**（`schema/009_work_journal.sql`：一张新表
+`work_journal`）。`magpie schema --json` 的 `schema_version` 与 `applied` 因此
+变成 9。
+
+### 数据库层面新增的能力
+
+* `work_journal` —— 工作层写入（今天只有 `entities.lifecycle`）的**撤销日志**。
+  它不是审计：`activity_log` 回答"谁在什么时候改了什么"，这张表回答
+  "**改之前是什么**"，而后者正是 `ops.undo` 唯一的输入。两者混在一起的话，
+  一次审计清理就会让撤销开始说假话。
+
+### 前端（构建产物已随包入库，`magpie app` 不需要用户装 node）
+
+* 详情面板：标签可以**删**了（3.8 之前只有加，而 `tag_events` 的 remove 那一半
+  一直没人调用）；标签输入框接 `GET /tags` 的词表；多了"状态"与"合并"两节。
+* 画布：**`Shift` + 单击**批量选中 → 右上角出现批量条（标为在用 / 已退休）。
+  选中的集合只有**一份**（`store.selection`），合并的"并入这里"用的也是它。
+* 实体卡片：多一个**折叠**按钮（`emit` → `GraphCanvas` → `store.toggleCollapse`）。
+  折叠是渲染层的事：卡片淡下去、连着它的线也淡下去，一个事实都不动。
+* 折叠状态**终于会落库**了。3.8 之前 `toggleCollapse` 只改本地 `_raw.layout`
+  就返回 —— 于是"图每次打开都长得一样"（§7.3 第 ③ 条）只在位置上成立。
+
+### 与 3.7b 的关系（一句话）
+
+批量改状态**没有**另造一套批量机制：它调用的仍然是 `ops.undo` / `ops.undo_jobs`
+那一份实现，只是它的"一批"是**一个 job 里的 N 个实体**，而不是 N 个 job。
+
+---
+
 ## 0.7.0 — 3.7b 编排模式（可编辑管线画布：可保存 / 可复用 / 可批量跑）
 
 **十条新路由 + schema 迁移 008 + 前端第二个模式。** 对 `magpie/core` 的改动

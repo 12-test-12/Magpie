@@ -220,6 +220,100 @@ def tags_of(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[s
         " AND deleted_at IS NULL ORDER BY tag", (project_id, entity_id))]
 
 
+def project_tags(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """项目里的标签词表 + 计数（**只算活标签**：`deleted_at IS NULL`）。
+
+    界面拿它渲染"这个词表里已经有哪些词" —— 与 3.2 的镜头徽标同一条纪律：
+    **显示的是库里的数**，不是"界面上见过的那些"。少了它，一个标签一旦从所有
+    实体上摘掉，它下一次就只能靠人记得重新敲一遍。
+
+    计数用 `COUNT(DISTINCT entity_id)` 而不是数行：软删的历史行仍然躺在
+    `entity_tags` 里（那是审计要的），把它们算进来会让徽标上的数大于
+    `GET /entities?tag=X` 返回的实体数 —— 两个数说的是同一件事，就该相等。
+    """
+    rows = conn.execute(
+        "SELECT tag, COUNT(DISTINCT entity_id) AS n FROM entity_tags"
+        " WHERE project_id=? AND deleted_at IS NULL GROUP BY tag"
+        " ORDER BY n DESC, tag", (project_id,)).fetchall()
+    return [{"tag": str(r["tag"]), "count": int(r["n"])} for r in rows]
+
+
+def layout_rows(conn: sqlite3.Connection, project_id: int,
+                entity_ids: list[int]) -> dict[int, dict]:
+    """{entity_id: {x, y, collapsed}} —— 只含**已经有行**的那些。
+
+    读侧（`graph_payload`）自带一段同样的查询，但它只取当前这一页节点；
+    这里要回答的是另一个问题："这条写入会不会**新建**一行"。`PATCH /graph/layout`
+    用它把"对一条不存在的行只写 collapsed"**在排队之前**拒掉 —— 那行会带着
+    (0,0) 出生，读侧把它当成"人把这个节点拖到了原点"。
+    """
+    if not entity_ids:
+        return {}
+    marks = ",".join("?" * len(entity_ids))
+    return {int(r["entity_id"]): {"x": r["x"], "y": r["y"],
+                                  "collapsed": bool(r["collapsed"])}
+            for r in conn.execute(
+                f"SELECT entity_id, x, y, collapsed FROM entity_layout"
+                f" WHERE project_id=? AND entity_id IN ({marks})",
+                (project_id, *entity_ids))}
+
+
+def merge_events_of(conn: sqlite3.Connection, project_id: int,
+                    entity_id: int) -> list[dict]:
+    """这个实体参与过的合并事件（**只列仍然生效的** `state='merged'`）。
+
+    它是 `unmerge` 的入口：撤销一次合并要的是 `event_id`，而 GUI 上人看到的
+    只有"这个卡片是合并出来的"。把两端的映射一次查完（含两端各自的 key），
+    界面就不必为了一行再发一次请求去看"另一个是谁"。
+
+    已撤销（`state='unmerged'`）的事件不列 —— 它们不是可操作的，而"列出来但
+    点了没反应"比不列更坏。
+    """
+    rows = conn.execute(
+        "SELECT ev.id AS event_id, ev.survivor_id, ev.state, ev.reason,"
+        "       ev.created_at, ev.created_by_job_id,"
+        "       m.entity_id AS member_id, m.revoked_by_job_id"
+        "  FROM entity_merge_events ev"
+        "  JOIN entity_merge_members m ON m.merge_event_id = ev.id"
+        " WHERE ev.project_id=? AND ev.state='merged'"
+        "   AND ev.id IN (SELECT merge_event_id FROM entity_merge_members"
+        "                  WHERE entity_id=? AND revoked_by_job_id IS NULL)"
+        " ORDER BY ev.id DESC, m.entity_id", (project_id, entity_id)).fetchall()
+    grouped: dict[int, dict] = {}
+    for row in rows:
+        event = grouped.setdefault(int(row["event_id"]), {
+            "event_id": int(row["event_id"]), "survivor_id": int(row["survivor_id"]),
+            "state": str(row["state"]), "reason": str(row["reason"]),
+            "created_at": str(row["created_at"]),
+            "job_id": None if row["created_by_job_id"] is None
+                      else int(row["created_by_job_id"]),
+            "member_ids": []})
+        event["member_ids"].append(int(row["member_id"]))
+    events = sorted(grouped.values(), key=lambda e: e["event_id"], reverse=True)
+    ids = sorted({e["survivor_id"] for e in events}
+                 | {m for e in events for m in e["member_ids"]})
+    # **不能用 `keys_of`**：它只认 `canonical=1` 的 key，而**成员实体的 key 正是
+    # 被合并之后丢掉 canonical 标记的那一个** —— 用它去取成员名会得到一串
+    # `None`，界面上"这次合并吃掉了谁"就变成一句空话。这里取的是"这个实体叫
+    # 什么名字"（展示名），与 `store.display_key` 同一条口径。
+    keys: dict[int, str] = {}
+    if ids:
+        marks = ",".join("?" * len(ids))
+        for row in conn.execute(
+                f"SELECT entity_id, entity_key FROM entity_keys"
+                f" WHERE project_id=? AND entity_id IN ({marks})"
+                f" ORDER BY canonical DESC, created_at, entity_key",
+                (project_id, *ids)):
+            keys.setdefault(int(row["entity_id"]), str(row["entity_key"]))
+    for event in events:
+        event["survivor_key"] = keys.get(event["survivor_id"])
+        event["member_keys"] = [keys.get(m) for m in event["member_ids"]
+                                if m != event["survivor_id"]]
+        # 没有 `can_unmerge` 这一栏：`ops.unmerge` 只认 `event_id`，幸存者还是
+        # 成员来撤销都一样。多一个恒为真的布尔位，读的人会以为它有时是假的。
+    return events
+
+
 def manual_keys(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[str]:
     """人工保护的字段名。`manual_fields` 是**工作区**不是事实区 —— 它由
     `ManualWriter` 写，读它不需要经过单写队列。"""

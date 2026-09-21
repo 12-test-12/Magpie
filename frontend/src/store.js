@@ -12,9 +12,18 @@
  * 探索模式允许的四件事（计划书 §7.2）在这里分别对应：
  *
  *     拖位置  → `moveEntity`（改的是本地坐标 + `entity_layout` 持久化）
- *     折叠    → `toggleCollapse`
+ *     折叠    → `toggleCollapse`（同样落 `entity_layout`，与位置互不串位）
  *     筛选    → `setFilter` / `toggleKind` / `clearFilter`
- *     标注    → `tagEntity`（`PATCH /entities/{id}` 的 add_tags，2.7 就有的端点）
+ *     标注    → `setEntityTags`（`PATCH /entities/{id}` 的 add_tags / remove_tags）
+ *
+ * 3.8 给探索模式补的三件事（它们**操作的是实体**，所以落在这里而不是编排模式）：
+ *
+ *     批量改状态 → `setLifecycle`（`POST /entities/lifecycle`，一个 job，可撤销）
+ *     合并 / 拆开 → `mergeEntities` / `unmergeEntity`（`ops.merge` / `ops.unmerge`）
+ *     标签词表   → `loadTags`（`GET /tags`，只算活标签）
+ *
+ * 它们都**只是发请求**：写仍然只经服务端的单写队列，`api/routes.py` 里一条 SQL
+ * 都没有（SQL-FREE 红线）。这个模块不写库，过去不，现在也不。
  *
  * 图的**内容**只能来自 `GET /graph`。画布上出现过什么，库里就有什么 ——
  * 这是"探索模式"与"编排模式"在数据流上的分界，不只是两个不同的按钮样式。
@@ -47,10 +56,20 @@ const _lensKeys = ref([])
 const _openInboxCount = ref(0)
 
 const _raw = reactive({ nodes: [], edges: [], layout: {} })
+//: 标签词表（`GET /tags`）。**空数组起步**，界面上"一个标签都没有"与
+//: "还没读到"于是是同一种显示 —— 而那正是想要的：本地工具里没有"加载中"的
+//: 那一格，也不该有。
+const _tags = ref([])
+//: 批量选中的实体 id。批量改状态的操作对象就是它。
+const _selection = ref([])
 const _loading = ref(false)
 const _loadError = ref('')
 const _selectedId = ref(null)
 const _selectedDetail = ref(null)
+//: 选中实体参与过的合并事件（`GET /entities/{id}/merges`）。详情面板的"拆开"
+//: 按钮要的是 `event_id` —— 它是**单独一条读**而不是塞进 `/entities/{id}`，
+//: 因为后者的形状是对外契约，3.8 不动它。
+const _selectedMerges = ref([])
 const _selectedLoading = ref(false)
 const _filter = reactive({ kinds: [], keyword: '', focusId: null, depth: 1 })
 const _logLines = shallowRef([])
@@ -195,6 +214,7 @@ export const store = reactive({
   loadError: _loadError,
   selectedId: _selectedId,
   selectedDetail: _selectedDetail,
+  selectedMerges: _selectedMerges,
   selectedLoading: _selectedLoading,
   filter: _filter,
   logLines: _logLines,
@@ -204,6 +224,8 @@ export const store = reactive({
   activeImportId: _activeImportId,
   importProgress: _importProgress,
   pipeline: _pipeline,
+  tags: _tags,
+  selection: _selection,
 
   // -- 派生 --
   counts: _counts,
@@ -232,6 +254,16 @@ export const store = reactive({
   toggleKind,
   clearFilter,
   tagEntity,
+  setEntityTags,
+  loadTags,
+  // 合并 / 拆开 / 批量改状态（3.8，全部落在探索模式）
+  loadMerges,
+  mergeEntities,
+  unmergeEntity,
+  setLifecycle,
+  setSelection,
+  toggleSelection,
+  clearSelection,
   submitImport,
   resetImportProgress,
   listJobs,
@@ -356,13 +388,19 @@ export async function reload() {
   // 换来的是"登记一个 kind，镜头页自己出现"，值得。
   await loadProjects()
   await loadMeta()
-  await Promise.all([loadGraph(), loadLenses()])
+  // 标签词表与图/镜头一起取（三个都是"这个库里现在有什么"）—— 串行会让首屏
+  // 多两个 RTT，而它们之间没有先后依赖。
+  await Promise.all([loadGraph(), loadLenses(), loadTags()])
 }
 
 export async function selectProject(name) {
   _project.value = name
   _selectedId.value = null
   _selectedDetail.value = null
+  _selectedMerges.value = []
+  // 选中集合是**项目内的东西**：带过去就是一批指向别的项目的 id，而"批量改
+  // 状态"会在下一次点击时把它们送出去。与草稿同一条理由（冻结 F8 第 3 条）。
+  _selection.value = []
   // **换项目 = 丢弃草稿**（冻结 F8）。这是唯一真正危险的情况：草稿里的 `project`
   // 与新的项目不是同一个，把它带过去就是在跨项目写事实 —— 而跨项目污染是这套
   // 东西里唯一不能靠"小心一点"避免的错误。
@@ -385,11 +423,15 @@ export async function selectProject(name) {
 export async function selectEntity(id) {
   _selectedId.value = id
   _selectedDetail.value = null
+  _selectedMerges.value = []
   if (id === null || id === undefined) return null
   if (String(id).startsWith('kind:')) return null      // 聚合节点没有详情
   _selectedLoading.value = true
   try {
-    _selectedDetail.value = await get(`/entities/${id}`)
+    const [detail, merges] = await Promise.all([
+      get(`/entities/${id}`), loadMerges(id)])
+    _selectedDetail.value = detail
+    _selectedMerges.value = merges || []
     return _selectedDetail.value
   } catch (err) {
     pushLog(`读取实体 ${id} 失败：${err.message}`, 'import', 'error')
@@ -412,47 +454,75 @@ export function moveEntity(id, position) {
 }
 
 /** 折叠。同上：它影响**怎么显示**，不影响**有什么**。 */
-export function toggleCollapse(id) {
+export function toggleCollapse(id, position) {
   const key = String(id)
   const current = _raw.layout[key] || {}
-  _raw.layout[key] = { x: current.x ?? 0, y: current.y ?? 0,
-                       collapsed: !current.collapsed }
+  const state = !current.collapsed
+  // 坐标**优先取调用方给的那一帧**（那就是屏幕上它现在待着的地方），其次取本地
+  // 已经记着的。两者都没有（一个从没拖过、也没人告诉过我们它在哪的节点）时，
+  // 这一次折叠只改本地、不落库 —— 见 `queueLayout`。
+  const x = Number.isFinite(position?.x) ? position.x : current.x
+  const y = Number.isFinite(position?.y) ? position.y : current.y
+  _raw.layout[key] = { x: x ?? 0, y: y ?? 0, collapsed: state }
+  queueLayout(id, Object.assign({ collapsed: state },
+    Number.isFinite(x) && Number.isFinite(y) ? { x, y } : {}))
+  return state
 }
 
 const LAYOUT_FLUSH_MS = 400
 let layoutTimer = null
 let pendingLayout = new Map()
 
+/** 把一条布局修改并进攒批。**按列并集**：同一节点先拖后折叠，两次的字段要合
+ *  起来，而不是后一次把前一次覆盖掉 —— 那正是"两列串位"的本地版本。 */
+function queueLayout(id, fields, { immediate = false } = {}) {
+  const key = String(id)
+  const merged = Object.assign({}, pendingLayout.get(key), fields)
+  if (!Number.isFinite(merged.x) || !Number.isFinite(merged.y)) {
+    // 没有坐标的写入**不落库**（本地状态已经改了，界面不会骗人）。
+    //
+    // 两个理由，第二个是决定性的：
+    //   1. 后端对"给一条不存在的行只写 collapsed"是拒绝的 —— 送过去只会换回
+    //      一个 400 与一行红色日志。
+    //   2. 万一那条规则哪天松了，写出去的会是一条**位于原点**的记录。读侧把
+    //      它当成"人把这个节点拖到了左上角"，于是节点下次打开就跳过去 ——
+    //      一个看起来像随机布局漂移的 bug，比"这一次折叠没存上"难查得多。
+    return
+  }
+  pendingLayout.set(key, Object.assign({ entity_id: Number(id) }, merged))
+  if (layoutTimer) clearTimeout(layoutTimer)
+  if (immediate) {
+    flushLayout()
+    return
+  }
+  layoutTimer = setTimeout(flushLayout, LAYOUT_FLUSH_MS)
+}
+
+async function flushLayout() {
+  const batch = [...pendingLayout.values()]
+  pendingLayout = new Map()
+  if (!batch.length) return
+  try {
+    const query = await _projectQuery()
+    await patch(`/graph/layout${query ? `?${query}` : ''}`, { items: batch })
+  } catch (err) {
+    pushLog(`保存布局失败：${err.message}`, 'import', 'warn')
+  }
+}
+
 /**
  * 把本地坐标写回 `entity_layout`（§7.3 防视觉混乱第 ③ 条）。
  *
  * **合并 + 去抖**：拖一次节点会来几十个 move 事件，一个一个 PATCH 会把单写
  * 队列塞满 —— 而写队列是导入共用的那一条。位置这种"最后一帧才算数"的数据，
- * 合并是唯一正确的攒批方式。批里带的是 `upsert` 语义的整条记录，所以丢掉
- * 中间帧不会丢数据。
+ * 合并是唯一正确的攒批方式。
+ *
+ * **只送坐标，不送 collapsed**（3.8）：整行覆盖写会让"拖一下"把折叠状态一起
+ * 抹掉 —— 位置与折叠是两个互不相干的人工决定，各有各的入口。
  */
 export function persistLayout(id, position, { immediate = false } = {}) {
   moveEntity(id, position)
-  pendingLayout.set(String(id), {
-    entity_id: Number(id), x: position.x, y: position.y, collapsed: false,
-  })
-  const flush = async () => {
-    const batch = [...pendingLayout.values()]
-    pendingLayout = new Map()
-    if (!batch.length) return
-    try {
-      const query = await _projectQuery()
-      await patch(`/graph/layout${query ? `?${query}` : ''}`, { items: batch })
-    } catch (err) {
-      pushLog(`保存布局失败：${err.message}`, 'import', 'warn')
-    }
-  }
-  if (layoutTimer) clearTimeout(layoutTimer)
-  if (immediate) {
-    flush()
-    return
-  }
-  layoutTimer = setTimeout(flush, LAYOUT_FLUSH_MS)
+  queueLayout(id, { x: position.x, y: position.y }, { immediate })
 }
 
 export function setFilter(next) {
@@ -478,12 +548,145 @@ export function clearFilter() {
 
 /** 标注：加一个标签。走 2.7 就有的 `PATCH /entities/{id}`（写值那条路仍然 501）。 */
 export async function tagEntity(id, tag) {
-  const data = await patch(`/entities/${id}`, { add_tags: [tag] })
+  return setEntityTags(id, { add: [tag] })
+}
+
+/**
+ * 标注的**完整**入口（3.8 把"删"补上 —— 旧实现只有加，于是"增删改"里的删
+ * 只能靠人记得去别处做）。
+ *
+ * 空数组不算一次写入：`PATCH /entities/{id}` 对"什么都没改"是 400，这不是
+ * 故障，是那条路由在防"一次静默的空写"。这里先挡掉，免得点一下空白按钮就
+ * 在日志里留一条红色。
+ */
+export async function setEntityTags(id, { add = [], remove = [], reason = null } = {}) {
+  if (!add.length && !remove.length) return null
+  const body = {}
+  if (add.length) body.add_tags = add
+  if (remove.length) body.remove_tags = remove
+  if (reason) body.reason = reason
+  const data = await patch(`/entities/${id}`, body)
   if (_selectedDetail.value && _selectedDetail.value.entity.id === id) {
     _selectedDetail.value = Object.assign({}, _selectedDetail.value, { tags: data.tags })
   }
-  pushLog(`实体 ${id} 加了标签 ${tag}`, 'import')
+  pushLog(`实体 ${id} 的标签：+${add.length} / -${remove.length}`, 'import')
+  await loadTags()
   return data
+}
+
+/** 标签词表（项目里已经用过的词 + 计数）。**显示的是库里的数。** */
+export async function loadTags() {
+  try {
+    const query = await _projectQuery()
+    _tags.value = await get(`/tags${query ? `?${query}` : ''}`)
+  } catch (err) {
+    pushLog(`读取标签词表失败：${err.message}`, 'import', 'warn')
+  }
+  return _tags.value
+}
+
+// ---------------------------------------------------------------------------
+// 合并 / 拆开 / 批量改状态（3.8）—— 都是**实体**上的写，落在探索模式
+// ---------------------------------------------------------------------------
+//
+// 三条纪律，都不是界面的口味问题：
+//
+//   * 合并**只能**走 `ops.merge`（经 `POST /entities/{id}/merge`）。在界面里
+//     拼一次"把两个卡片画成一个"会同时丢掉可逆性与冲突登记，而症状要等到
+//     有人想拆开的时候才出现。
+//   * 拆开**只能**走 `ops.unmerge`。它天然精确可逆，因为它**没有移动过任何
+//     事实**（INV-10）—— 事实仍在原来那个实体上，merge 只是一层身份覆盖。
+//   * 批量改状态是**一个 job**（一次点击 = 一次事务），撤销走 `POST /jobs/{id}/undo`
+//     —— 与作业历史页上的撤销是同一个按钮背后的同一段代码。
+
+export async function loadMerges(entityId) {
+  try {
+    return await get(`/entities/${entityId}/merges`)
+  } catch (err) {
+    pushLog(`读取合并事件失败：${err.message}`, 'import', 'warn')
+    return []
+  }
+}
+
+/**
+ * 合并。**幸存者由界面明确指定**（选中哪个节点当幸存者是一次人工决定，
+ * 不让代码去猜"谁更像主"—— 猜错的合并比没合并糟得多，因为它的症状要等到
+ * 有人想拆开时才出现）。
+ *
+ * `survivorKey` 与 `survivorId` 都要：id 是路由的入口，key 是 `ops.merge`
+ * 的入口，而**服务端会核对两者一致**（`E_MERGE_SURVIVOR_MISMATCH`）——
+ * 那个核对就是防止"界面拿错了 id"这类错误静默地合并错东西。
+ */
+export async function mergeEntities({ survivorId, survivorKey, memberKeys,
+                                      dryRun = false } = {}) {
+  if (!survivorKey || !memberKeys || !memberKeys.length) {
+    return null
+  }
+  const query = await _projectQuery()
+  const body = { survivor_key: survivorKey, member_keys: memberKeys, dry_run: dryRun }
+  const data = await post(
+    `/entities/${survivorId}/merge${query ? `?${query}` : ''}`, body)
+  pushLog(`${dryRun ? '预演：' : ''}合并了 ${memberKeys.length} 个实体到 ${survivorKey}`
+    + (dryRun ? '' : `（事件 ${data.event_id}，冲突 ${data.conflicts.length} 条）`),
+    'import')
+  if (!dryRun) await reload()
+  return data
+}
+
+export async function unmergeEntity(entityId, eventId, dryRun = false) {
+  const query = await _projectQuery()
+  const data = await post(
+    `/entities/${entityId}/unmerge${query ? `?${query}` : ''}`,
+    { event_id: eventId, dry_run: dryRun })
+  pushLog(`${dryRun ? '预演：' : ''}拆开了合并事件 ${eventId}`, 'import')
+  if (!dryRun) await reload()
+  return data
+}
+
+/**
+ * 批量改状态。**一个 job**（`ops.set_lifecycle` 的段落注释解释了为什么不是
+ * N 个），撤销就是作业历史里那一个 job 的撤销按钮。
+ */
+export async function setLifecycle(entityIds, lifecycle, { reason = null, dryRun = false } = {}) {
+  const ids = [...new Set((entityIds || [])
+    .filter((v) => v !== null && v !== undefined && v !== '')
+    .map(Number).filter((n) => Number.isFinite(n)))]
+  if (!ids.length) return null
+  const query = await _projectQuery()
+  const body = { entity_ids: ids, lifecycle, dry_run: Boolean(dryRun) }
+  if (reason) body.reason = reason
+  const data = await post(
+    `/entities/lifecycle${query ? `?${query}` : ''}`, body)
+  pushLog(`${dryRun ? '预演：' : ''}${ids.length} 个实体 → ${lifecycle}`
+    + `（改了 ${data.counts.changed} 个，job ${data.job_id}）`, 'import')
+  if (!dryRun) await reload()
+  return data
+}
+
+/** 批量选中（3.8）：画布支持 `Shift` 框选与多选，这些 id 就是"批量改状态"的操作对象。
+ *  **只在这里存一份**，节点上的选中态由它算出来 —— 两份选中状态迟早会分叉。 */
+export function setSelection(ids) {
+  // `Number(null)` 是 0、`Number('')` 也是 0 —— 只判 `Number.isFinite` 会让
+  // 一个空值悄悄变成"选中实体 0"。所以空值先剔掉，再谈数字。
+  _selection.value = [...new Set(
+    (ids || []).filter((v) => v !== null && v !== undefined && v !== '')
+      .map(Number).filter(Number.isFinite))]
+  return _selection.value
+}
+
+export function toggleSelection(id) {
+  const key = Number(id)
+  if (id === null || id === undefined || id === '' || !Number.isFinite(key)) {
+    return _selection.value
+  }
+  const set = new Set(_selection.value)
+  if (set.has(key)) set.delete(key)
+  else set.add(key)
+  return setSelection([...set])
+}
+
+export function clearSelection() {
+  return setSelection([])
 }
 
 // ---------------------------------------------------------------------------

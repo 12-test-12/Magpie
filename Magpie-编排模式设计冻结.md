@@ -334,7 +334,26 @@ END;
 | 折叠 / 筛选 / 标注 | 允许 | 不适用 |
 | 增删节点 | **不允许**（`READONLY` 红线 + 非受控入口都不存在） | 允许，但**是表单动作**：`addStep()` / `removeStep()` |
 | 增删边 | **不允许** | 允许，**是画布手势**：拖 Handle 连线 → `connectSteps(src, dst)` |
-| 落库 | 只能经 `PATCH /entities/{id}` 的加标签 + `PATCH /graph/layout` | 只能经 `PUT /pipelines/{id}`（**写定义，不写事实**） |
+| 落库 | 只能经 `PATCH /entities/{id}`（标签）+ `PATCH /graph/layout`（位置 / 折叠）+ **下面扩写的两行** | 只能经 `PUT /pipelines/{id}`（**写定义，不写事实**） |
+
+> **§3.2 冻结表「落库」那一行的扩写（3.8，LARI-31 的裁定）**
+>
+> 3.7b 交付时这一行只列了两条落点：标签与布局。**3.8 明确扩写它，多列两行** ——
+> 这两件事操作的是**实体**、不是管线定义，所以它们的 UI 落在探索模式：
+>
+> | 扩写的行 | 走哪条路 | 为什么是它 |
+> |---|---|---|
+> | **合并 / 拆开实体** | `POST /entities/{id}/merge`（3.7b 已有）与 `POST /entities/{id}/unmerge`（3.8 新增），两者都直通 `ops.merge` / `ops.unmerge` | 合并是**可逆的 identity overlay + 冲突登记**。在 `api/routes.py` 或前端拼一次 `UPDATE entities SET merged_into=…` 会**同时丢掉**可逆性（`entity_merge_members.revoked_by_job_id` 那条生命周期边）与冲突登记，而症状要等到有人想拆开时才出现 |
+> | **批量改状态** | `POST /entities/lifecycle`（3.8 新增）→ `ops.set_lifecycle` | 复用 3.7b 建立的 job/undo 通路（`ops.undo` / `ops.undo_jobs`）。**一批 = 一个 job**（一次事务，要么全成要么全不成）；撤销就是作业历史里那一个 job 的撤销按钮。理由与取舍见 `ops.set_lifecycle` 的段落注释 |
+>
+> **扩写而不是"偷偷加一个写入口"**：上面两条都是**有记录的决定**，落在这里。
+> 两条都**不是**"往图里加节点或边"的动作，所以按设计**不触发** `READONLY` ——
+> 真触发了就说明位置写错了，那时要停下来问，不是顺手扩白名单。
+>
+> 三条**没有**扩写、仍然照旧的（它们的落点就是既有那两条）：
+> 标签的增删仍走 `PATCH /entities/{id}`；位置与折叠仍走 `PATCH /graph/layout`
+> （3.8 只是把它从"整行覆盖写"改成"按列部分写入"—— `x` / `y` / `collapsed`
+> 都变成可选，响应形状逐字不变）。
 
 【冻结 F6】编排画布是一个**受控组件**，与 `GraphCanvas.vue` 同构：
 

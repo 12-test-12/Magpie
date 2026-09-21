@@ -19,7 +19,7 @@
  * 与"可编辑"徽标。靠一个徽标区分听起来很薄，但它的作用是让人在拖完一个节点
  * 之后不产生"我刚才是不是改了数据"的疑问 —— 而这个疑问本身才是混乱的来源。
  */
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -36,14 +36,52 @@ const emit = defineEmits(['select'])
 const { fitView, onNodeDragStop, onEdgeClick } = useVueFlow()
 
 const flowNodes = computed(() => store.visible.nodes)
-const flowEdges = computed(() => store.visible.edges.map((edge) => ({
-  ...edge,
-  style: { stroke: relationColor(edge.data.rel) },
-  labelStyle: { fill: 'var(--dim)' },
-  animated: false,
-})))
+
+/** 折叠节点的 id 集合。折叠是**渲染层**的事（计划书 §7.3 的"把噪音收起来"），
+ *  它不动图的构成 —— 节点还在、边还在，只是画得轻一点。 */
+const foldedIds = computed(() => new Set(
+  (store.visible.nodes || [])
+    .filter((node) => node.data && node.data.collapsed)
+    .map((node) => String(node.id))))
+
+const flowEdges = computed(() => store.visible.edges.map((edge) => {
+  // 两端任意一端折叠了 → 这条线也淡下去。只淡卡片不淡线，会留下一堆"接不到
+  // 任何东西"的线头，而那比不折叠更难读。
+  const faded = foldedIds.value.has(String(edge.source))
+    || foldedIds.value.has(String(edge.target))
+  return {
+    ...edge,
+    style: { stroke: relationColor(edge.data.rel), opacity: faded ? 0.25 : 1 },
+    labelStyle: { fill: 'var(--dim)', opacity: faded ? 0.3 : 1 },
+    animated: false,
+  }
+}))
 
 const isAggregate = computed(() => store.visible.aggregated)
+const selection = computed(() => store.selection || [])
+const busy = ref(false)
+const batchNote = ref('')
+
+/**
+ * 批量改状态。**一次点击 = 一个 job**（`ops.set_lifecycle`），所以撤销它就是在
+ * 作业历史里撤那一个 job ——"要么全成要么全不成"这条硬线落在这个形状上。
+ */
+async function batchLifecycle(lifecycle) {
+  if (busy.value) return
+  busy.value = true
+  batchNote.value = ''
+  try {
+    const data = await store.setLifecycle(selection.value, lifecycle)
+    batchNote.value = data
+      ? `改了 ${data.counts.changed} 个（作业 ${data.job_id}，可在作业历史里撤销）`
+      : '没有可改的实体'
+    store.clearSelection()
+  } catch (err) {
+    batchNote.value = `批量改状态失败：${err.message}`
+  } finally {
+    busy.value = false
+  }
+}
 
 onMounted(() => {
   onNodeDragStop(({ node }) => {
@@ -56,6 +94,20 @@ onMounted(() => {
   })
   window.addEventListener('keydown', onKey)
 })
+
+/**
+ * 卡片上的折叠按钮 → `store.toggleCollapse`。
+ *
+ * **带上坐标**：折叠是"改这一列"，不是"建一条记录" —— 后端拒绝"对一条不存在的
+ * 行只写 collapsed"，因为那条记录会带着 (0,0) 出生，节点下次打开就跳到左上角。
+ *
+ * 事件经 Vue Flow 的**自定义节点事件转发**上来（自定义节点组件 `emit` 的名字，
+ * 在 `<VueFlow>` 上用 `@toggle-collapse` 收）。这样卡片不必知道 store 长什么样。
+ */
+function onToggleCollapse({ node }) {
+  if (!node || String(node.id).startsWith('kind:')) return
+  store.toggleCollapse(node.id, node.position)
+}
 
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 
@@ -81,7 +133,19 @@ function relayout() {
   store.pushLog('已重新适应画布（持久化的位置不会被改动）', 'activity')
 }
 
-function onNodeClick({ node }) {
+/**
+ * 单击卡片 = 选中它。
+ *
+ * `Shift` + 单击 = **批量选中**（3.8）：那一组 id 就是详情面板里"把选中的并入
+ * 这里"与批量改状态的操作对象。走的是浏览器原生的 `shiftKey`，不自己维护一个
+ * "上一次点的是谁" —— 那个状态在切换筛选、切换项目、刷新之后都会说谎。
+ */
+function onNodeClick({ node, event }) {
+  if (node.id.startsWith('kind:')) return               // 聚合节点没有身份
+  if (event && event.shiftKey) {
+    store.toggleSelection(node.data?.entityId ?? node.id)
+    return
+  }
   emit('select', node.id)
   store.selectEntity(node.id)
 }
@@ -107,6 +171,20 @@ defineExpose({ fitView })
     <div class="mode-badge">
       <span class="lock">🔒</span>
       <span>探索模式 · 只读</span>
+    </div>
+
+    <!-- 批量操作条（3.8）。它只在**选中了东西**的时候出现 —— 一个常驻的禁用
+         工具条会让人问"它为什么灰着"，而灰着的按钮从来不是答案。 -->
+    <div v-if="selection.length" class="batch-bar">
+      <span class="count">已选 {{ selection.length }} 个</span>
+      <button class="ghost" :disabled="busy" @click="batchLifecycle('retired')">
+        标为已退休
+      </button>
+      <button class="ghost" :disabled="busy" @click="batchLifecycle('active')">
+        标为在用
+      </button>
+      <button class="ghost" @click="store.clearSelection()">清空</button>
+      <span v-if="batchNote" class="note">{{ batchNote }}</span>
     </div>
 
     <div v-if="isAggregate" class="aggregate-banner">
@@ -140,6 +218,7 @@ defineExpose({ fitView })
       class="flow"
       @node-click="onNodeClick"
       @node-double-click="onNodeDoubleClick"
+      @toggle-collapse="onToggleCollapse"
     >
       <Background :gap="24" :size="1.2" pattern-color="#1B1B20" bg-color="#0E0E11" />
       <Controls :show-interactive="false" position="bottom-right" />
@@ -171,6 +250,22 @@ defineExpose({ fitView })
   pointer-events: none;
 }
 .lock { font-size: 10px; }
+.batch-bar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-ui);
+  background: rgba(26, 26, 31, .94);
+  font-size: 11px;
+}
+.batch-bar .count { color: var(--accent); }
+.batch-bar .note { color: var(--dim); max-width: 280px; }
 .aggregate-banner {
   position: absolute;
   top: 46px;

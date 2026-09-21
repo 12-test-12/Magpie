@@ -682,7 +682,10 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             （`revoked_by_job_id` / `unmerged_by_job_id`）——
             否则 alias 的行内容一删，redo 就再也无法重建（key 映射不在事实层里）。
     工作层: 关闭 J 打开的自动 inbox 项（`closed_by_job_id`）；
-            undo 自己打开的孤儿项打上 `opened_by_undo_job_id`，供 redo 关闭。
+            undo 自己打开的孤儿项打上 `opened_by_undo_job_id`，供 redo 关闭；
+            **把 J 写下的 `work_journal` 逐行放回 `before`**（3.8：批量改状态 —
+            `entities.lifecycle` 不是事实层，没有贡献可撤，能撤的只有"改之前的
+            那个值"，见迁移 009 的文件头）。
     执行状态: 只改 `jobs.applied = 0`，**不再**把 state 改成 'aborted'
             （"跑完了但被撤销" 与 "执行失败" 是两件事）。
 
@@ -754,10 +757,15 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             (now(), job_id, job_id),
         ).rowcount
 
-        # ---- 5. 缓存重算（delta） ----
+        # ---- 5. 工作层: J 写下的 work_journal 逐行放回 before（3.8）----
+        # 放在 recompute **之前**：lifecycle 不参与缓存投影，两者互不影响，
+        # 但"先在库里恢复事实、再一次性重算"是这一整个函数的形状，别在这里破例。
+        work_reverted = _replay_work_journal(conn, job_id, direction="undo", actor=actor)
+
+        # ---- 6. 缓存重算（delta） ----
         recompute(conn, delta=subjects)
 
-        # ---- 6. GC 评估（v3.2-r2 起默认不物理删除）----
+        # ---- 7. GC 评估（v3.2-r2 起默认不物理删除）----
         purge_report: dict[str, Any] = {"purge": [], "retained": [], "orphan_subjects": []}
         if purge:
             purge_report = purge_eligible(conn)
@@ -799,6 +807,11 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
                 "merge_members_revoked": members_revoked,
                 "merge_events_reverted": len(merge_events),
                 "inbox_closed": inbox_closed,
+                # 一个数，不是一列 id：`impact` 的每一个键都是计数，而**这条响应
+                # 是既有形状**（加键要按 CHANGELOG 的规矩升 minor 登记）。逐行的
+                # 明细在 `activity_log` 的 `work.undo` 里 —— 审计要的是明细，
+                # 契约要的是稳定。
+                "work_reverted": len(work_reverted),
                 "purge_eligible": purge_report["purge"],
                 "purge_retained": purge_report["retained"],
                 "inbox_opened": len(purge_report["orphan_subjects"]),
@@ -824,7 +837,8 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
               重新 unmerge 那些"由 J 反向合并回去"的事件（幂等对称）。
       工作层: 重开 `closed_by_job_id=J` 的项（若同 fingerprint 已有 open 项，
               则并入它的 occurrence_count 而不破唯一索引）；关闭
-              `opened_by_undo_job_id=J` 的项。
+              `opened_by_undo_job_id=J` 的项；**把 J 的 `work_journal` 按 `after`
+              再写一遍**（3.8，与 `undo` 的 `before` 严格对称）。
       应用状态: `applied=1`。
 
     幂等: 已经没有 retract 行且 `applied=1` 时，返回 `{"noop": True}` 报告。
@@ -925,6 +939,9 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             " opened_by_undo_job_id=NULL WHERE opened_by_undo_job_id=?",
             (now(), job_id)).rowcount
 
+        # ---- 3b. 工作层: J 的 work_journal 按 after 再写一遍（3.8）----
+        work_replayed = _replay_work_journal(conn, job_id, direction="redo", actor=actor)
+
         # ---- 4. 缓存重算 + 应用状态 + integrity ----
         recompute(conn, delta=_recompute_subjects_of_job(conn, job_id))
         # 部分成功时保持 applied=0（还有撤销边未恢复），保证
@@ -946,6 +963,7 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
                 "merge_events_restored": merge_events_restored,
                 "inbox_reopened": inbox_reopened,
                 "inbox_closed": inbox_closed,
+                "work_replayed": len(work_replayed),
                 "blocked": blocked,
             },
             "integrity": {"ok": True},
@@ -1119,6 +1137,166 @@ def redo_run(conn: sqlite3.Connection, run_id: int, *, actor: str = "cli",
             "redone": batch["redone"], "already_applied": already,
             "stopped_at": batch["stopped_at"], "error": batch["error"],
             "reports": batch["reports"], "applied": applied}
+
+
+# ---------------------------------------------------------------------------
+# 批量改状态（3.8）—— 工作层写入，走同一套 undo
+# ---------------------------------------------------------------------------
+#
+# `entities.lifecycle` 是 D 工作层的**人工状态**（schema/001 的列注释:
+# "业务生命周期（人工/流程）"），不是事实层的投影 —— 导入不能把人工退休的资产
+# 复活。所以它没有贡献可撤，`ops.undo` 那套"追加 retract 抑制边"在它身上无事可做。
+#
+# 撤销它需要的是一件这里从来没有过的东西：**改之前的那个值**。存它的地方是
+# `work_journal`（迁移 009，理由见那个文件头）。于是可逆性的形状与其它 op 一致：
+#
+#     undo(J)  = 把 J 在 work_journal 里写下的每一行按 `before` 放回去
+#     redo(J)  = 按 `after` 再写一遍
+#
+# **为什么"批量"是一个 job，而不是 N 个 job。**
+#
+# 3.7b 留下的批量通路（`undo_jobs` / `undo_run`）是**N 个 job + 逆序逐个撤销**，
+# 它对 ingest 是对的：一个文件一个 job 的粒度是数据层的纪律（F9），撤到一半停下
+# 并说清停在哪，在那里的语义是"如实"。但 3.8 的硬线是另一条：
+#
+#     **批量操作要么全成要么全不成（事务），不许半批成功。**
+#
+# 这一条管的是**正向**这一次批量：N 个 job 的形状让"撤销"天然可以半批完成
+# （`stopped_at`），而批量改状态要的恰好是它的反面 —— 一次点击改 30 个实体的
+# 状态，不能出现"撤回了 17 个、还剩 13 个退休着"的中间态。要让"原子"在撤销侧
+# 也成立，唯一说得通的形状就是 **1 个 job**（一个事务、一条日志、一次撤销）。
+#
+# 这不是"另造第二套批量机制"：批量改状态调用的仍然是 `ops.undo` / `ops.undo_jobs`
+# 这**一份**实现（1 个 job 的批量走 `undo_jobs([jid])`，与走 `undo(jid)` 逐字同一条
+# 代码路径）。真正的"第二套"是把 N 个 job 的 id 记在某处、再写一个"撤销这一批"
+# 的新原语 —— 那需要再造一张分组表（`pipeline_runs` 是管线定义的下游，改实体
+# 挂不上去），而那张表就是第二套批量机制的物理形态。
+#
+# 顺带: job 粒度纪律（F9「一个文件一个 job」）约束的是 **ingest**，不是工作层
+# 写入 —— 它的理由（`raw_files` 的 UNIQUE(project_id, sha256)、evidence 的
+# per-file 归属、`job_counts`、`explain_job_scope`）一条都不适用于"把 30 个实体
+# 标成 retired"。
+
+#: `entities.lifecycle` 的合法取值（唯一声明处 = schema/001 的 CHECK）。
+#: 两处都写不是重复：这一份让错误在**排队之前**就能报成一句人话，
+#: 而不是一次 SQLite CHECK 失败。
+LIFECYCLES = ("active", "retired")
+
+#: 工作层里可以被 job 撤销的列（`work_journal.field` 的取值域）。
+#: 今天只有 lifecycle。加一个取值时要同时想清楚 undo / redo 怎么放回去。
+WORK_FIELDS = ("lifecycle",)
+
+
+def set_lifecycle(conn: sqlite3.Connection, *, project_id: int,
+                  entity_ids: Sequence[int], lifecycle: str,
+                  job_id: int | None = None, reason: str | None = None,
+                  actor: str = "cli", dry_run: bool = False,
+                  _shared_txn: bool = False) -> dict[str, Any]:
+    """**批量**改一组实体的生命周期（active / retired）。一次调用 = 一个 job。
+
+    * **要么全成要么全不成。** 整批在一个事务里；任何一个实体不存在 / 不属于
+      本项目 → **在写第一行之前**就抛，一个字都不落库（错误信息把有问题的 id
+      全列出来，而不是只报第一个 —— 只报第一个会让人改一轮再跑一轮）。
+    * **幂等**：已经是目标状态的实体不写日志、不进 `changed`，如实列进
+      `unchanged`。于是 undo 报告的 `reverted` 数的是"真的被改回去的行数"。
+    * **可撤销**：撤销走 `ops.undo(job_id)` / `ops.undo_jobs([job_id])`，
+      判据与 2.6 的 B 组同一条 —— `store.effective_equivalent` 逐行指纹相等。
+    """
+    store.require_row_factory(conn, caller="ops.set_lifecycle")
+    if lifecycle not in LIFECYCLES:
+        raise InvariantError(
+            f"lifecycle 只能是 {list(LIFECYCLES)} 之一，收到 {lifecycle!r}")
+    ids = sorted({int(e) for e in entity_ids})
+    if not ids:
+        raise InvariantError("批量改状态至少要给一个实体")
+
+    with batch_txn(conn, dry_run, _shared_txn):
+        # ---- 1. 前置校验（整批，在写之前）----
+        found: dict[int, str] = {}
+        for eid in ids:
+            row = conn.execute(
+                "SELECT lifecycle FROM entities WHERE id=? AND project_id=?",
+                (eid, project_id)).fetchone()
+            if row is not None:
+                found[eid] = str(row["lifecycle"])
+        missing = [eid for eid in ids if eid not in found]
+        if missing:
+            # 跨项目访问与不存在在这里是同一句话的两种原因：都必须是**响亮**的
+            # 失败。静默跳过会让"我改了 30 个"变成一个没人核对的数字。
+            raise InvariantError(
+                f"这些实体不在项目 {project_id} 里（不存在或属于别的项目）：{missing}")
+
+        job_id = _identity_job(conn, project_id, "lifecycle", job_id, actor)
+        changed: list[int] = []
+        unchanged: list[int] = []
+        for eid in ids:
+            before = found[eid]
+            if before == lifecycle:
+                unchanged.append(eid)
+                continue
+            conn.execute("UPDATE entities SET lifecycle=? WHERE id=? AND project_id=?",
+                         (lifecycle, eid, project_id))
+            conn.execute(
+                "INSERT INTO work_journal(project_id, job_id, entity_id, field,"
+                " before_json, after_json, created_at) VALUES (?,?,?,'lifecycle',?,?,?)",
+                (project_id, job_id, eid, canonical_json(before),
+                 canonical_json(lifecycle), now()))
+            changed.append(eid)
+
+        finish_job(conn, job_id, "done", actor=actor)
+        report = {"op": "lifecycle.set", "dry_run": bool(dry_run),
+                  # 干跑**不给** job_id：那个 id 会随末尾的 ROLLBACK 一起消失，
+                  # 而把它交出去等于给调用方一个可以拿去 /jobs/{id}/undo 的把手
+                  # —— 换回来的是一个 500。报告里那句 `dry_run: true` 已经说清
+                  # 这一次什么都没有留下。
+                  "job_id": None if dry_run else job_id,
+                  "lifecycle": lifecycle, "reason": reason,
+                  "changed": changed, "unchanged": unchanged,
+                  "counts": {"requested": len(ids), "changed": len(changed),
+                             "unchanged": len(unchanged)}}
+        log_activity(conn, actor=actor, action="lifecycle.set", target_kind="job",
+                     target_id=job_id, job_id=job_id,
+                     detail={"lifecycle": lifecycle, "changed": changed,
+                             "unchanged": unchanged, "reason": reason})
+        return report
+
+
+def _replay_work_journal(conn: sqlite3.Connection, job_id: int, *, direction: str,
+                         actor: str) -> list[dict[str, Any]]:
+    """把 J 写下的工作层日志按 `direction` 放回去（undo→before / redo→after）。
+
+    每条日志一个 (entity_id, field) 对，`UNIQUE(job_id, entity_id, field)` 保证
+    它们互不重叠 —— 所以"按什么顺序回放"不影响结果，这里仍然**倒序**：与
+    `undo_jobs` 拆栈的方向一致，读日志时不必解释为什么这里例外。
+
+    只写**真的变了**的那些（`UPDATE` 的 rowcount），于是报告里的 `reverted`
+    数是"这个 job 造成过的净变化"，不是"摸过的行数"。
+    """
+    column = "before_json" if direction == "undo" else "after_json"
+    rows = conn.execute(
+        f"SELECT id, entity_id, field, before_json, after_json FROM work_journal"
+        f" WHERE job_id=? ORDER BY id DESC", (job_id,)).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        field = str(row["field"])
+        if field not in WORK_FIELDS:                       # pragma: no cover - 兜底
+            raise InvariantError(
+                f"work_journal.field={field!r} 没有对应的回放规则（WORK_FIELDS 是"
+                f"这份清单的唯一声明处）")
+        raw = row[column]
+        value = None if raw is None else json.loads(str(raw))
+        cur = conn.execute(
+            f"UPDATE entities SET {field}=? WHERE id=? AND {field} IS NOT ?",
+            (value, int(row["entity_id"]), value))
+        if cur.rowcount:
+            out.append({"entity_id": int(row["entity_id"]), "field": field,
+                        "value": value, "journal_id": int(row["id"])})
+    if out:
+        log_activity(conn, actor=actor,
+                     action="work.revert" if direction == "undo" else "work.replay",
+                     target_kind="job", target_id=job_id, job_id=job_id,
+                     detail={"entries": out})
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -175,31 +175,87 @@
         "type": "object"
       },
       "LayoutItem": {
+        "description": "一条布局写入。`x` / `y` / `collapsed` **都是可选的**（3.8）。\n\n三个字段各自独立：拖位置只送 `x` / `y`，切换折叠只送 `collapsed`。\n旧形状（三个都必填、`collapsed` 缺省 false）是**整行覆盖写** —— 于是拖一个\n已经折叠的节点会把它悄悄展开，而\"位置\"与\"折叠\"是两个互不相干的人工决定。\n新形状对老客户端**向后兼容**：老客户端照旧三个都送，行为逐字不变。",
         "properties": {
           "collapsed": {
-            "default": false,
-            "title": "Collapsed",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collapsed"
           },
           "entity_id": {
             "title": "Entity Id",
             "type": "integer"
           },
           "x": {
-            "title": "X",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X"
           },
           "y": {
-            "title": "Y",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y"
           }
         },
         "required": [
-          "entity_id",
-          "x",
-          "y"
+          "entity_id"
         ],
         "title": "LayoutItem",
+        "type": "object"
+      },
+      "LifecycleBody": {
+        "description": "`POST /entities/lifecycle` 的体 —— **批量**改状态（3.8）。",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "entity_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Entity Ids",
+            "type": "array"
+          },
+          "lifecycle": {
+            "title": "Lifecycle",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "lifecycle"
+        ],
+        "title": "LifecycleBody",
         "type": "object"
       },
       "MergeBody": {
@@ -314,6 +370,25 @@
         "title": "RunBody",
         "type": "object"
       },
+      "UnmergeBody": {
+        "description": "路径上的实体只是**入口**（它必须真的参与过这个事件），撤销的对象是事件。",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "title": "UnmergeBody",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -359,7 +434,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.7.0"
+    "version": "0.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -879,6 +954,65 @@
         "summary": "实体列表（键集游标分页）+ §3.5 的具名查询"
       }
     },
+    "/api/v1/entities/lifecycle": {
+      "post": {
+        "description": "一次点击改一组实体的生命周期。**一次调用 = 一个 job**（可 undo）。\n\n为什么是\"一个 job\"而不是\"N 个 job\"，以及它与 3.7b 那条批量通路的关系，\n写在 `ops.set_lifecycle` 的段落注释里 —— 那是这个决定唯一该被解释的地方。\n\n校验（存在性 / 项目归属 / 词表）**在排队之前**做一遍：一个注定失败的批量\n不该占一次写者，更不该在写者里炸掉一半。写者里那一遍仍然是必须的（真正的\n守卫在那里），两遍不是重复 —— 一遍管\"快速失败\"，一遍管\"真的不会半批成功\"。",
+        "operationId": "post_lifecycle_api_v1_entities_lifecycle_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LifecycleBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Lifecycle Api V1 Entities Lifecycle Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "批量改状态（active / retired）"
+      }
+    },
     "/api/v1/entities/{entity_id}": {
       "get": {
         "operationId": "get_entity_api_v1_entities__entity_id__get",
@@ -1066,6 +1200,132 @@
           }
         },
         "summary": "合并（identity overlay）"
+      }
+    },
+    "/api/v1/entities/{entity_id}/merges": {
+      "get": {
+        "description": "`unmerge` 的入口：撤销一次合并要的是 `event_id`，而界面上人看到的只有\n\"这张卡片是合并出来的\"。单独一条路由而不是塞进 `GET /entities/{id}` ——\n后者的形状是对外契约，3.8 不动它。",
+        "operationId": "get_entity_merges_api_v1_entities__entity_id__merges_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Entity Merges Api V1 Entities  Entity Id  Merges Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "这个实体参与过的合并事件"
+      }
+    },
+    "/api/v1/entities/{entity_id}/unmerge": {
+      "post": {
+        "description": "**必须**走 `ops.unmerge` —— 它是\"再 merge 一次\"的显式逆操作，事实层零变更\n（INV-10），所以拆开之后逐行指纹自动回到合并前。\n\n在 `api/routes.py` 里拼一个 `UPDATE entities SET merged_into=NULL` 看起来也能\n\"拆开\"，但它会**同时丢掉两样东西**：`entity_merge_members.revoked_by_job_id`\n那条生命周期边（于是 undo/redo 再也找不回这次合并），以及合并时登记下来的\n`merge_conflict` inbox 项的关闭路径。而这两样的症状都要等到有人想再合回去的\n时候才出现。",
+        "operationId": "unmerge_entity_api_v1_entities__entity_id__unmerge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnmergeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Unmerge Entity Api V1 Entities  Entity Id  Unmerge Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "撤销一次合并（拆开）"
       }
     },
     "/api/v1/export": {
@@ -1301,7 +1561,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "布局持久化（批量）"
+        "summary": "布局持久化（批量，按列部分写入）"
       }
     },
     "/api/v1/graph/{entity_id}/neighbors": {
@@ -2813,6 +3073,55 @@
           }
         },
         "summary": "搜索（§8，尚未实现）"
+      }
+    },
+    "/api/v1/tags": {
+      "get": {
+        "description": "**只算活标签**。界面拿它渲染\"这个词表里已经有哪些词\" —— 显示的是库里的数，\n不是\"界面上见过的那些\"（与镜头徽标同一条纪律）。",
+        "operationId": "list_tags_api_v1_tags_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Tags Api V1 Tags Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "标签词表（项目里已经用过的词 + 计数）"
       }
     }
   }

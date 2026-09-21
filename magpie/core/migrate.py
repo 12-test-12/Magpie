@@ -65,6 +65,11 @@ MIGRATIONS: tuple[Migration, ...] = (
     # + 跨项目触发器。它与 004–007 不同 —— 那四个是往**词表**里加一行，这一个
     # 是给一个新的持久化产物落表。同样**新增迁移、不改 003–007**（R4）。
     Migration(8, "pipeline_definitions", SCHEMA_DIR / "008_pipeline_definitions.sql"),
+    # 工作层写入的**撤销日志**（3.8）。它与 004–007 不同（那些是词表加行），
+    # 也与 008 不同（那是新的持久化产物）—— 这一张是给 `ops.undo` / `ops.redo`
+    # 补上"工作层那一半"的账本：`entities.lifecycle` 不是事实层，没有贡献可撤，
+    # 撤销它需要的恰恰是"改之前的值"。同样**新增迁移、不改 001–008**（R4）。
+    Migration(9, "work_journal", SCHEMA_DIR / "009_work_journal.sql"),
 )
 
 
