@@ -56,6 +56,11 @@ MIGRATIONS: tuple[Migration, ...] = (
     # dirsearch / katana / gau / ffuf）与关系动词 `served_by`，并把四个指纹追加进
     # domain / ip / service 的 produced_by。同样**新增迁移、不改 003–005**（R4）。
     Migration(6, "kind_endpoint", SCHEMA_DIR / "006_kind_endpoint.sql"),
+    # 登记 `apischema`（第一个真实产出者是 3.4 的四个"接口描述"来源：
+    # openapi / postman / har / curl）与关系动词 `declared_in`，并把四个指纹追加进
+    # domain / ip / service / endpoint 的 produced_by。
+    # 同样**新增迁移、不改 003–006**（红线 R4）。
+    Migration(7, "kind_apischema", SCHEMA_DIR / "007_kind_apischema.sql"),
 )
 
 

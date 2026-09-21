@@ -1,0 +1,12 @@
+# curl 粘贴的黄金夹具：一行一条命令，逐条独立解析。
+# 注释行会被跳过（不以 curl 开头的行则是坏行，见最后两条）。
+curl -X POST 'https://api.example.com/v2/pets?limit=10' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer SECRET-SHOULD-NEVER-LAND' \
+  --json '{"name":"dog","tag":"x","password":"SECRET-SHOULD-NEVER-LAND"}'
+/usr/bin/curl -sSL -k -o /dev/null 'https://api.example.com/v2/pets/7?fields=name'
+curl -u alice:SECRET-SHOULD-NEVER-LAND -b 'session=SECRET-SHOULD-NEVER-LAND' https://api.example.com/v2/me
+curl --retry 3 https://admin.example.com/health
+curl https://api.example.com/v2/pets --data-raw 'tag=cat&weight=4'
+not-a-curl-command at all
+curl https://api.example.com/v2/pets?token=$TOKEN

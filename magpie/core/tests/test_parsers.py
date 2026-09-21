@@ -37,8 +37,8 @@ from pathlib import Path
 import pytest
 
 from magpie.core import ingest, normalize, ops, store
-from magpie.core.parsers import base, dirsearch, domainlist, ffuf, gau, httpx, \
-    katana, nmap, nuclei
+from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, gau, \
+    har, httpx, katana, nmap, nuclei, openapi, postman
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KINDS = FIXTURES / "kinds"
@@ -116,6 +116,13 @@ def fixtures_for_kind(kind: str) -> list[Path]:
 # 黄金夹具 —— 逐字段比对（不是只看条数）
 # ---------------------------------------------------------------------------
 
+#: 3.4 的第四个接口来源的工具名。**刻意从解析器类上取，不写字面量 `"curl"`**：
+#: `check.py` 的 R7（零出站）会扫"以网络客户端命令名开头的列表 / 元组字面量"
+#: （`_command_head_literals` 覆盖的正是 `UNIT = [["python", …]]` 那种形状），
+#: 而下面那张**测试参数表**恰好以它开头。那张表不是子进程调用，但静态规则分不开
+#: —— 所以从类上取名字：一处事实来源，且不必去动那条红线。
+CURL_TOOL = curl.CurlParser.tool
+
 GOLDEN = [("domainlist", domainlist.DomainListParser),
           ("httpx", httpx.HttpxParser),
           ("nmap", nmap.NmapParser),
@@ -123,7 +130,14 @@ GOLDEN = [("domainlist", domainlist.DomainListParser),
           ("gau", gau.GauParser),
           ("katana", katana.KatanaParser),
           ("dirsearch", dirsearch.DirsearchParser),
-          ("ffuf", ffuf.FfufParser)]
+          ("ffuf", ffuf.FfufParser),
+          ("openapi", openapi.OpenapiParser),
+          ("postman", postman.PostmanParser),
+          ("har", har.HarParser),
+          (CURL_TOOL, curl.CurlParser)]
+
+#: **每个解析器的类** —— 好几条验收用的是它而不是工具名（流式、类属性、发现清单）。
+ALL_PARSERS = [cls for _, cls in GOLDEN]
 
 
 @pytest.mark.parametrize("tool,cls", GOLDEN)
@@ -414,14 +428,17 @@ def test_unknown_field_reaches_the_ingest_report(db, project, tmp_path):
 def test_unregistered_kind_is_rejected_by_the_database(db, project):
     """反例红→绿：未登记的 kind **必然被拒**（不是靠自觉）。
 
-    ⚠️ 3.3 把这条反例从 `endpoint` 换成了 `apischema`：`endpoint` 在 3.3 被正式
-    登记了，而**一个被转正的反例就不再是反例** —— 它会让这条测试永远绿，同时
-    悄悄失去它唯一的作用。所以换一个仍然未登记的 kind 接着守
-    （`test_unregistered_kind_gets_a_readable_python_error_too` 用的也是它）。
-    `apischema` 要等到 3.4 的接口来源落地才会被登记，那时它同样要再换一次。
+    ⚠️ 这条反例换过两次，而且是**照计划**换的：3.3 把 `endpoint` 换成
+    `apischema`（`endpoint` 转正了），3.4 再把它换成 `param`（`apischema`
+    转正了）—— 3.3 当时的注释就预告了这一次。
+
+    **一个被转正的反例就不再是反例**：它会让这条测试永远绿，同时悄悄失去它唯一
+    的作用。所以每当一个 kind 落地，这一行就跟着换 —— 换的是反例，不是删断言。
+    `param` 与 `flow` 至今没有产出者，按 003 的准入纪律不该登记
+    （`test_unregistered_kind_gets_a_readable_python_error_too` 用的也是它们）。
     """
     with pytest.raises(sqlite3.IntegrityError) as exc:
-        store.new_entity(db, project_id=project, kind="apischema", entity_key="x")
+        store.new_entity(db, project_id=project, kind="param", entity_key="x")
     assert "未登记的 kind" in str(exc.value)
 
 
@@ -503,10 +520,17 @@ def test_every_registered_kind_has_a_real_producer(db):
 
 
 def test_unregistered_kind_gets_a_readable_python_error_too():
-    """Python 镜像也拒 —— 而且报错说的是"缺哪一件套"，不是一句约束失败。"""
-    with pytest.raises(base.VocabularyError) as exc:
-        base.require_kind("apischema")
-    assert "身份规则 + 样例夹具 + 镜头归属" in str(exc.value)
+    """Python 镜像也拒 —— 而且报错说的是"缺哪一件套"，不是一句约束失败。
+
+    反例用的是 `param` / `flow`：两者**至今没有产出者**，所以按 003 的准入纪律
+    不该被登记（`flow` 要等阶段 4 的流量，`param` 要等它自己的三件套）。
+    3.4 之前这里写的是 `apischema` —— 它在本步有了真产出者，于是从"反例"变成了
+    "正例"。**换反例而不是删断言**：反例只有"仍然未登记"时才是一条约束。
+    """
+    for kind in ("param", "flow"):
+        with pytest.raises(base.VocabularyError) as exc:
+            base.require_kind(kind)
+        assert "身份规则 + 样例夹具 + 镜头归属" in str(exc.value)
     with pytest.raises(base.VocabularyError):
         base.require_relation("exposes")
 
@@ -536,6 +560,10 @@ def _identity_rules() -> dict:
         # 3.3 的 endpoint 身份规则（登记在 `kind_registry.identity_rule` 里）。
         # 折叠规则本身在 `normalize.SEGMENT_TEMPLATES`，这个函数是它的字符串面。
         "normalize.endpoint_key": normalize.endpoint_key,
+        # 3.4 的 apischema 身份规则（登记在 `kind_registry.identity_rule` 里）。
+        # 与 endpoint 那条同一个形状：起源 = 主机[:非默认端口]，路径不进身份。
+        "normalize.apischema_key": normalize.apischema_key,
+        "normalize.param_name": normalize.param_name,
         "httpx.service_key": httpx.service_key,
         "httpx.product_key": httpx.product_key,
         "domainlist.accepts": domainlist.accepts,
@@ -671,12 +699,15 @@ def test_load_parsers_finds_every_parser_and_retires_the_bridge():
     这里的期望值是**写死的清单**（不是 `>=`）：多出一个解析器意味着有人新增了
     格式，而那件事必须被看见 —— 顺带发现 `format_version` 撞车、`tool` 重名。
     新增解析器时改这一行是**对的**，它是一次显式的确认。
+
+    `_` 开头的模块不算解析器（`_urls.py` / `_apis.py` / `_json.py` 是零件，
+    它们不定义 `class X(Parser)`）—— 发现机制跳过它们，这条断言替它确认。
     """
     parsers, source = ingest.load_parsers()
     assert source == "magpie.core.parsers"
     assert [p.tool for p in parsers] == [
-        "dirsearch", "domainlist", "ffuf", "gau", "httpx", "katana", "nmap",
-        "nuclei"]
+        CURL_TOOL, "dirsearch", "domainlist", "ffuf", "gau", "har", "httpx",
+        "katana", "nmap", "nuclei", "openapi", "postman"]
 
 
 def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
@@ -703,6 +734,14 @@ def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
         "katana": (FIXTURES / "katana" / "1" / "input.jsonl").read_text(encoding="utf-8"),
         "dirsearch": (FIXTURES / "dirsearch" / "1" / "input.txt").read_text(encoding="utf-8"),
         "ffuf": (FIXTURES / "ffuf" / "1" / "input.json").read_text(encoding="utf-8"),
+        # 3.4 的四个接口描述来源。**三个都是整份 JSON**，判据只能落在顶层键上：
+        # `openapi`/`swagger` vs `info`+`item` vs `log` —— 它们两两不相交，
+        # 而这一条就是"不相交"的证据（抢错了不会有别的测试发现）。
+        "openapi": (FIXTURES / "openapi" / "1" / "input.json").read_text(encoding="utf-8"),
+        "postman": (FIXTURES / "postman" / "1" / "input.json").read_text(encoding="utf-8"),
+        "har": (FIXTURES / "har" / "1" / "input.json").read_text(encoding="utf-8"),
+        # curl 是行格式：判据是"过半的行以 curl 开头"。
+        "curl": (FIXTURES / "curl" / "1" / "input.txt").read_text(encoding="utf-8"),
     }
     for name, sample in samples.items():
         ranked = ingest.sniff_rank(sample[:ingest.SAMPLE_BYTES], f"{name}.txt",
@@ -748,18 +787,14 @@ def test_parsers_never_list_the_whole_file():
         def __len__(self):
             raise AssertionError("parse() 把行迭代器物化成列表了 —— 大文件会吃内存")
 
-    for cls in (domainlist.DomainListParser, httpx.HttpxParser, nmap.NmapParser,
-                nuclei.NucleiParser, gau.GauParser, katana.KatanaParser,
-                dirsearch.DirsearchParser, ffuf.FfufParser):
+    for cls in ALL_PARSERS:
         ctx = base.OfflineContext()
         list(cls().parse(NotAList(["app.example.com"]), ctx))
 
 
 def test_parser_class_attributes_are_complete():
     """§5.3 的四个类属性一个都不能少 —— `ingest` 按鸭子类型认它们。"""
-    for cls in (domainlist.DomainListParser, httpx.HttpxParser, nmap.NmapParser,
-                nuclei.NucleiParser, gau.GauParser, katana.KatanaParser,
-                dirsearch.DirsearchParser, ffuf.FfufParser):
+    for cls in ALL_PARSERS:
         assert cls.tool and cls.format_version
         assert isinstance(cls.known_fields, frozenset)
         assert 0.0 < cls.max_confidence <= 1.0
@@ -1883,3 +1918,630 @@ def test_endpoint_ffuf_report_without_config_is_not_adopted(db, project, tmp_pat
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
     assert report["counts"]["records"] == 0, report["counts"]
     assert not _keys(db, project, "endpoint")
+
+
+# ---------------------------------------------------------------------------
+# 3.4 · **接口契约**：四类来源认出同一个 API（本步的核心交付标准）
+# ---------------------------------------------------------------------------
+#
+# 这一节是 3.4 最值得看的那几行。判据刻意**不是**"有没有产出 apischema" ——
+# 一个给每份文档建一个新实体的实现同样有产出，而且更简单。判据是：
+#
+#   * OpenAPI / Postman / HAR / curl 说的**同一个起源**，落成**一个** apischema
+#     实体（身份是主机，不是标题）；
+#   * 标题 / 版本是**观测**，不是身份 —— 换一份标题不该多出一个实体；
+#   * 契约**声明**的方法与流量**观测**到的方法是**两个字段**，不是一个字段的
+#     两个值（后者会让每一个 REST 资源都开一条假冲突）；
+#   * 参数树是**一个参数一条观测**，字段名带位置（`param.query.limit` 与
+#     `param.path.limit` 是两个参数，不是一条冲突）。
+#
+# 没有这四条，"四个来源认出同一个"就只是一句可以被"按文件名建实体"冒充的说法
+# —— 而那种实现是**静默**的：同一套 API 会被记成四个。
+
+#: 四个来源各有各的形状，但说的是**同一台主机**上的同一套 API。
+#: 黄金夹具本身就是那四份（`fixtures/{openapi,postman,har,curl}/1/`）——
+#: 它们刻意共用 `api.example.com/v2` 这个起源，于是"四源互认"这条判据可以直接
+#: 拿**真夹具**来验，而不是另造一份只存在于测试里的最小样例。
+_FOUR_SOURCES = [(openapi.OpenapiParser.tool, "input.json"),
+                 (postman.PostmanParser.tool, "input.json"),
+                 (har.HarParser.tool, "input.json"),
+                 (CURL_TOOL, "input.txt")]
+
+
+def test_apischema_four_sources_reach_exactly_one_entity(db, project, tmp_path):
+    """**本步的核心交付标准**：四份来源 → 库里**只有一条** `api.example.com`。
+
+    这一条必须跑真夹具：另造四份"最小样例"很容易造出四个彼此对得上的形状，
+    而真实的四份来源恰恰是**形状最不像**的时候（一份规范、一份集合、一段抓包、
+    一行命令）。它们能对上的唯一一件事就是起源 —— 这正是身份规则的全部内容。
+    """
+    for tool, filename in _FOUR_SOURCES:
+        path = tmp_path / f"{tool}-{filename}"
+        path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
+        report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+        assert report["parser"] == f"{tool}@1", report
+        assert report["state"] in ("done", "partial"), report
+        assert report["reconcile"]["ok"], report["reconcile"]
+
+    # 四份夹具**各自**声明了哪些起源 —— 它们刻意不是同一个集合（Postman 的
+    # 集合里还有 `admin.example.com`，HAR 里还有 `cdn.example.com`）。
+    per_source = {}
+    for tool, _ in _FOUR_SOURCES:
+        doc = json.loads((FIXTURES / tool / "1" / "expected.json")
+                         .read_text(encoding="utf-8"))
+        per_source[tool] = {r["key"] for r in doc["records"]
+                            if r["type"] == "entity" and r["kind"] == "apischema"}
+    # 库里出现的就是这四份的并集 —— 一条不多、一条不少。
+    assert _keys(db, project, "apischema") == set().union(*per_source.values()), \
+        sorted(_keys(db, project, "apischema"))
+    # **四个来源都认出来的只有 `api.example.com`** —— 这就是"认出同一个"的判据
+    # 本身。另两个主机各自由一两个来源提到，那是它们本来的样子。
+    shared = set.intersection(*per_source.values())
+    assert shared == {"api.example.com"}, per_source
+
+    # 四份文档**分别**说了什么，落成观测而不是新实体：OpenAPI 与 Postman 各自
+    # 的标题恰好相同（"Petstore"），所以只有一条；版本同理。HAR 与 curl 没有
+    # 标题，于是**一条都不落** —— 缺观测表达的正是"这个来源不产出标题"。
+    assert _obs_values(db, project, "apischema", "api.example.com",
+                       "api_title") == ["Petstore"]
+    assert _obs_values(db, project, "apischema", "api.example.com",
+                       "api_version") == ["1.0.0"]
+
+
+def test_apischema_identity_is_the_origin_not_the_document_title(db, project,
+                                                                 tmp_path):
+    """换一份标题、换一个 base path，还是**同一个** apischema（身份规则的正文）。
+
+    反例比正例重要：把标题放进身份会让"同一套 API 出了一版新文档"变成**另一个
+    实体"，而把取回地址放进身份会让"契约换了个下载路径"变成另一个实体。
+    """
+    a = _write(tmp_path, "a.json", json.dumps({
+        "openapi": "3.0.3", "info": {"title": "Petstore", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com/v1"}],
+        "paths": {"/pets": {"get": {"responses": {"200": {}}}}}}))
+    b = _write(tmp_path, "b.json", json.dumps({
+        "openapi": "3.0.3", "info": {"title": "宠物商店", "version": "2.0.0"},
+        "servers": [{"url": "https://api.example.com/v2"}],
+        "paths": {"/pets": {"get": {"responses": {"200": {}}}}}}))
+    ingest.ingest_file(db, options(db, project, tmp_path), a)
+    ingest.ingest_file(db, options(db, project, tmp_path), b)
+
+    assert _keys(db, project, "apischema") == {"api.example.com"}
+    # 两份文档的不同**如实落在观测里** —— 折叠的是身份，不是事实。
+    assert _obs_values(db, project, "apischema", "api.example.com",
+                       "api_title") == ["Petstore", "宠物商店"]
+    assert _obs_values(db, project, "apischema", "api.example.com",
+                       "api_version") == ["1.0.0", "2.0.0"]
+    # base path 进了**接口**的身份（`/v1/pets` 与 `/v2/pets` 是两个接口），
+    # 但没有进契约的身份 —— "哪些还在用 v1"在 endpoint 那一层就有答案。
+    assert {"api.example.com/v1/pets", "api.example.com/v2/pets"} <= \
+        _keys(db, project, "endpoint"), sorted(_keys(db, project, "endpoint"))
+
+
+def test_apischema_four_sources_meet_on_the_same_endpoint(db, project, tmp_path):
+    """四源互认落到**接口**这一层：OpenAPI 声明的与 gau 观测到的是同一个实体。
+
+    契约里写 `/pets`，浏览器抓包抓到 `/pets`，gau 从历史存档里捞到 `/pets` ——
+    三件事说的是同一个接口，而它们分别来自三条不同的解析路径。这一条断言的是
+    **三个来源合起来只有一条** `/pets`，而不是三条各说各话。
+    """
+    for tool, filename in _FOUR_SOURCES:
+        path = tmp_path / f"{tool}-{filename}"
+        path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
+        ingest.ingest_file(db, options(db, project, tmp_path), path)
+    ingest.ingest_file(db, options(db, project, tmp_path),
+                       _write(tmp_path, "gau.txt",
+                              "https://api.example.com/v2/pets\n"))
+
+    pets = [k for k in _keys(db, project, "endpoint") if k == "api.example.com/v2/pets"]
+    assert len(pets) == 1, sorted(_keys(db, project, "endpoint"))
+    row = db.execute(
+        "SELECT COUNT(*) FROM relations r"
+        "  JOIN entity_keys s ON s.entity_id = r.src_id"
+        "  JOIN entity_keys d ON d.entity_id = r.dst_id"
+        " WHERE r.project_id=? AND r.is_current=1 AND r.rel='declared_in'"
+        "   AND s.entity_key='api.example.com/v2/pets'"
+        "   AND d.entity_key='api.example.com'", (project,)).fetchone()[0]
+    assert row == 1, row                      # 一条贡献，不是四条（重复被去重）
+
+
+def test_apischema_declared_and_observed_methods_are_two_fields(db, project,
+                                                                tmp_path):
+    """**声明型**与观测型是两个字段，不是同一个字段的两个值。
+
+    同一个接口上"声明了 GET + POST"与"观测到 POST"是**两件事**。共用一个字段名
+    会让每一个 REST 资源都开一条假冲突（`declared_method` 值 `["GET","POST"]`、
+    `method` 值 `"POST"`），而 Inbox 会因此失去信噪比 —— 用假冲突表达"这个模型
+    没有多值字段"这件事，代价是真正的冲突被淹掉。
+
+    所以：声明型 = **一组**（排序过的列表，一个接口一条，**不制造冲突**），
+    观测型 = **一个**（3.3 的 katana / dirsearch / ffuf 与 3.4 的 har / curl）。
+    """
+    openapi_path = tmp_path / "openapi.json"
+    openapi_path.write_bytes((FIXTURES / "openapi" / "1" / "input.json").read_bytes())
+    ingest.ingest_file(db, options(db, project, tmp_path), openapi_path)
+    curl_path = tmp_path / "curl.txt"
+    curl_path.write_bytes((FIXTURES / "curl" / "1" / "input.txt").read_bytes())
+    ingest.ingest_file(db, options(db, project, tmp_path), curl_path)
+
+    # 声明型：OpenAPI 对**同一条**路径声明了 GET 与 POST —— 一条观测、两个值。
+    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+                       "declared_method") == ['["GET","POST"]']
+    # 观测型：curl 真的发出去的那一个方法，单值，**没有被声明型覆盖**。
+    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+                       "method") == ["POST"]
+
+
+def test_apischema_multi_method_and_multi_status_open_no_conflict(db, project,
+                                                                  tmp_path):
+    """声明型的多值**不进 Inbox** —— 这一条是上一条那个裁定的**可观测后果**。
+
+    没有它，上一条只证明了"落了两条观测"，而"会不会开一条假冲突"要靠人去读
+    `v_field_conflicts`。这里直接读 Inbox：一份声明了三个方法、四个状态码的契约
+    导入之后，**没有**任何一条冲突项。
+    """
+    path = _write(tmp_path, "one.json", json.dumps({
+        "openapi": "3.0.3", "info": {"title": "T", "version": "1"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {"/pets": {
+            "get": {"responses": {"200": {}, "404": {}}},
+            "post": {"responses": {"201": {}}},
+            "delete": {"responses": {"204": {}}}}}}))
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["state"] == "done", report
+    assert report["counts"]["conflicts"] == 0, report["counts"]
+
+    assert _obs_values(db, project, "endpoint", "api.example.com/pets",
+                       "declared_method") == ['["DELETE","GET","POST"]']
+    assert _obs_values(db, project, "endpoint", "api.example.com/pets",
+                       "declared_status") == ['["200","201","204","404"]']
+    assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=?",
+                      (project,)).fetchone()[0] == 0
+
+
+def test_apischema_multi_status_from_traffic_is_the_pre_existing_gap(db, project,
+                                                                     tmp_path):
+    """**反面**：观测型的多值仍然会开一条冲突 —— 那是 3.3 报过的既有缺口。
+
+    同一个接口被抓到 200 与 404 各一次，会落两条 `status` 观测，于是
+    `v_field_conflicts` 记一条 `value_conflict`。**这与 3.3 的多条 `path` 是同一个
+    缺口**：视图的口径是"同实体同字段多值即冲突"，它没有"多值字段"这个概念。
+
+    本步**不修它**（修它要动 001 的视图，红线 R4 不改），也不为绕开它改口径
+    （把两个状态码拼成一个字符串正是 `_apis.py` 否掉的那种"需要再解析的值"）。
+    用例钉住它，是为了让这个缺口**可见**：改天有人动了 `v_field_conflicts`，
+    这里会红，而那一次红正是应该被看见的。
+    """
+    path = _write(tmp_path, "har.json", json.dumps({"log": {"version": "1.2",
+        "entries": [
+            {"request": {"method": "GET", "url": "https://api.example.com/p",
+                         "queryString": []},
+             "response": {"status": 200}},
+            {"request": {"method": "GET", "url": "https://api.example.com/p",
+                         "queryString": []},
+             "response": {"status": 404}},
+        ]}}, ensure_ascii=False))
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["parser"] == "har@1", report
+    assert _obs_values(db, project, "endpoint", "api.example.com/p",
+                       "status") == ["200", "404"]
+    assert report["counts"]["conflicts"] == 1, report["counts"]
+    # 落的是一条 `value_conflict`，字段是 `status` —— 与 3.3 的 `path` 同形同源。
+    rows = [dict(r) for r in db.execute(
+        "SELECT kind, state, payload_json FROM inbox_items WHERE project_id=?",
+        (project,))]
+    assert [r["kind"] for r in rows] == ["value_conflict"], rows
+    assert "status" in rows[0]["payload_json"], rows[0]
+
+
+def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
+                                                                   tmp_path):
+    """参数树的落地形状（`_apis.py` 先定死的那个裁定）：**一个参数一条观测**。
+
+    三条判据，每一条都对着一个下游：
+
+    * 字段名是 `param.<位置>.<名字>` —— 于是"哪些接口要 `id` 参数"是一条 SQL
+      （3.5 的 `query.py` 写得出、GUI 与 CLI 共用同一实现）；
+    * **同名不同位是两个参数**（`param.query.limit` 与 `param.path.limit`）。
+      少了位置那一层，一个 `id` 写在两处就会变成一个**假冲突**；
+    * 参数挂在 **endpoint** 上，不是 apischema 上 —— 挂在契约上会让
+      `/user/{id}` 与 `/order/{id}` 的 `id` 并成一个字段，参数树退化成关键词表。
+    """
+    path = tmp_path / "openapi.json"
+    path.write_bytes((FIXTURES / "openapi" / "1" / "input.json").read_bytes())
+    ingest.ingest_file(db, options(db, project, tmp_path), path)
+
+    endpoint_key = "api.example.com/v2/pets"
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.query.limit") == ['{"in":"query","type":"integer"}']
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.path.limit") == ['{"in":"path","type":"string"}']
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.header.X-Request-Id") == \
+        ['{"in":"header","type":"string"}']
+    # 请求体的字段名**不带** `body.` 前缀 —— 位置那一层已经在字段名的中段。
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.body.address.street") == \
+        ['{"in":"body","type":"string"}']
+    # 必填只在为真时写出来（可选是默认值，不是一条零信息观测）。
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.body.name") == \
+        ['{"in":"body","required":true,"type":"string"}']
+    # 契约上**一条参数都没有**：参数是接口的形状，不是契约的形状。
+    assert not [r for r in db.execute(
+        "SELECT o.semantic_field FROM observations o"
+        " JOIN entities e ON e.id = o.entity_id"
+        " WHERE o.project_id=? AND o.is_current=1 AND e.kind='apischema'"
+        "   AND o.semantic_field LIKE 'param.%'", (project,))]
+
+
+def test_apischema_declared_path_does_not_yet_merge_with_traffic(db, project,
+                                                                 tmp_path):
+    """**已知缺口，钉住它**：契约的 `/pets/{petId}` 与流量的 `/pets/7` 至今是两条。
+
+    3.3 的折叠规则只认"自证"的段（纯数字 / UUID / 日期 / 长 hex），`{petId}`
+    这种花括号占位符**原样保留** —— 于是契约声明的 `/pets/{petId}` 与流量观测到的
+    `/pets/7`（折成 `/pets/{id}`）落在**两个** endpoint 上。
+
+    两件事同时成立，缺一不可：
+
+    * 这是真实的：本工具的核心目标之一是"「契约声明了但没人访问过」与「访问过但
+      没进契约」一眼可见"，而这条缺口让**带命名路径参数的接口**在这两半之间对
+      不上号；
+    * 本步**不修**：折叠规则的正文登记在 006 的 `kind_registry.identity_rule`
+      里（红线 R4 不许改已应用的迁移），改 `normalize.path_template` 会让**库里的
+      登记文本**与**代码行为**分叉 —— 那是这个项目最不能接受的一种静默不一致。
+
+    钉住它，好让发起人拍板：要么改 006 的正文（按 R4 走一次正式修订），要么接受
+    "命名路径参数的接口靠 apischema 归组、不靠 endpoint 归组"。
+    """
+    declared = _write(tmp_path, "spec.json", json.dumps({
+        "openapi": "3.0.3", "info": {"title": "T", "version": "1"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {"/pets/{petId}": {"get": {"responses": {"200": {}}}}}}))
+    traffic = _write(tmp_path, "gau.txt", "https://api.example.com/pets/7\n")
+    ingest.ingest_file(db, options(db, project, tmp_path), declared)
+    ingest.ingest_file(db, options(db, project, tmp_path), traffic)
+
+    keys = {k for k in _keys(db, project, "endpoint") if "/pets" in k}
+    assert keys == {"api.example.com/pets/{petId}", "api.example.com/pets/{id}"}, keys
+
+    # 「访问过但没进契约」**不是靠一条关系表达的，而是靠它的缺席**：只有契约
+    # 那一侧声明了 `declared_in`，流量那一侧没有 —— 于是"没有人声明过的接口"
+    # 是一条 `served_by` 有、`declared_in` 没有的 endpoint。这一条把那个用法
+    # 钉死（它是 3.6 体检要问的问题之一）。
+    declared = {r[0] for r in db.execute(
+        "SELECT s.entity_key FROM relations r"
+        "  JOIN entity_keys s ON s.entity_id = r.src_id"
+        "  JOIN entity_keys d ON d.entity_id = r.dst_id"
+        " WHERE r.project_id=? AND r.is_current=1 AND r.rel='declared_in'",
+        (project,))}
+    assert declared == {"api.example.com/pets/{petId}"}, declared
+    assert "api.example.com/pets/{id}" in _keys(db, project, "endpoint")
+
+
+def test_curl_credentials_never_reach_the_database(db, project, tmp_path):
+    """**凭据一个字都不落库**（G4 的方向）：`-u` / `-b` / `Authorization` 的值。
+
+    判据是"那个记号在整张库里**一次都不出现**" —— 包括坏行报告、观测值、关系、
+    Inbox 的说明文字。搜整库而不是"断言没有某条观测"：后者只证明了**一处**没写，
+    而凭据落库的姿势通常是在一个谁也没想到的地方（比如坏行报告的原文里）。
+    """
+    secret = "SECRET-SHOULD-NEVER-LAND"
+    path = tmp_path / "curl.txt"
+    path.write_text(
+        f"curl -u alice:{secret} -b 'session={secret}'"
+        f" -H 'Authorization: Bearer {secret}'"
+        f" --json '{{\"name\":\"dog\",\"password\":\"{secret}\"}}'"
+        f" https://api.example.com/v2/pets\n", encoding="utf-8")
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["parser"] == "curl@1", report
+
+    found = _all_text_in_db(db)
+    assert secret not in found, "凭据出现在库里"
+    location = report.get("badlines_report")
+    if location and Path(location).is_file():
+        assert secret not in Path(location).read_text(encoding="utf-8")
+
+    # 正例：**参数名**照常落库 —— "这个接口收哪些字段"是形状，不是凭据。
+    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+                       "param.body.password") == ['{"in":"body:json"}']
+    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+                       "param.body.name") == ['{"in":"body:json"}']
+
+
+def _all_text_in_db(db) -> str:
+    """把库里所有 TEXT 列的值拼起来 —— "某个串有没有落库"的判据要用整张库。"""
+    parts: list[str] = []
+    tables = [r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        "  AND name NOT LIKE 'sqlite_%'")]
+    for table in tables:
+        for row in db.execute("SELECT * FROM " + table):
+            parts += [str(v) for v in tuple(row) if v is not None]
+    return "\n".join(parts)
+
+
+def test_curl_rejects_shell_syntax_instead_of_guessing():
+    """`不做 shell 展开`是一条**拒绝**，不是一个安静的降级。
+
+    变量 / 管道 / 重定向 / 命令替换 / 两个目标一律报可读的坏行 —— 与 `check.py`
+    的 C2"只认字面量，不认变量"是同一条取舍。把它清洗成字面值会造出一个不存在
+    的接口，而且**没有任何信号**（"宁可明确地拒绝，也不要假装支持"）。
+    """
+    cases = [
+        ("curl https://api.example.com/$HOST/x", "不做 shell 展开"),
+        ("curl https://api.example.com/x | tee log", "不做 shell 展开"),
+        ("curl https://api.example.com/x > out.txt", "不做 shell 展开"),
+        ("curl https://api.example.com/x && echo ok", "不做 shell 展开"),
+        ("curl https://a.example.com/x https://b.example.com/y", "第二个目标"),
+        ("curl --definitely-not-a-flag https://a.example.com/x", "不认识的 curl 选项"),
+    ]
+    for text, needle in cases:
+        ctx = base.OfflineContext()
+        records = curl.parse_text(text, ctx)
+        assert records == [], (text, records)
+        assert len(ctx.bad_lines) == 1, (text, ctx.bad_lines)
+        assert needle in ctx.bad_lines[0]["reason"], (text, ctx.bad_lines)
+
+    # 反例的反例：**引号里的** `&` 是 URL 的一部分，不是 shell 语法。
+    ctx = base.OfflineContext()
+    records = curl.parse_text("curl 'https://api.example.com/x?a=1&b=2'", ctx)
+    assert not ctx.bad_lines, ctx.bad_lines
+    assert any(getattr(r, "type", "") == "param.query.b" for r in records)
+
+
+# ---------------------------------------------------------------------------
+# 3.4 · YAML：extras **在**与**不在**两条路径都要验
+# ---------------------------------------------------------------------------
+#
+# 计划书把"YAML 缺失时抛可读错误而非 ImportError"单列为交付标准。只验一条路径
+# 是不够的：**"可读错误"与"其实压根没接上"在测试里长得一模一样** —— 一个永远
+# 抛错的实现同样能让"报错文案"那条用例变绿。
+
+_YAML_SPEC = """\
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v2
+paths:
+  /pets:
+    get:
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200': {}
+"""
+
+
+def test_openapi_yaml_parses_when_the_extras_are_installed():
+    """extras **已装**时必须真的解析成功 —— 而且产出与 JSON 那份**同构**。"""
+    pytest.importorskip("yaml")
+    ctx = base.OfflineContext()
+    records = openapi.parse_text(_YAML_SPEC, ctx)
+    assert not ctx.bad_lines, ctx.bad_lines
+    assert openapi.OpenapiParser.sniff(_YAML_SPEC, "openapi.yaml") == 0.95
+
+    kinds = [(r.kind, r.key) for r in records if isinstance(r, base.RawEntity)]
+    assert ("apischema", "api.example.com") in kinds, kinds
+    assert ("endpoint", "api.example.com/v2/pets") in kinds, kinds
+    params = [r.type for r in records if isinstance(r, base.RawObservation)
+              and str(r.type).startswith("param.")]
+    assert params == ["param.query.limit"], params
+
+
+def test_openapi_yaml_without_the_extras_is_a_readable_error(monkeypatch):
+    """extras **不在**时：`MissingExtrasError`，消息里说清缺哪个、怎么装。
+
+    ⚠️  三条断言缺一不可，它们分别挡住三种"看起来能过"的假实现：
+
+    1. **不是裸 `ImportError`** —— 后者把人引去看 `sys.path`，而这里该做的是
+       `pip install`。计划书把这条单列成交付标准，所以它必须是一条具名异常；
+    2. 断言里**含安装提示**（extras 名 + 那条命令）—— 只说"缺依赖"的报错等于
+       让使用者自己去找缺哪个；
+    3. **sniff 照常认领**（0.95）—— 少了它，一份 YAML 输入会掉进人工裁决，
+       于是一个**环境问题**被伪装成**格式问题**。这是本步点名的头号陷阱。
+
+    `sys.modules[...] = None` 是"这个模块装不上"的标准模拟：`import` 会当场
+    抛 `ImportError`，而它**不影响**别的测试（monkeypatch 收尾时还回去）。
+    """
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    # sniff 用的是**词法**判据，不 import yaml —— 所以它在缺 extras 时照样认领。
+    assert openapi.OpenapiParser.sniff(_YAML_SPEC, "openapi.yaml") == 0.95
+
+    ctx = base.OfflineContext()
+    with pytest.raises(base.MissingExtrasError) as exc:
+        list(openapi.OpenapiParser().parse(_YAML_SPEC.splitlines(), ctx))
+    message = str(exc.value)
+    assert not isinstance(exc.value, ImportError)
+    assert "api-yaml" in message and "pip install" in message, message
+    # 反向：JSON 那条路**完全不碰** yaml —— 缺 extras 不影响它。
+    ctx = base.OfflineContext()
+    records = openapi.parse_text(json.dumps({
+        "openapi": "3.0.3", "info": {"title": "T", "version": "1"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {"/p": {"get": {"responses": {"200": {}}}}}}), ctx)
+    assert records and not ctx.bad_lines, ctx.bad_lines
+
+
+def test_openapi_yaml_missing_extras_reaches_the_report_readably(db, project,
+                                                                 tmp_path):
+    """端到端：extras 缺失时 `magpie import` 给出**可读报告**，不是 Python 堆栈。
+
+    上面那条证明的是解析器抛对了异常类型；这一条证明**管线把它变成了人话**
+    （`ingest` 把解析器的异常折成 `parse_error` + `state='partial'`）。
+    """
+    import sys
+    path = _write(tmp_path, "openapi.yaml", _YAML_SPEC)
+    saved = sys.modules.get("yaml", None)
+    had = "yaml" in sys.modules
+    sys.modules["yaml"] = None
+    try:
+        report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    finally:
+        if had:
+            sys.modules["yaml"] = saved
+        else:
+            sys.modules.pop("yaml", None)
+
+    assert report["parser"] == "openapi@1", report
+    assert report["state"] == "partial", report
+    assert "MissingExtrasError" in report["parse_error"], report["parse_error"]
+    assert "pip install" in report["parse_error"], report["parse_error"]
+    assert report["counts"]["records"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 3.4 · 负向输入：每一条都要**可读**，而不是崩或静默
+# ---------------------------------------------------------------------------
+
+
+def test_openapi_missing_top_level_key_is_explained_not_guessed(db, project,
+                                                                tmp_path):
+    """缺 `openapi` 顶层键：说清"这不是一份 OpenAPI / Swagger 文档"，零事实。
+
+    一份 Swagger 2 文档（有 `swagger` 没有 `openapi`）**认**；一份两者都没有的
+    JSON **不认** —— 两条都是可读的判定，不是一个模糊的"解析失败"。
+    """
+    not_a_spec = _write(tmp_path, "nope.json", json.dumps({
+        "info": {"title": "T", "version": "1"},
+        "paths": {"/p": {"get": {}}}}))
+    report = ingest.ingest_file(db, options(db, project, tmp_path), not_a_spec)
+    # sniff 也不认领它（顶层没有 `openapi` / `swagger`）—— 正确的结局是人工裁决。
+    assert report["state"] == "needs_confirmation", report
+    assert report["counts"]["records"] == 0
+
+    ctx = base.OfflineContext()
+    list(openapi.OpenapiParser().parse(
+        json.dumps({"info": {}, "paths": {}}).splitlines(), ctx))
+    assert len(ctx.bad_lines) == 1, ctx.bad_lines
+    assert "openapi" in ctx.bad_lines[0]["reason"]
+    assert "swagger" in ctx.bad_lines[0]["reason"]
+
+    # 反例的反例：Swagger 2 走得通，而 `host` 缺了才算坏。
+    ctx = base.OfflineContext()
+    records = openapi.parse_text(json.dumps({
+        "swagger": "2.0", "info": {"title": "T", "version": "1"},
+        "host": "api.example.com", "basePath": "/v2",
+        "paths": {"/pets": {"get": {"responses": {"200": {}}}}}}), ctx)
+    assert not ctx.bad_lines, ctx.bad_lines
+    assert ("endpoint", "api.example.com/v2/pets") in \
+        [(r.kind, r.key) for r in records if isinstance(r, base.RawEntity)]
+
+
+def test_apischema_negative_inputs_never_crash(db, project, tmp_path):
+    """空 / 坏 JSON / 错顶层类型 / 空 entries / Postman v1 —— 一条都不崩。"""
+    cases = [
+        ("empty.json", ""),
+        ("broken.json", '{"openapi": "3.0.3", '),
+        ("array.json", '[1, 2, 3]'),
+        ("har-empty.json", json.dumps({"log": {"version": "1.2", "entries": []}})),
+        ("har-no-log.json", json.dumps({"entries": []})),
+        ("postman-v1.json", json.dumps({
+            "id": "x", "name": "Old",
+            "requests": [{"url": "https://a.example.com/x"}]})),
+        ("postman-v1-schema.json", json.dumps({
+            "info": {"name": "Old", "_postman_id": "x",
+                     "schema": "https://schema.getpostman.com/json/collection/v1.0.0"
+                               "/collection.json"},
+            "item": []})),
+        ("curl-only-junk.txt", "this is not a curl command\nnor is this\n"),
+    ]
+    for name, payload in cases:
+        path = _write(tmp_path, name, payload)
+        report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+        assert report["state"] in ("needs_confirmation", "partial", "done"), \
+            (name, report)
+
+    # 空文件与坏 JSON：零事实 + 一条待人工确认（与 2.4 的负向口径一致）。
+    for name in ("empty.json", "broken.json", "array.json"):
+        report = ingest.ingest_file(db, options(db, project, tmp_path),
+                                    tmp_path / name)
+        assert report["counts"]["records"] == 0, (name, report)
+    # 一份"没有请求的抓包"与一份"长得像但不是 HAR"的 JSON 都要**说一句人话**。
+    for name, needle in (("har-empty.json", "log.entries"),
+                         ("har-no-log.json", "log")):
+        ctx = base.OfflineContext()
+        records = har.parse_text((tmp_path / name).read_text(encoding="utf-8"), ctx)
+        assert records == [], (name, records)
+        assert ctx.bad_lines and needle in ctx.bad_lines[0]["reason"], \
+            (name, ctx.bad_lines)
+    # Postman v1 必须**指名道姓**地说清是 v1、并给出重导的办法。
+    for name in ("postman-v1.json", "postman-v1-schema.json"):
+        ctx = base.OfflineContext()
+        records = postman.parse_text(
+            (tmp_path / name).read_text(encoding="utf-8"), ctx)
+        assert records == [], (name, records)
+        reason = ctx.bad_lines[0]["reason"]
+        assert "v1" in reason and "v2" in reason, (name, reason)
+    # 一份全是非 curl 行的文本：每行一条坏行，零事实。
+    ctx = base.OfflineContext()
+    assert curl.parse_text("this is not a curl command\nnor is this\n", ctx) == []
+    assert len(ctx.bad_lines) == 2, ctx.bad_lines
+
+
+def test_apischema_non_utf8_is_decoded_not_mangled(db, project, tmp_path):
+    """非 UTF-8（GBK）：按 gb18030 解码后**照常解析**，不是被拒也不是被静默改名。
+
+    与 2.4 的 `test_negative_gbk_is_decoded_not_mangled` 同一个口径 —— 编码是
+    管线的事（`ingest.iter_lines` 兜底解码），解析器只管拿到的那段文本。
+    这里额外验一件 3.4 特有的事：**中文标题**在 GBK 路径上也要原样落在观测里。
+    """
+    spec = json.dumps({
+        "openapi": "3.0.3", "info": {"title": "宠物商店", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {"/pets": {"get": {"responses": {"200": {}}}}}}, ensure_ascii=False)
+    path = tmp_path / "gbk.json"
+    path.write_bytes(spec.encode("gb18030"))
+    report = ingest.ingest_file(db, options(db, project, tmp_path), path)
+    assert report["parser"] == "openapi@1", report
+    assert report["state"] == "done", report
+    assert _obs_values(db, project, "apischema", "api.example.com",
+                       "api_title") == ["宠物商店"]
+
+
+def test_apischema_sniff_is_a_key_test_not_a_try_and_see():
+    """HAR 与 Postman **都是 JSON**，判据必须落在**顶层键**上。
+
+    这一条是那条纪律的可执行版本：拿几份**结构上互相冲突**的样本喂进去，
+    看它认的是不是"键"而不是"哪个 `json.loads` 不报错"：
+
+    * 交叉样本：对方的键在、自己的键不全时，一条都不认领；
+    * `info` 单独出现（Swagger 2 的文档就是这样）**不足以**认成 Postman；
+    * 顶层键**长在值里**时不算数（`{"a": "log"}` 里的 `log` 是**值**）——
+      否则一份恰好带字符串 "log" 的任意 JSON 都会被 HAR 抢走；
+    * **样本被截断**（真实文档必然超过 64 KiB 的样本）时仍然认得出它 ——
+      `json.loads` 在截断样本上必然失败，判据必须比它更早、更笨、更可靠。
+    """
+    # 各自认自己的键。
+    assert har.HarParser.sniff('{"log": {"entries": []}}', "x.json") == 0.95
+    assert postman.PostmanParser.sniff(
+        '{"info": {"name": "x"}, "item": []}', "x.json") == 0.95
+    assert openapi.OpenapiParser.sniff(
+        '{"openapi": "3.0.3", "paths": {}}', "x.json") == 0.95
+
+    # 交叉：对方的键在，但自己的键不全 —— 一条都不认领。
+    assert postman.PostmanParser.sniff('{"log": {"entries": []}}', "x.json") == 0.0
+    assert har.HarParser.sniff('{"info": {"name": "x"}, "item": []}', "x.json") == 0.0
+    # `info` 单独出现（Swagger 2 的文档就是这样）**不足以**认成 Postman。
+    assert postman.PostmanParser.sniff(
+        '{"info": {"title": "T"}, "swagger": "2.0"}', "x.json") == 0.0
+    assert openapi.OpenapiParser.sniff(
+        '{"info": {"title": "T"}, "swagger": "2.0"}', "x.json") == 0.95
+
+    # 值里的 "log" 不是键。
+    assert har.HarParser.sniff('{"a": "log", "b": 1}', "x.json") == 0.0
+    # 截断样本：真实的 HAR / OpenAPI 必然超过 64 KiB 的嗅探上限。
+    truncated = ('{"log": {"version": "1.2", "entries": ['
+                 '{"request": {"url": "https://a.example.com/' + "x" * 4000)
+    assert har.HarParser.sniff(truncated, "x.json") == 0.95
+    truncated_spec = ('{"openapi": "3.0.3", "paths": {"/a": {"description": "'
+                      + "y" * 4000)
+    assert openapi.OpenapiParser.sniff(truncated_spec, "x.json") == 0.95

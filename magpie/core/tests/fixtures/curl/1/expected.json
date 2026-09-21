@@ -1,0 +1,454 @@
+{
+  "tool": "curl",
+  "format_version": "1",
+  "input": "input.txt",
+  "bad_lines": [
+    {
+      "line": 11,
+      "reason": "不是一条 curl 命令（本解析器只认以 curl 开头的行；一行一条命令）"
+    },
+    {
+      "line": 12,
+      "reason": "这条 curl 命令读不了：命令里有 shell 语法 `$` —— 本解析器**不做 shell 展开**（变量、管道、重定向、命令替换都不支持）。把命令里的变量换成字面值再来"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "api.example.com/v2/pets",
+      "display": "api.example.com/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path",
+      "value": "/v2/pets?limit=10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "method",
+      "value": "POST"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.query.limit",
+      "value": {
+        "in": "query"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.name",
+      "value": {
+        "in": "body:json"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.tag",
+      "value": {
+        "in": "body:json"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.password",
+      "value": {
+        "in": "body:json"
+      }
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "api.example.com/v2/pets/{id}",
+      "display": "api.example.com/v2/pets/{id}",
+      "attrs": {
+        "path_template": "/v2/pets/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "path",
+      "value": "/v2/pets/7?fields=name"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{id}"
+      ],
+      "field": "param.query.fields",
+      "value": {
+        "in": "query"
+      }
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "api.example.com/v2/me",
+      "display": "api.example.com/v2/me",
+      "attrs": {
+        "path_template": "/v2/me"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "field": "path",
+      "value": "/v2/me"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "field": "path_template",
+      "value": "/v2/me"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/me"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "admin.example.com",
+      "display": "admin.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "admin.example.com",
+      "display": "admin.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "admin.example.com:443",
+      "display": "admin.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "admin.example.com/health",
+      "display": "admin.example.com/health",
+      "attrs": {
+        "path_template": "/health"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "dst": [
+        "service",
+        "admin.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "field": "path",
+      "value": "/health"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "field": "path_template",
+      "value": "/health"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "admin.example.com/health"
+      ],
+      "dst": [
+        "apischema",
+        "admin.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.tag",
+      "value": {
+        "in": "body:form"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.weight",
+      "value": {
+        "in": "body:form"
+      }
+    }
+  ]
+}

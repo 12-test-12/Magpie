@@ -1,0 +1,121 @@
+{
+  "kind": "apischema",
+  "lens": "api",
+  "identity_rule": "接口契约（apischema）的身份是**这份契约所属的那个起源**：`主机[:非默认端口]`（normalize.apischema_key）。四个来源能共同算出来的只有主机 —— OpenAPI 的 `servers[].url`、Postman 的 `item[].request.url.host`、HAR 的 `entry.request.url`、curl 的目标 URL 都给出它，而标题与版本只有前两个来源有，所以**标题与版本不进身份、只落观测**（否则 HAR 与 curl 永远落不到另外两类身上，而「同一个 API 定义从四个来源进来要认出是同一个」正是本 kind 的全部意义）。**路径不进身份**：`https://api.example.com/v2` 与 `https://api.example.com/openapi.json` 是同一个起源 —— 后者是这份契约被取回来的地址，换个位置不该让它变成另一个实体。端口折的是 {80, 443}（与 endpoint 同一条裁定），8080 / 8443 保留。**代价**：一台主机上并存两份契约时折成同一个 apischema，而「哪些还在用 v1」由 endpoint 那一层回答 —— 路径里的版本号本来就不折。",
+  "golden": [
+    "curl/1",
+    "har/1",
+    "openapi/1",
+    "postman/1"
+  ],
+  "examples": [
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://api.example.com/v2"
+      ],
+      "key": "api.example.com",
+      "why": "**路径不进身份**：`/v2` 是契约声明的 base path，不是身份的一部分"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://api.example.com/openapi.json"
+      ],
+      "key": "api.example.com",
+      "why": "与上一条算出**同一个** key —— 这就是「同一个 API 定义从四个来源进来要认出是同一个」那句验收标准本身：契约声明的起源与它被取回来的地址是同一件事"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://api.example.com:443/v1"
+      ],
+      "key": "api.example.com",
+      "why": "默认 web 端口折掉（与 `https://api.example.com/v1` 同一个 key），443 是**两个**默认 web 端口之一、与 scheme 无关"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "http://api.example.com:80/v1"
+      ],
+      "key": "api.example.com",
+      "why": "80 同理 —— 折的不能是「按 scheme 取的默认端口」，否则 scheme 会从后门进身份"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://api.example.com:8443/v1"
+      ],
+      "key": "api.example.com:8443",
+      "why": "8443 不是默认 web 端口：它确实区分服务，保留"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "api.example.com"
+      ],
+      "key": "api.example.com",
+      "why": "裸主机也认（Swagger 2 的 `host` + `schemes`、Postman 的 `url.host` 数组都只给出主机）"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "api.example.com:8443"
+      ],
+      "key": "api.example.com:8443",
+      "why": "裸主机带非默认端口"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "HTTPS://API.Example.COM/V1"
+      ],
+      "key": "api.example.com",
+      "why": "scheme 与主机名折小写（DNS 不区分大小写）；路径本来就不进身份"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        ""
+      ],
+      "why": "空串：算不出任何起源"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "/v1"
+      ],
+      "why": "只有路径、没有主机 —— Postman v2 里 `{{base_url}}/v1` 这种带变量的 url 必须报错而不是猜一个起源（本步不做变量展开）"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "nas"
+      ],
+      "why": "单标签主机不是完整域名 —— 与 `domain` / `endpoint` 的身份规则一致"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "http://a b/x"
+      ],
+      "why": "含空白字符"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://"
+      ],
+      "why": "有 scheme 但没有主机名"
+    },
+    {
+      "rule": "normalize.apischema_key",
+      "args": [
+        "https://api.example.com/v1?token=a b"
+      ],
+      "why": "查询串里有空白 —— 整条串先被前置校验拦下"
+    }
+  ]
+}

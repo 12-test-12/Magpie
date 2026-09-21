@@ -36,12 +36,15 @@ __all__ = [
     "NormalizeError",
     "SEGMENT_TEMPLATES",
     "WEB_DEFAULT_PORTS",
+    "apischema_identity",
+    "apischema_key",
     "compare_version",
     "endpoint_base",
     "endpoint_identity",
     "endpoint_key",
     "http_method",
     "is_absolute_url",
+    "param_name",
     "normalize_cidr",
     "normalize_domain",
     "normalize_ip",
@@ -848,6 +851,130 @@ def http_method(raw: object) -> str:
     if not _METHOD_RE.match(text):
         raise NormalizeError(f"不是合法的 HTTP 方法：{text!r}")
     return text.upper()
+
+
+# ---------------------------------------------------------------------------
+# 接口契约（apischema）· 3.4 openapi / postman / har / curl
+# ---------------------------------------------------------------------------
+#
+# 这一节是 `apischema` 这个 kind 的**身份规则本身**（登记在
+# `kind_registry.identity_rule` 里），所以它必须住在 `normalize.py`。
+#
+#     apischema 身份 = 这份契约**所属的那个起源**：主机[:非默认端口]
+#
+# ---------------------------------------------------------------------------
+# 裁定：身份锚在**主机**上，不锚在文档标题或版本上
+# ---------------------------------------------------------------------------
+# 这是本步最难的一处取舍，先把判据说清楚：验收标准要的是「**同一个 API 定义
+# 从四个来源进来，要认出是同一个**」。四个来源能共同给出的东西**只有主机**：
+#
+#     OpenAPI  → `servers[].url`            （契约声明它服务在哪个起源上）
+#     Postman  → `item[].request.url.host`  （集合里的每条请求）
+#     HAR      → `entry.request.url`        （每一跳）
+#     curl     → 命令末尾的那个 URL
+#
+# 标题 / 版本看起来更"像"一份 API 的名字，但它们**过不了这条验收标准**：
+# HAR 与 curl 里根本没有标题，拿标题当身份等于让这两类来源永远落不到另外两类
+# 身上 —— 那恰恰是要被认出来的那件事。用一个只有两个来源能算出来的字段当身份，
+# 规则本身就是错的，不是"还不够完善"。
+#
+# 所以标题与版本**落成观测，不进身份**（与 `endpoint` 那条"折叠的是身份，
+# 不是事实"同一条纪律）。代价写在下面，它是一条**真实**的代价：
+#
+#   * 一台主机上并存两份契约（`/v1/swagger.json` 与 `/v2/swagger.json`）时，
+#     两者折成**同一个** apischema。这不是丢信息：两份文档的标题与版本各落成
+#     一条观测，而 `/api/v1/*` 与 `/api/v2/*` 本来就是**两条不同的 endpoint**
+#     （3.3 的折叠规则刻意不折版本号）—— "哪些还在用 v1"这个问题在 endpoint
+#     那一层就有答案，不需要 apischema 再分一层；
+#   * 反过来，把版本放进身份会让"同一个 API 出了一版新文档"变成**另一个实体**，
+#     而它俩说的还是同一批接口。
+#
+# 与 `endpoint` 的身份是同一种形状（主机 + 非默认端口才写出来）：一份契约与
+# 它描述的那些接口住在同一个起源上，两者的主机部分逐字相同。
+#
+# 端口折的是 `WEB_DEFAULT_PORTS`（与 endpoint 同一条裁定）：省略、写 80、写 443
+# 是同一件事，8080 / 8443 保留。
+
+
+def apischema_identity(raw: object) -> dict[str, object]:
+    """一份 API 契约的**起源**（绝对 URL 或裸 `host[:port]`）→ 规范身份与部件。
+
+    返回 `{"key", "host", "host_kind", "scheme", "port"}`：
+
+    * `key` —— **身份**：`主机[:非默认端口]`（如 `api.example.com` /
+      `api.example.com:8443`）。四个来源的 URL 里都能算出它；
+    * `host` —— 不含方括号的 IP / 域名（调用方拿它去算 `service` 的 key）；
+    * `port` —— **有效端口**（缺省时按 scheme 补齐，补齐表见 `_DEFAULT_PORTS`）；
+      它与 `key` 里那个端口不是一回事，同 `endpoint_identity`；
+    * `scheme` —— 空串表示来源只给了裸 `host[:port]`（Postman 的 `url.host`
+      数组、Swagger 2 的 `host` + `schemes` 都可能走到这里）。
+
+    ⚠️ 路径**不进**身份。`https://api.example.com/v2` 与
+    `https://api.example.com/openapi.json` 是同一个起源 —— 前者是契约声明的
+    base path，后者是这份契约**被取回来的地址**，而取回地址换个位置（CDN、
+    仓库路径）不该让同一份 API 变成两个实体。
+    """
+    text = _clean_endpoint_text(raw).rstrip("/")
+    if "://" in text:
+        scheme, _, rest = text.partition("://")
+        scheme = scheme.lower()
+        _require_scheme(scheme, text)
+        authority = rest.partition("/")[0]
+    else:
+        scheme = ""
+        authority = text.partition("/")[0]
+    if "@" in authority:                     # userinfo：凭据，不进身份（§4.5）
+        authority = authority.rsplit("@", 1)[1]
+    raw_host, raw_port = _split_authority(authority)
+    host = _normalize_target_host(raw_host)
+    port = _port_or_none(raw_port)
+
+    effective = port if port is not None else _DEFAULT_PORTS.get(scheme)
+    identity_port = None if effective in (None,) or effective in WEB_DEFAULT_PORTS \
+        else effective
+    key = _bracket(host) + (f":{identity_port}" if identity_port else "")
+    return {"key": key, "host": host,
+            "host_kind": "ip" if try_ip(host) is not None else "domain",
+            "scheme": scheme, "port": effective}
+
+
+def apischema_key(raw: object) -> str:
+    """`apischema_identity` 的字符串面 —— 身份规则本身，夹具执行的就是它。"""
+    return str(apischema_identity(raw)["key"])
+
+
+#: 参数名的合法字符（RFC 9110 的 token 子集 + `[` `]` `.`）。
+#: 方括号是 PHP 系的数组参数（`filter[status]`），点是 JSON 嵌套（`user.name`）
+#: —— 两者都是真实现象。**刻意不含** `$` / 空白 / 引号：它们要么来自模板语言，
+#: 要么根本不是一个参数名。
+_PARAM_NAME_CHARS: frozenset[str] = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.[]")
+
+
+def param_name(raw: object) -> str:
+    """参数名归一化 —— `param.<名字>` 这个观测字段名的后半段。
+
+    **刻意不折大小写**：HTTP 查询参数与 JSON 键在标准里都是大小写敏感的，
+    `?Page=1` 与 `?page=1` 是两个不同的输入。折了就是把两个参数并成一个，
+    而那是**静默丢信息**（与 `SEGMENT_TEMPLATES` 那条"折叠多了没人发现"
+    是同一个风险）。这一点与 `http_method` 相反 —— 方法名在 RFC 里明确
+    不区分大小写，参数名没有这条。
+
+    认不出的名字**抛错**而不是清洗：把 `{{token}}` 清洗成 `token` 会让一条
+    模板变量伪装成一个真实参数（3.4 的"不做变量展开"就是这条）。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"参数名必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if not text:
+        raise NormalizeError("参数名是空的")
+    if len(text) > 64:
+        raise NormalizeError(f"参数名超过 64 个字符：{text[:32]!r}…")
+    if not all(ch in _PARAM_NAME_CHARS for ch in text):
+        raise NormalizeError(
+            f"参数名里有不认识的字符（只认字母数字与 _-.[]）：{text!r}")
+    _require_no_homoglyphs(text, "参数名")
+    return text
 
 
 def _clean_endpoint_text(raw: object) -> str:

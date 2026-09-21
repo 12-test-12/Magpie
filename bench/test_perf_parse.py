@@ -23,6 +23,14 @@ r"""解析吞吐契约（开发实施计划 2.4 的验收项之一）：
     httpx        10 万行 / 170.5 万条记录 / 4.17s （41.7 us/行）
     nmap         7.5 万行 /  41.3 万条记录 / 1.14s （15.2 us/行）
     nuclei       10 万行 / 130.0 万条记录 / 4.37s （43.7 us/行）
+    openapi     7.8 万行 /   2.6 万条记录 / 0.41s （ 5.3 us/行）   ← 3.4 新增
+
+openapi 那一行**不是同一个量级的东西**，所以它读起来会有点怪：7.8 万行 JSON 只
+拆出 2.6 万条记录，而 httpx 的 10 万行拆出 170 万条。原因是它的"行"是**一份
+文档的排版**，不是"一条事实一行"—— 整份规范必须一次性 `json.loads` 进来
+（标准库没有流式 JSON 解析器），所以每行的成本被摊薄到 5.3 us。
+真正的成本落在**每条路径**上（身份计算 + `$ref` 解引用 + 参数树展开），
+而"每行成本随规模不增长"那条比值 1.07x 说明它是线性的。契约判的仍然是时间。
 
 httpx 贵在"一行拆出 17 条记录"，拆解开来是：`json.loads` 0.26s、
 构造 170 万条 `Raw*`（含硬线校验）1.26s、其余是字段分派与归一化调用。
@@ -56,7 +64,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from magpie.core.parsers import domainlist, httpx, nmap, nuclei  # noqa: E402
+from magpie.core.parsers import domainlist, httpx, nmap, nuclei, openapi  # noqa: E402
 from magpie.core.parsers.base import OfflineContext  # noqa: E402
 
 STRICT = os.environ.get("MAGPIE_PERF_STRICT") == "1"
@@ -160,6 +168,47 @@ def _nuclei_lines(count: int):
         }, ensure_ascii=False)
 
 
+def _openapi_lines(count: int):
+    """一份 OpenAPI 3 文档，总行数 ≈ `count`（每条约 20 行 JSON）。
+
+    3.4 的四个接口来源里，这一个是最重的**形状**，所以它值得一条吞吐契约：
+    整份文档必须先读进内存再 `json.loads`（标准库没有流式 JSON 解析器），
+    而解析出来的每一条路径都要走一遍身份计算、`$ref` 解引用与参数树展开 ——
+    那是整条管线里唯一**按行计费**的环节（与上面四个来源同一条理由）。
+
+    重复度**刻意做高**（`i % 2000`）：真实规范里同一批路径会被反复引用，
+    去重路径要被压到。`$ref` 也刻意保留 —— 解引用是这一步新增的热路径。
+    """
+    paths: dict = {}
+    for i in range(max(1, count // 20)):
+        paths[f"/resource{i % 2000}/{{id}}"] = {
+            "get": {
+                "parameters": [
+                    {"name": "id", "in": "path", "required": True,
+                     "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                ],
+                "responses": {"200": {}, "404": {}},
+            },
+            "post": {
+                "requestBody": {"content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/Thing"}}}},
+                "responses": {"201": {}},
+            },
+        }
+    doc = {
+        "openapi": "3.0.3",
+        "info": {"title": "Bench", "version": "1.0.0"},
+        "servers": [{"url": "https://bench.example.com/v1"}],
+        "paths": paths,
+        "components": {"schemas": {"Thing": {
+            "type": "object", "required": ["name"],
+            "properties": {"name": {"type": "string"},
+                           "tag": {"type": "string"}}}}},
+    }
+    yield from json.dumps(doc, ensure_ascii=False, indent=1).splitlines()
+
+
 def _timed(cls, lines) -> tuple[float, int]:
     ctx = OfflineContext()
     t0 = time.perf_counter()
@@ -172,6 +221,7 @@ def _timed(cls, lines) -> tuple[float, int]:
     ("httpx", httpx.HttpxParser, _httpx_lines),
     ("nmap", nmap.NmapParser, _nmap_lines),
     ("nuclei", nuclei.NucleiParser, _nuclei_lines),
+    ("openapi", openapi.OpenapiParser, _openapi_lines),
 ])
 def test_parse_throughput_100k_lines(name, cls, make):
     """`LINES` 对 nmap 是"约多少行 XML"，不是"多少条记录" —— 一行一条记录是
@@ -193,6 +243,7 @@ def test_parse_throughput_100k_lines(name, cls, make):
     ("httpx", httpx.HttpxParser, _httpx_lines),
     ("nmap", nmap.NmapParser, _nmap_lines),
     ("nuclei", nuclei.NucleiParser, _nuclei_lines),
+    ("openapi", openapi.OpenapiParser, _openapi_lines),
 ])
 def test_parse_cost_per_line_does_not_grow(name, cls, make):
     """规模翻 4 倍时每行成本不该涨 —— 涨了说明某个环节是 O(N²) 的。

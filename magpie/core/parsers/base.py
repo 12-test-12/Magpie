@@ -50,6 +50,7 @@ __all__ = [
     "KIND_REGISTRY",
     "LENSES",
     "RELATION_VOCABULARY",
+    "MissingExtrasError",
     "OfflineContext",
     "ParseContext",
     "Parser",
@@ -58,6 +59,7 @@ __all__ = [
     "RawRelation",
     "Record",
     "VocabularyError",
+    "extras_install_hint",
     "require_kind",
     "require_relation",
 ]
@@ -65,6 +67,31 @@ __all__ = [
 
 class VocabularyError(ValueError):
     """未登记的 kind / 关系动词。**可读** —— 它会被写进报告给人看。"""
+
+
+class MissingExtrasError(RuntimeError):
+    """少装了一个 extras，而**这个格式离不开它**（3.4 的 YAML、4.5 的流量）。
+
+    为什么不是裸 `ImportError`：`ImportError` 的形状是"Python 找不到模块"，
+    而这里要说的是"**你的环境少装了一块**，缺的是哪个 extras、跑哪条命令装"。
+    前者把人引去看 `sys.path`，后者把人引去 `pip install`。它们是完全不同的
+    两个动作，而一条报错只该把人引向其中一个。
+
+    为什么不是静默降级成"不认识这个格式"：那会把一个**环境问题**伪装成
+    **格式问题** —— 使用者会去怀疑自己的文件写错了，而文件没有问题。这条被
+    计划书单列为交付标准，所以它在这里是一条具名的异常类型，而不是一句话。
+
+    继承 `RuntimeError` 而不是 `ValueError`：它不是"输入不合法"，而是"这台
+    机器上跑不了"。`ingest` 对两者一视同仁（都落成 `parse_error` 的可读报告），
+    但调用方要能靠类型把它们分开。
+    """
+
+
+#: 缺 extras 时给出的**安装命令**。写成一个函数而不是散在报错文案里：
+#: 文案可以有多种，命令只能有一条 —— 两处各写一遍迟早会分叉成两条不同的命令。
+def extras_install_hint(extra: str) -> str:
+    """`api-yaml` → `pip install -e ".[api-yaml]"`。"""
+    return f'pip install -e ".[{extra}]"'
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +354,8 @@ class RelationSpec:
 
 
 #: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`
-#: + 3.3 的 `endpoint`）。刻意先窄后宽：每个登记的 kind 都要带三件套，而
-#: `apischema` / `param` / `flow` 之流的三件套只有在阶段 3 / 4 各自的解析器里
+#: + 3.3 的 `endpoint` + 3.4 的 `apischema`）。刻意先窄后宽：每个登记的 kind
+#: 都要带三件套，而 `param` / `flow` 之流的三件套只有在阶段 3 / 4 各自的解析器里
 #: 才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束（计划书 §3.3 的
 #: 教训）。
 #:
@@ -340,10 +367,12 @@ class RelationSpec:
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
              produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
-                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
+                          "curl@1", "har@1", "openapi@1", "postman@1")),
     KindSpec(kind="ip", fixture="fixtures/kinds/ip.json", lens="assets",
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
-                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
+                          "curl@1", "har@1", "openapi@1", "postman@1")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -352,7 +381,8 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="host", fixture="fixtures/kinds/host.json", lens="assets"),
     KindSpec(kind="service", fixture="fixtures/kinds/service.json", lens="services",
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
-                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
+                          "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
+                          "curl@1", "har@1", "openapi@1", "postman@1")),
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
              produced_by=("httpx@1", "nmap@1")),
     #: 漏洞（3.2 起有产出者：nuclei 的 `-jsonl`）。**镜头归属是 003 里已冻结的
@@ -377,7 +407,21 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 否则"这个 endpoint 到底见过哪些真实路径"就永远答不出来（3.5 镜头、
     #: 3.6 体检都要用那份证据）。
     KindSpec(kind="endpoint", fixture="fixtures/kinds/endpoint.json", lens="api",
-             produced_by=("dirsearch@1", "ffuf@1", "gau@1", "katana@1")),
+             produced_by=("dirsearch@1", "ffuf@1", "gau@1", "katana@1",
+                          "curl@1", "har@1", "openapi@1", "postman@1")),
+    #: 接口契约（3.4 起有产出者：openapi / postman / har / curl 四个"接口描述"
+    #: 来源）。**镜头归属同样是已冻结的 `api`** —— 与 `endpoint` 同一个镜头，
+    #: 因为"这个系统暴露了几个未鉴权接口"这类问题要同时看**契约声明的**与
+    #: **流量观测到的**两半（计划书 §4 的接口行）。
+    #:
+    #: 身份是**起源**（`主机[:非默认端口]`，`normalize.apischema_key`），
+    #: **不是**文档标题或版本。取舍的正文写在 `normalize.py` 的
+    #: 「接口契约（apischema）」那一节与迁移 007 的文件头里，一句话版：
+    #: 四个来源能共同算出来的只有主机，而标题/版本只有其中两个来源有 ——
+    #: 拿标题当身份，HAR 与 curl 就永远落不到另外两类身上，而那恰恰是要被
+    #: 认出来的那件事。
+    KindSpec(kind="apischema", fixture="fixtures/kinds/apischema.json", lens="api",
+             produced_by=("curl@1", "har@1", "openapi@1", "postman@1")),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。
@@ -407,6 +451,11 @@ RELATION_VOCABULARY: tuple[RelationSpec, ...] = (
         verb="served_by",
         description="接口归属它所在的服务（app.example.com/user/{id} --served_by--> app.example.com:443）。端点 kind 是 endpoint 与 service —— 3.3 的四个来源都给出 scheme，所以有效端口总能补齐，service 与 httpx / nmap / nuclei 落的是同一个实体。",
         inverse="serves",
+    ),
+    RelationSpec(
+        verb="declared_in",
+        description="接口被某份 API 契约声明，或属于某个起源上已经见过的 API（app.example.com/user/{id} --declared_in--> api.example.com）。端点 kind 是 endpoint 与 apischema —— 3.4 的四个来源算出的接口身份与 dirsearch / gau 观测到的真实路径落的是**同一个** endpoint 实体，所以「契约声明了但没人访问过」与「访问过但没进契约」都能一眼看出，这正是把契约挂到接口而不是另建一套接口列表的理由。方向是 endpoint → apischema：逆动词 declares 让「这个起源的 API 有哪些接口」不必另立一列。",
+        inverse="declares",
     ),
 )
 
