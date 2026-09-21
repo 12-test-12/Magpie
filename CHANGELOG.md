@@ -5,6 +5,69 @@
 
 版本号跟着 `pyproject.toml` / `magpie/__init__.py` 走。
 
+> **0.6.0 说明**：3.1–3.5 的四步都是纯新增（新 kind / 新解析器 / 新过滤条件 /
+> 新模块），没有动过任何既有响应形状，因此没有各自占一节。3.6 是阶段 3 里第一
+> 次**动到既有响应**（给 `/doctor` 与 `magpie doctor --json` 各加一个键），
+> 按本节开头的规矩在这里登记。
+
+---
+
+## 0.6.0 — 3.6 数据体检页 + Inbox 页（五类问题可见）
+
+**纯新增**：`/api/v1` 没有任何既有字段被改名、改类型或删除；`magpie doctor`
+同理。对 core 的改动全是追加（新模块 `magpie/core/scope.py`、`query` 里新增
+具名查询与生产者）。
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · `GET /api/v1/doctor` 的 `data` 多一个 `health` 键**（只在 `?project=` 解析
+成功时出现；解析不了时**整个键不出现**，与既有的 `project_id` /
+`untested_entities` 同一条规则 —— 让"没算"和"算出来是 0"分得开）。
+
+```json
+"health": {
+  "query": "health", "project_id": 1,
+  "categories": [ { "query": "health.orphan", "key": "orphan", "label": "孤儿",
+                    "why": "...", "kinds": ["orphan_subject"],
+                    "count": 2, "items": [ /* inbox 项 */ ], "truncated": false } ],
+  "claimed": 2, "open_inbox": 2, "unclaimed": [], "notes": []
+}
+```
+
+五类是**未决 Inbox 项按 kind 的划分**（`magpie/core/query.py` 的
+`HEALTH_CATEGORIES`，唯一声明处）：**清空 Inbox ⟺ 五类全部归零**，这就是
+§7.4 的"清空即干净"。
+
+**2 · `magpie doctor --json` 的 `data` 多一个同形的 `health` 键**，规则同上
+（`--project` 解析不了时键不出现；`--human` 会多一节"五类问题"）。
+
+**3 · 新增两个 Inbox 生产者**（这是"未知字段"与"越界资产"两类**第一次**有
+东西可数 —— 在此之前 `evidence_missing` / `scope_drift` 两个 kind 在 001 的
+CHECK 里躺着但没有任何一处写它们，那两个计数因此恒为 0）：
+
+| 何时开 | kind | payload | severity |
+|---|---|---|---|
+| 解析器报出未知字段名（§5.6） | `evidence_missing` | `{reason:"unknown_field", field, count, file, parser}` | `low` |
+| 资产落在项目 scope 之外 | `scope_drift` | `{reason:"out_of_scope", entity_key, kind, scope}` | `medium` |
+
+两者都只在**真的有东西要报**时才写：干净的夹具上一条不落。它们与既有
+`value_conflict` / `orphan_subject` / `manual_required` / `merge_conflict`
+一样是 `created_by_job_id` 锚定的自动项，所以 `undo` 会连同它们一起关掉
+（`verify_v32r5` 的 B1 段在验这一条）。
+
+**4 · scope 求值语义**（`magpie/core/scope.py`，`?in_scope=` **仍然拒绝** ——
+本步只把它用在体检与 Inbox 上，没有开过滤条件）：
+
+  * `*.example.com` 读作 **`example.com` 及其全部子域**（故意不同于 fnmatch 的
+    字面语义：解析器会从子域自动推出 apex，字面读法会让每次导入都多报一条
+    apex 越界 —— 那是噪音，不是发现）；
+  * 名单里**一个 CIDR 都没有**时，`ip` / `cidr` 实体**不判**（`in_scope` 回
+    `None`）—— 一个只写了域名的 scope 并没有对地址表态，而 httpx 会为每台在
+    范围内的主机写一条 A 记录；
+  * include 非空即白名单，为空表示没有约束；exclude 优先于 include；
+  * 大小写折叠后再比，且**不用 `fnmatch.fnmatch`**（它在 Windows 上会两边
+    casefold，让同一份 scope 换台机器给出两套答案）。
+
 ---
 
 ## 0.5.0 — 2.6 CLI 写路径（垂直切片闭合）

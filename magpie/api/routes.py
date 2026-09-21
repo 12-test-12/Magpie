@@ -1,9 +1,21 @@
 """`/api/v1` 的路由（计划书 §6.2 / 2.7 任务 1）。
 
-**这个模块里没有一条 SQL 在写库。** 所有写都 `ctx.writer.submit(...)` 排进单写
-队列（2.7 任务 2），读走每请求一条自己的连接（WAL 下读写不互相阻塞）。
-这条纪律不是洁癖：R1"写入口唯一"的全部价值，就在于**任何时刻只有一个写者**，
-而它一旦被某条"顺手 UPDATE 一下"的路由破坏，就没有任何测试能替你发现。
+**这个模块里没有一条 SQL —— 读的没有，写的更没有。** 所有写都
+`ctx.writer.submit(...)` 排进单写队列（2.7 任务 2），读走每请求一条自己的连接
+（WAL 下读写不互相阻塞）并委托给 `magpie/core/query.py`。
+
+两条纪律都不是洁癖:
+
+  * **写**：R1"写入口唯一"的全部价值，就在于**任何时刻只有一个写者**，而它一旦
+    被某条"顺手 UPDATE 一下"的路由破坏，就没有任何测试能替你发现。
+  * **读**：3.5 还掉的那笔债（`cli/read.py` 与这里的查询是同一份语义的两份实现）。
+    两份实现不会同时出错，也不会以同样的方式出错 —— 而"同一份数据、两种答案"
+    没有任何症状，直到有人按错的那一半行动。`check.py` 的 `SQL-FREE` 红线静态
+    扫本文件与 `cli/read.py`，出现 SQL 字面量即整轮变红。
+
+查询层的失败是 `query.QueryError`（core 不认识 HTTP 状态码），本模块用
+`@_translating` 把它翻成 `ApiError` —— 映射表在下面一处，`code` 仍然只有 core
+一份。
 
 响应形状（对外契约，改它要升 minor）:
 
@@ -29,17 +41,18 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import functools
 import io
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, store
+from ..core import ingest, ops, query, store
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -53,11 +66,52 @@ SSE_HEARTBEAT_SECONDS = 15.0
 #: 单帧最多带多少条事件（防止一个卡了很久的消费者在恢复时灌出一条巨帧）。
 SSE_MAX_BATCH = 256
 
-MAX_PAGE = 500
-DEFAULT_PAGE = 50
+#: 页大小上限/默认值的声明处是 `core/query.py`（CLI 与 API 各写一个就是两个
+#: 真相）。这里只做转发，好让老的 `routes.MAX_PAGE` 引用照旧可用。
+MAX_PAGE = query.MAX_PAGE
+DEFAULT_PAGE = query.DEFAULT_PAGE
 
-#: 列表端点支持的过滤条件。**唯一的声明处** —— 报错信息也从它来。
-_ENTITY_FILTERS = ("kind", "q", "tag", "lifecycle", "cursor", "limit")
+#: 列表端点支持的过滤条件。**唯一的声明处**也在 core —— 报错信息从它来。
+_ENTITY_FILTERS = query.ENTITY_FILTERS
+
+#: `query.QueryError.code` → HTTP 状态码。与 `cli/read.py` 的 `QUERY_EXIT` 是
+#: **同一条映射的两侧**（`envelope.EXIT_TO_HTTP` 要求它们一一对应）：
+#: 退出码 1 ↔ 400、2 ↔ 404。没登记的 code 按 404 处理，与"没登记的 code 按
+#: 数据错（2）处理"是同一个保守选择。
+_QUERY_STATUS: dict[str, int] = {
+    "E_UNSUPPORTED_FILTER": 400,
+    "E_BAD_LIMIT": 400,
+    "E_BAD_CURSOR": 400,
+    "E_BAD_PRODUCT": 400,
+    "E_BAD_ENDPOINT": 400,
+    "E_BAD_CIDR": 400,
+    "E_BAD_STATE": 400,
+    "E_BAD_DEPTH": 400,
+    "E_LENS_NOT_FOUND": 404,
+    "E_ENTITY_NOT_FOUND": 404,
+    "E_JOB_NOT_FOUND": 404,
+    "E_PROJECT_NOT_FOUND": 404,
+}
+
+#: 路由上的读查询把 `QueryError` 翻成 `ApiError` 的**唯一装饰器**。
+#:
+#: 为什么是装饰器而不是逐条 `try/except`：14 条路由各写一次的后果不是"多几行"，
+#: 而是**总会漏一条** —— 漏掉的那条会把一个 `QueryError` 变成 500，而它的
+#: 语义本来是 404/400。`functools.wraps` 保住了签名，FastAPI 的参数注入照旧
+#: （它读 `inspect.signature`，而那个函数跟随 `__wrapped__`）。
+def _translating(route: Callable) -> Callable:
+    @functools.wraps(route)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return route(*args, **kwargs)
+        except query.QueryError as exc:
+            raise _api_error(exc) from exc
+    return wrapper
+
+
+def _api_error(exc: query.QueryError) -> ApiError:
+    return ApiError(_QUERY_STATUS.get(exc.code, 404), exc.code, exc.message,
+                    hint=exc.hint, **exc.details)
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +145,12 @@ def _resolve_project(conn: sqlite3.Connection, project: str | int | None) -> int
 
     刻意不做"默认选第一个"：多项目下"第一个"是行序，不是意图。让调用方显式写，
     比让他某天发现数据进了另一个项目要好。
+
+    "怎么找"是 `query.project_id_for`（与 CLI 的 `--project` 同一段实现）；
+    "找不到时回什么"留在这一侧 —— HTTP 404 ↔ 退出码 2，两边的证据形状也不同。
     """
     if project is None:
-        rows = conn.execute("SELECT id, name FROM projects ORDER BY id").fetchall()
+        rows = query.projects(conn)
         if len(rows) == 1:
             return int(rows[0]["id"])
         raise ApiError(400, "E_PROJECT_REQUIRED",
@@ -101,87 +158,26 @@ def _resolve_project(conn: sqlite3.Connection, project: str | int | None) -> int
                        hint="加上 ?project=<id 或名字>；用 GET /api/v1/projects 查",
                        projects=[str(r["name"]) for r in rows])
     spec = str(project)
-    row = None
-    if spec.isdigit():
-        row = conn.execute("SELECT id FROM projects WHERE id=?", (int(spec),)).fetchone()
-    if row is None:
-        row = conn.execute("SELECT id FROM projects WHERE name=?", (spec,)).fetchone()
-    if row is None:
+    found = query.project_id_for(conn, spec)
+    if found is None:
         raise ApiError(404, "E_PROJECT_NOT_FOUND", f"项目 {spec!r} 不存在")
-    return int(row["id"])
+    return int(found)
 
 
-def _page_size(limit: int) -> int:
-    if limit < 1:
-        raise ApiError(400, "E_BAD_LIMIT", f"limit 必须 >= 1，收到 {limit}")
-    return min(int(limit), MAX_PAGE)
+def _unsupported(filters: dict[str, Any]) -> None:
+    """沉默地忽略一个过滤条件 = 给 agent 一个假答案。**必须响亮地拒绝。**
 
-
-def _parse_cursor(cursor: str | None) -> int | None:
-    if cursor in (None, "", "null"):
-        return None
-    if not str(cursor).isdigit():
-        raise ApiError(400, "E_BAD_CURSOR",
-                       f"cursor 必须是上一页末尾的实体 id，收到 {cursor!r}")
-    return int(cursor)
-
-
-def _unsupported(filters: dict[str, Any], supported: tuple[str, ...]) -> None:
-    """沉默地忽略一个过滤条件 = 给 agent 一个假答案。**必须响亮地拒绝。**"""
-    unknown = sorted(k for k, v in filters.items() if v not in (None, ""))
-    if unknown:
-        raise ApiError(400, "E_UNSUPPORTED_FILTER",
-                       f"本步不支持这些过滤条件：{', '.join(unknown)}",
-                       hint=f"支持的过滤条件：{', '.join(supported)}。"
-                            f"被静默忽略的过滤条件会让调用方以为筛过了 —— 那比报错坏得多",
-                       supported=list(supported), rejected=unknown)
+    判定、报错文本与 `supported` 都由 `query.reject_unsupported` 给 —— 这里只
+    把 `QueryError` 翻成 `ApiError`，让"支持哪些过滤条件"只有一个答案。
+    """
+    try:
+        query.reject_unsupported(filters)
+    except query.QueryError as exc:
+        raise _api_error(exc) from exc
 
 
 def _json_or_none(raw: Any) -> Any:
-    try:
-        return json.loads(raw) if raw else None
-    except (TypeError, ValueError):
-        return raw
-
-
-def _keys_of(conn: sqlite3.Connection, project_id: int,
-             entity_ids: list[int]) -> dict[int, str]:
-    """entity_id → 规范 key。一次查完，不做 N+1。"""
-    if not entity_ids:
-        return {}
-    marks = ",".join("?" * len(entity_ids))
-    rows = conn.execute(
-        f"SELECT entity_id, entity_key FROM entity_keys"
-        f" WHERE project_id=? AND canonical=1 AND entity_id IN ({marks})",
-        (project_id, *entity_ids)).fetchall()
-    return {int(r["entity_id"]): str(r["entity_key"]) for r in rows}
-
-
-def _entity_row(conn: sqlite3.Connection, project_id: int, entity_id: int) -> dict:
-    row = conn.execute(
-        "SELECT id, kind, lifecycle, is_current, merged_into, first_seen, last_seen"
-        " FROM entities WHERE id=? AND project_id=?",
-        (entity_id, project_id)).fetchone()
-    if row is None:
-        raise ApiError(404, "E_ENTITY_NOT_FOUND",
-                       f"实体 {entity_id} 不在项目 {project_id} 里")
-    entity = dict(row)
-    entity["entity_key"] = _keys_of(conn, project_id, [entity_id]).get(entity_id)
-    return entity
-
-
-def _tags_of(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[str]:
-    return [str(r["tag"]) for r in conn.execute(
-        "SELECT tag FROM entity_tags WHERE project_id=? AND entity_id=?"
-        " AND deleted_at IS NULL ORDER BY tag", (project_id, entity_id))]
-
-
-def _manual_keys(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[str]:
-    row = conn.execute(
-        "SELECT keys_json FROM manual_fields WHERE project_id=? AND subject_kind='entity'"
-        " AND subject_id=?", (project_id, entity_id)).fetchone()
-    keys = _json_or_none(None if row is None else row["keys_json"])
-    return [str(k) for k in keys] if isinstance(keys, list) else []
+    return query.json_or_none(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -193,19 +189,10 @@ def _manual_keys(conn: sqlite3.Connection, project_id: int, entity_id: int) -> l
 def get_meta(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     from .. import __version__
 
-    schema_version = conn.execute(
-        "SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-    kinds = [{"kind": str(r["kind"]), "lens": str(r["lens"]),
-              "identity_rule": str(r["identity_rule"]),
-              "produced_by": _json_or_none(r["produced_by"]) or []}
-             for r in conn.execute(
-                 "SELECT kind, lens, identity_rule, produced_by FROM kind_registry"
-                 " ORDER BY kind")]
-    verbs = [{"verb": str(r["verb"]), "inverse": r["inverse"],
-              "description": str(r["description"])}
-             for r in conn.execute(
-                 "SELECT verb, inverse, description FROM relation_vocabulary"
-                 " ORDER BY verb")]
+    # `/meta` 的 kinds 不带 fixture_path（它是**登记时**的证据，不是运行时要用的
+    # 东西）；`magpie schema` 带。两者取的是同一份 `query.kinds`，各自丢字段。
+    kinds = [{k: v for k, v in row.items() if k != "fixture_path"}
+             for row in query.kinds(conn)]
     try:
         parsers, source_pkg = ingest.load_parsers()
         parser_list = [{"tool": str(c.tool), "format_version": str(c.format_version)}
@@ -214,28 +201,14 @@ def get_meta(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
         source_pkg, parser_list = f"<{type(exc).__name__}: {exc}>", []
     return ok({
         "magpie_version": __version__,
-        "schema_version": schema_version,
+        "schema_version": query.schema_version(conn),
         "api_prefix": API_PREFIX,
         "kinds": kinds,
-        "relation_verbs": verbs,
+        "relation_verbs": query.relation_verbs(conn),
         "parsers": parser_list,
         "parser_source": source_pkg,
-        "counts": {
-            "projects": _scalar(conn, "SELECT COUNT(*) FROM projects"),
-            "entities": _scalar(conn, "SELECT COUNT(*) FROM entities WHERE is_current=1"),
-            "observations": _scalar(conn,
-                                    "SELECT COUNT(*) FROM observations WHERE is_current=1"),
-            "relations": _scalar(conn,
-                                 "SELECT COUNT(*) FROM relations WHERE is_current=1"),
-            "jobs": _scalar(conn, "SELECT COUNT(*) FROM jobs"),
-            "open_inbox": _scalar(conn,
-                                  "SELECT COUNT(*) FROM inbox_items WHERE state='open'"),
-        },
+        "counts": query.metric_counts(conn),
     })
-
-
-def _scalar(conn: sqlite3.Connection, sql: str, *params: Any) -> int:
-    return int(conn.execute(sql, params).fetchone()[0])
 
 
 class ProjectBody(BaseModel):
@@ -252,7 +225,7 @@ def create_project(body: ProjectBody, request: Request,
 
     真正建项目的入口仍然是 `ops.create_project`（写者唯一）。
     """
-    if conn.execute("SELECT 1 FROM projects WHERE name=?", (body.name,)).fetchone():
+    if query.project_named(conn, body.name) is not None:
         raise ApiError(409, "E_PROJECT_EXISTS", f"项目 {body.name!r} 已存在")
     ctx = _ctx(request)
     name, scope = body.name, dict(body.scope)
@@ -266,24 +239,7 @@ def create_project(body: ProjectBody, request: Request,
 
 @router.get("/projects", summary="项目列表")
 def list_projects(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    rows = conn.execute(
-        "SELECT id, name, status, scope_version, scope_hash, parser_fingerprint"
-        " FROM projects ORDER BY id").fetchall()
-    items = []
-    for row in rows:
-        pid = int(row["id"])
-        item = dict(row)
-        item["scope"] = _json_or_none(conn.execute(
-            "SELECT scope FROM projects WHERE id=?", (pid,)).fetchone()["scope"])
-        item["counts"] = {
-            "entities": _scalar(conn, "SELECT COUNT(*) FROM entities"
-                                      " WHERE project_id=? AND is_current=1", pid),
-            "observations": _scalar(conn, "SELECT COUNT(*) FROM observations"
-                                          " WHERE project_id=? AND is_current=1", pid),
-            "relations": _scalar(conn, "SELECT COUNT(*) FROM relations"
-                                       " WHERE project_id=? AND is_current=1", pid),
-        }
-        items.append(item)
+    items = query.projects_detail(conn)
     return ok(items, count=len(items))
 
 
@@ -292,106 +248,58 @@ def list_projects(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-@router.get("/entities", summary="实体列表（键集游标分页）")
+@router.get("/entities", summary="实体列表（键集游标分页）+ §3.5 的具名查询")
+@_translating
 def list_entities(project: str | None = None,
                   kind: str | None = None,
+                  lens: str | None = None,
                   q: str | None = None,
                   tag: str | None = None,
                   lifecycle: str | None = None,
+                  product: str | None = None,
+                  version: str | None = None,
+                  endpoint: str | None = None,
+                  severity: str | None = None,
+                  state: str | None = None,
+                  in_cidr: str | None = None,
                   cursor: str | None = None,
                   limit: int = DEFAULT_PAGE,
                   review_status: str | None = None,
                   in_scope: str | None = None,
                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    _unsupported({"review_status": review_status, "in_scope": in_scope},
-                 _ENTITY_FILTERS)
-    size = _page_size(limit)
+    """实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` 是
+    §3.5 的**具名查询**（`query.dispatch` 决定这组条件在问哪一问）—— 与
+    `magpie ls` 的同名 flag 一字不差，两边走同一段实现。
+
+    `meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来的
+    而不是连出来的…… 一个空列表必须带着"为什么是空的"，否则它会被读成
+    "筛过了，就是没有"（这正是 `review_status` 那条纪律的同一个理由）。
+    """
+    _unsupported({"review_status": review_status, "in_scope": in_scope})
+    # 用法错先于数据错 —— 与 `magpie ls` 同一步、同一顺序（见
+    # `query.check_page_filters`）。
+    try:
+        query.check_page_filters(limit=limit, cursor=cursor)
+    except query.QueryError as exc:
+        raise _api_error(exc) from exc
     project_id = _resolve_project(conn, project)
-
-    where = ["e.project_id=?", "e.is_current=1", "e.merged_into IS NULL"]
-    params: list[Any] = [project_id]
-    if kind:
-        where.append("e.kind=?")
-        params.append(str(kind))
-    if lifecycle:
-        where.append("e.lifecycle=?")
-        params.append(str(lifecycle))
-    if q:
-        where.append("EXISTS (SELECT 1 FROM entity_keys k WHERE k.entity_id=e.id"
-                     " AND k.project_id=e.project_id AND k.entity_key LIKE ?)")
-        params.append(f"%{q}%")
-    if tag:
-        where.append("EXISTS (SELECT 1 FROM entity_tags t WHERE t.entity_id=e.id"
-                     " AND t.project_id=e.project_id AND t.tag=? AND t.deleted_at IS NULL)")
-        params.append(str(tag))
-    after = _parse_cursor(cursor)
-    if after is not None:
-        where.append("e.id > ?")
-        params.append(after)
-
-    rows = conn.execute(
-        "SELECT e.id, e.kind, e.lifecycle, e.first_seen, e.last_seen,"
-        " (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
-        "   AND k.project_id=e.project_id AND k.canonical=1"
-        "   ORDER BY k.entity_key LIMIT 1) AS entity_key,"
-        " (SELECT COUNT(*) FROM observations o WHERE o.entity_id=e.id AND o.is_current=1)"
-        "   AS observation_count,"
-        " (SELECT COUNT(*) FROM relations r WHERE r.src_id=e.id AND r.is_current=1)"
-        "   AS out_degree"
-        f" FROM entities e WHERE {' AND '.join(where)}"
-        " ORDER BY e.id LIMIT ?", (*params, size)).fetchall()
-    items = [dict(r) for r in rows]
-    next_cursor = str(items[-1]["id"]) if len(items) == size and items else None
-    return ok(items, count=len(items), next_cursor=next_cursor,
-              project_id=project_id, filters={"kind": kind, "q": q, "tag": tag,
-                                              "lifecycle": lifecycle})
+    result = query.dispatch(
+        conn, project_id, kind=kind, lens=lens, q=q, tag=tag, lifecycle=lifecycle,
+        product=product, version=version, endpoint=endpoint, severity=severity,
+        state=state, in_cidr=in_cidr, cursor=cursor, limit=limit)
+    return ok(result["entities"], count=result["count"],
+              next_cursor=result["next_cursor"], project_id=project_id,
+              query=result["query"], filters={"kind": kind, "q": q, "tag": tag,
+                                              "lifecycle": lifecycle},
+              notes=result["notes"])
 
 
 @router.get("/entities/{entity_id}", summary="实体详情（观测 / 关系 / 标签 / Inbox）")
+@_translating
 def get_entity(entity_id: int, project: str | None = None,
                conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     project_id = _resolve_project(conn, project)
-    entity = _entity_row(conn, project_id, entity_id)
-
-    observations = [dict(r) for r in conn.execute(
-        "SELECT id, semantic_field, value, value_kind, confidence, source_count,"
-        " job_count, origin, observed_at, observed_at_accuracy"
-        " FROM observations WHERE entity_id=? AND project_id=? AND is_current=1"
-        " ORDER BY semantic_field, id", (entity_id, project_id))]
-
-    relations = []
-    rows = conn.execute(
-        "SELECT id, rel, src_id, dst_id, confidence, source_count, job_count"
-        " FROM relations WHERE project_id=? AND is_current=1"
-        " AND (src_id=? OR dst_id=?) ORDER BY rel, id",
-        (project_id, entity_id, entity_id)).fetchall()
-    other_ids = sorted({int(r["dst_id"]) if int(r["src_id"]) == entity_id
-                        else int(r["src_id"]) for r in rows})
-    keys = _keys_of(conn, project_id, other_ids)
-    for row in rows:
-        item = dict(row)
-        other = int(row["dst_id"]) if int(row["src_id"]) == entity_id else int(row["src_id"])
-        item["direction"] = "out" if int(row["src_id"]) == entity_id else "in"
-        item["other_id"] = other
-        item["other_key"] = keys.get(other)
-        relations.append(item)
-
-    inbox = [dict(r) for r in conn.execute(
-        "SELECT id, kind, severity, state, payload_json, created_at FROM inbox_items"
-        " WHERE project_id=? AND subject_kind='entity' AND subject_id=? AND state='open'"
-        " ORDER BY id", (project_id, entity_id))]
-    for item in inbox:
-        item["payload"] = _json_or_none(item.pop("payload_json"))
-
-    activity = [dict(r) for r in conn.execute(
-        "SELECT id, actor, action, at, job_id FROM activity_log"
-        " WHERE target_kind='entity' AND target_id=? ORDER BY id DESC LIMIT 20",
-        (entity_id,))]
-
-    return ok({"entity": entity, "observations": observations, "relations": relations,
-               "tags": _tags_of(conn, project_id, entity_id),
-               "manual": {"protected_fields": _manual_keys(conn, project_id, entity_id)},
-               "open_inbox": inbox, "timeline": activity},
+    return ok(query.entity_detail(conn, project_id, entity_id),
               project_id=project_id)
 
 
@@ -416,7 +324,11 @@ def patch_entity(entity_id: int, body: EntityPatch, request: Request,
         raise not_implemented("人工写入字段的**值**（review_status / display_name）",
                               plan="2.6 的写路径（ManualWriter.set_field_value）")
     project_id = _resolve_project(conn, project)
-    _entity_row(conn, project_id, entity_id)          # 不存在 → 404（在排队之前）
+    # 不存在 → 404（**在排队之前**：一个注定失败的作业不该占一次写者）
+    try:
+        query.entity_row(conn, project_id, entity_id)
+    except query.QueryError as exc:
+        raise _api_error(exc) from exc
     if not (body.add_tags or body.remove_tags
             or body.protect_fields or body.unprotect_fields):
         raise ApiError(400, "E_EMPTY_PATCH", "这次 PATCH 什么都没改",
@@ -439,8 +351,9 @@ def patch_entity(entity_id: int, body: EntityPatch, request: Request,
             writer.set_keys(project_id=project_id, subject_kind="entity",
                             subject_id=entity_id_,
                             add=body.protect_fields, remove=body.unprotect_fields)
-        return {"entity_id": entity_id_, "tags": _tags_of(conn_, project_id, entity_id_),
-                "protected_fields": _manual_keys(conn_, project_id, entity_id_)}
+        return {"entity_id": entity_id_,
+                "tags": query.tags_of(conn_, project_id, entity_id_),
+                "protected_fields": query.manual_keys(conn_, project_id, entity_id_)}
 
     return ok(ctx.writer.submit(f"patch entity {entity_id}", task).result(timeout=30),
               project_id=project_id)
@@ -453,11 +366,12 @@ class MergeBody(BaseModel):
 
 
 @router.post("/entities/{entity_id}/merge", summary="合并（identity overlay）")
+@_translating
 def merge_entity(entity_id: int, body: MergeBody, request: Request,
                  project: str | None = None,
                  conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     project_id = _resolve_project(conn, project)
-    target = _entity_row(conn, project_id, entity_id)
+    target = query.entity_row(conn, project_id, entity_id)
     if target["entity_key"] != body.survivor_key:
         raise ApiError(400, "E_MERGE_SURVIVOR_MISMATCH",
                        f"路径上的实体 {entity_id} 的 key 是 {target['entity_key']!r}，"
@@ -480,108 +394,35 @@ def merge_entity(entity_id: int, body: MergeBody, request: Request,
 # ---------------------------------------------------------------------------
 
 
-def _graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None,
-                   kind: str | None, q: str | None, limit: int,
-                   seeds: list[int] | None = None) -> dict[str, Any]:
-    where = ["e.project_id=?", "e.is_current=1", "e.merged_into IS NULL"]
-    params: list[Any] = [project_id]
-    if kind:
-        where.append("e.kind=?")
-        params.append(str(kind))
-    if lens:
-        where.append("e.kind IN (SELECT kind FROM kind_registry WHERE lens=?)")
-        params.append(str(lens))
-    if seeds is not None:
-        where.append(f"e.id IN ({','.join('?' * len(seeds))})")
-        params.extend(seeds)
-    rows = conn.execute(
-        "SELECT e.id, e.kind, e.lifecycle,"
-        " (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
-        "   AND k.project_id=e.project_id AND k.canonical=1"
-        "   ORDER BY k.entity_key LIMIT 1) AS entity_key"
-        f" FROM entities e WHERE {' AND '.join(where)} ORDER BY e.id LIMIT ?",
-        (*params, limit)).fetchall()
-    nodes = [dict(r) for r in rows]
-    if q:
-        nodes = [n for n in nodes if q in str(n["entity_key"] or "")]
-    ids = [int(n["id"]) for n in nodes]
-    layout = {}
-    edges: list[dict[str, Any]] = []
-    if ids:
-        marks = ",".join("?" * len(ids))
-        for row in conn.execute(
-                "SELECT entity_id, x, y, collapsed FROM entity_layout"
-                f" WHERE project_id=? AND entity_id IN ({marks})",
-                (project_id, *ids)):
-            layout[str(row["entity_id"])] = {"x": row["x"], "y": row["y"],
-                                             "collapsed": bool(row["collapsed"])}
-        keys = {int(n["id"]): n["entity_key"] for n in nodes}
-        for row in conn.execute(
-                "SELECT id, src_id, dst_id, rel, confidence FROM relations"
-                f" WHERE project_id=? AND is_current=1 AND src_id IN ({marks})"
-                f" AND dst_id IN ({marks}) ORDER BY id", (project_id, *ids, *ids)):
-            edges.append({"id": int(row["id"]), "src": int(row["src_id"]),
-                          "dst": int(row["dst_id"]), "rel": str(row["rel"]),
-                          "confidence": row["confidence"],
-                          "src_key": keys.get(int(row["src_id"])),
-                          "dst_key": keys.get(int(row["dst_id"]))})
-    return {"nodes": nodes, "edges": edges, "layout": layout}
-
-
 @router.get("/graph", summary="图谱（节点 + 边 + 布局）")
+@_translating
 def get_graph(project: str | None = None, lens: str | None = None,
               kind: str | None = None, q: str | None = None,
               limit: int = 500,
               depth: int | None = None,
               conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    _unsupported({"depth": depth}, ("lens", "kind", "q", "limit"))
+    """注意 `_unsupported({"depth": depth})`：`depth` 在 `/graph` 上**仍然**是
+    "传了就 400"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默
+    忽略，调用方就会以为按深度筛过了。"""
+    _unsupported({"depth": depth})
     project_id = _resolve_project(conn, project)
-    payload = _graph_payload(conn, project_id, lens=lens, kind=kind, q=q,
-                             limit=_page_size(limit))
+    payload = query.graph_payload(conn, project_id, lens=lens, kind=kind, q=q,
+                                  limit=query.page_size(limit))
     payload["project_id"] = project_id
     return ok(payload, counts={"nodes": len(payload["nodes"]),
                                "edges": len(payload["edges"])})
 
 
-def _neighbour_ids(conn: sqlite3.Connection, project_id: int, entity_id: int,
-                   depth: int, *, limit: int = 300) -> list[int]:
-    """从 `entity_id` 出发走 `depth` 层关系（BFS），返回**含自身**的 id 集合。
-
-    上限 4 层是故意的：每一层都是一次 `IN (...)`，层数比宽度更快地把查询变成
-    全表扫描。需要的层数超过 4 时，该问的是"你要那张网，还是要那张图的局部"。
-    """
-    if depth < 1:
-        raise ApiError(400, "E_BAD_DEPTH", f"depth 必须 >= 1，收到 {depth}")
-    depth = min(int(depth), 4)
-    seen = {entity_id}
-    frontier = [entity_id]
-    for _ in range(depth):
-        if not frontier:
-            break
-        marks = ",".join("?" * len(frontier))
-        rows = conn.execute(
-            "SELECT src_id, dst_id FROM relations WHERE project_id=? AND is_current=1"
-            f" AND (src_id IN ({marks}) OR dst_id IN ({marks}))",
-            (project_id, *frontier, *frontier)).fetchall()
-        nxt = []
-        for row in rows:
-            for candidate in (int(row["src_id"]), int(row["dst_id"])):
-                if candidate not in seen:
-                    seen.add(candidate)
-                    nxt.append(candidate)
-        frontier = nxt[:limit]
-    return sorted(seen)
-
-
 @router.get("/graph/{entity_id}/neighbors", summary="邻居（BFS，depth 层）")
+@_translating
 def get_neighbors(entity_id: int, depth: int = 1, project: str | None = None,
                   limit: int = 300,
                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     project_id = _resolve_project(conn, project)
-    _entity_row(conn, project_id, entity_id)
-    ids = _neighbour_ids(conn, project_id, entity_id, depth, limit=limit)
-    payload = _graph_payload(conn, project_id, lens=None, kind=None, q=None,
-                             limit=max(len(ids), 1), seeds=ids)
+    query.entity_row(conn, project_id, entity_id)
+    ids = query.neighbour_ids(conn, project_id, entity_id, depth, limit=limit)
+    payload = query.graph_payload(conn, project_id, lens=None, kind=None, q=None,
+                                  limit=max(len(ids), 1), seeds=ids)
     payload["project_id"] = project_id
     payload["root_id"] = entity_id
     payload["depth"] = depth
@@ -621,30 +462,20 @@ def patch_layout(body: LayoutBody, request: Request, project: str | None = None,
               project_id=project_id)
 
 
-@router.get("/lenses/{lens}", summary="镜头页（assets|products|endpoints|flows|vulns）")
+@router.get("/lenses/{lens}", summary="镜头页（assets|services|api|vuln|traffic|graph）")
+@_translating
 def get_lens(lens: str, project: str | None = None,
              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """镜头页的类型徽标与计数。
+
+    与 `magpie lens` 调的是**同一个** `query.lens_view` —— GUI 的镜头页与 CLI
+    的类型计数因此不可能给出不同的数（§3.5）。`total` 是这个镜头的实体总数，
+    界面直接用它，不必自己把 kinds 加起来（加错了一次就少一个数）。
+    """
     project_id = _resolve_project(conn, project)
-    rows = conn.execute(
-        "SELECT k.kind, k.identity_rule, k.produced_by FROM kind_registry k"
-        " WHERE k.lens=? ORDER BY k.kind", (str(lens),)).fetchall()
-    kinds = []
-    for row in rows:
-        kinds.append({"kind": str(row["kind"]),
-                      "identity_rule": str(row["identity_rule"]),
-                      "produced_by": _json_or_none(row["produced_by"]) or [],
-                      "count": _scalar(conn,
-                                       "SELECT COUNT(*) FROM entities WHERE project_id=?"
-                                       " AND kind=? AND is_current=1"
-                                       " AND merged_into IS NULL",
-                                       project_id, str(row["kind"]))})
-    if not kinds:
-        known = [str(r["lens"]) for r in conn.execute(
-            "SELECT DISTINCT lens FROM kind_registry ORDER BY lens")]
-        raise ApiError(404, "E_LENS_NOT_FOUND", f"镜头 {lens!r} 没有归属任何 kind",
-                       hint="镜头由 kind_registry.lens 决定", known_lenses=known)
-    return ok({"lens": lens, "kinds": kinds}, project_id=project_id,
-              total=sum(k["count"] for k in kinds))
+    view = query.lens_view(conn, project_id, lens)
+    return ok({"lens": view["lens"], "kinds": view["kinds"]}, project_id=project_id,
+              total=sum(k["count"] for k in view["kinds"]))
 
 
 # ---------------------------------------------------------------------------
@@ -800,95 +631,48 @@ def undo_import(import_id: str, request: Request) -> dict[str, Any]:
 
 #: 作业历史默认返回多少条。与实体列表的 50 不同：作业是"最近发生了什么"，
 #: 一次导入就会产生 N 条（每个文件一条），翻页在这里比多给几条更烦人。
-DEFAULT_JOB_LIMIT = 100
-
-
-def _job_row(conn: sqlite3.Connection, job_id: int) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if row is None:
-        raise ApiError(404, "E_JOB_NOT_FOUND", f"作业 {job_id} 不存在",
-                       hint="作业 id 由导入产生；GET /api/v1/jobs 看全部")
-    return dict(row)
-
-
-def _job_counts(conn: sqlite3.Connection,
-                job_ids: list[int]) -> dict[int, dict[str, int]]:
-    """每个 job 的贡献数 / 已撤回数。**一次查完，不做 N+1。**
-
-    `retracted` 就是 undo 的可逆性证据：undo 一次 = 这个数从 0 变成贡献数，
-    redo 一次 = 变回 0。界面据此判断"这个作业现在处于哪一侧"，而不是自己记账。
-    """
-    out = {int(j): {"contributions": 0, "retracted": 0} for j in job_ids}
-    if not job_ids:
-        return out
-    marks = ",".join("?" * len(job_ids))
-    for row in conn.execute(
-            "SELECT job_id, COUNT(*) AS n FROM contributions"
-            f" WHERE job_id IN ({marks}) GROUP BY job_id", tuple(job_ids)):
-        out[int(row["job_id"])]["contributions"] = int(row["n"])
-    for row in conn.execute(
-            "SELECT superseded_by_job_id AS jid, COUNT(*) AS n"
-            " FROM contribution_supersessions"
-            f" WHERE superseded_by_job_id IN ({marks}) AND reason='retract'"
-            " GROUP BY superseded_by_job_id", tuple(job_ids)):
-        out[int(row["jid"])]["retracted"] = int(row["n"])
-    return out
+DEFAULT_JOB_LIMIT = query.DEFAULT_JOB_LIMIT
 
 
 def _decorate_job(conn: sqlite3.Connection, item: dict[str, Any]) -> dict[str, Any]:
+    """给一行作业补上"现在能不能 undo/redo"与计数。
+
+    `applied` 是 SQLite 里的 0/1，出信封前折成布尔 —— JSON 的消费者不该
+    自己记得"1 是真"。
+    """
     item["applied"] = bool(item["applied"])
-    item["counts"] = _job_counts(conn, [int(item["id"])])[int(item["id"])]
+    item["counts"] = query.job_counts(conn, [int(item["id"])])[int(item["id"])]
     item["can_undo"] = bool(item["applied"])
     item["can_redo"] = not bool(item["applied"])
     return item
 
 
-_JOB_STATES = ("running", "done", "failed", "partial", "aborted")
-_JOB_COLUMNS = ("id, project_id, kind, state, applied, coverage, scope_version,"
-                " scope_hash, parser_fingerprint, actor, started_at, finished_at")
-
-
 @router.get("/jobs", summary="作业历史（最近的在前）")
+@_translating
 def list_jobs(project: str | None = None, state: str | None = None,
               applied: int | None = None, limit: int = DEFAULT_JOB_LIMIT,
               conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    where: list[str] = ["1=1"]
-    params: list[Any] = []
-    if project is not None:
-        where.append("project_id=?")
-        params.append(_resolve_project(conn, project))
-    if state is not None:
-        if state not in _JOB_STATES:
-            raise ApiError(400, "E_BAD_STATE",
-                           f"state 只能是 {' / '.join(_JOB_STATES)}，收到 {state!r}",
-                           supported=list(_JOB_STATES))
-        where.append("state=?")
-        params.append(str(state))
+    project_id = _resolve_project(conn, project) if project is not None else None
     if applied is not None:
         # 布尔从查询串进来只可能是 "0"/"1"/"true"/"false"，而 FastAPI 对
         # int 的解析会把 "true" 变成 422（带一页 pydantic 报错）。收下来自己
         # 判定，是为了让错误信息说人话。
-        where.append("applied=?")
-        params.append(1 if applied else 0)
-    rows = conn.execute(f"SELECT {_JOB_COLUMNS} FROM jobs"
-                        f" WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
-                        (*params, _page_size(limit))).fetchall()
-    items = [_decorate_job(conn, dict(r)) for r in rows]
+        applied = 1 if applied else 0
+    rows = query.list_jobs(conn, project_id=project_id, state=state,
+                           applied=applied, limit=limit)
+    items = [_decorate_job(conn, row) for row in rows]
     return ok(items, count=len(items))
 
 
 @router.get("/jobs/{job_id}", summary="作业详情（含 explain_job_scope）")
+@_translating
 def get_job(job_id: int, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    job = _decorate_job(conn, _job_row(conn, job_id))
+    job = _decorate_job(conn, query.job_row(conn, job_id))
     # scope 的解释**必须**来自数据层：`interpret_with` 是 historical_scope 时，
     # 界面要显示的是"当时的 scope"，不是现在这份。
     scope = ops.explain_job_scope(conn, job_id)
-    activity = [dict(r) for r in conn.execute(
-        "SELECT id, at, actor, action, target_kind, target_id, detail"
-        " FROM activity_log WHERE job_id=? ORDER BY id DESC LIMIT 50", (job_id,))]
-    for item in activity:
-        item["detail"] = _json_or_none(item["detail"])
-    return ok({"job": job, "scope": scope, "activity": activity,
+    return ok({"job": job, "scope": scope,
+               "activity": query.job_activity(conn, job_id),
                "can_undo": job["can_undo"], "can_redo": job["can_redo"]},
               project_id=int(job["project_id"]))
 
@@ -904,9 +688,10 @@ class JobAction(BaseModel):
 
 
 @router.post("/jobs/{job_id}/undo", summary="撤销一个作业（dry_run = 干跑预览）")
+@_translating
 def undo_job(job_id: int, body: JobAction, request: Request,
              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    job = _job_row(conn, job_id)
+    job = query.job_row(conn, job_id)
     ctx, dry = _ctx(request), bool(body.dry_run)
 
     def task(conn_: sqlite3.Connection) -> dict[str, Any]:
@@ -919,9 +704,10 @@ def undo_job(job_id: int, body: JobAction, request: Request,
 
 
 @router.post("/jobs/{job_id}/redo", summary="复原一个被撤销的作业（dry_run = 干跑预览）")
+@_translating
 def redo_job(job_id: int, body: JobAction, request: Request,
              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    job = _job_row(conn, job_id)
+    job = query.job_row(conn, job_id)
     ctx, dry = _ctx(request), bool(body.dry_run)
 
     def task(conn_: sqlite3.Connection) -> dict[str, Any]:
@@ -939,11 +725,18 @@ def redo_job(job_id: int, body: JobAction, request: Request,
 
 
 @router.get("/doctor", summary="数据体检")
+@_translating
 def doctor(project: str | None = None,
            conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """体检。判断全部来自数据层（`store.integrity_check` 等），取数全部走
+    `query` —— 这个路由只负责把两块拼起来。
+
+    `?project=` 找不到时**故意不报错**：体检是"这个库怎么样"，它必须在那一个
+    项目都用不了的时候也能跑完（`data.untested_entities` 才需要项目）。
+    这与"静默忽略一个过滤条件"不是一回事：这里没有筛任何东西，只是少算一项，
+    而少算的那一项**在输出里没有出现**（不是 0）。
+    """
     report = store.integrity_check(conn)
-    jobs = [dict(r) for r in conn.execute(
-        "SELECT state, COUNT(*) AS n FROM jobs GROUP BY state ORDER BY state")]
     project_id = None
     try:
         project_id = _resolve_project(conn, project)
@@ -954,36 +747,26 @@ def doctor(project: str | None = None,
         "violations": report.get("violations") or [],
         "foreign_key_check": report.get("foreign_key_check") or [],
         "sqlite_integrity": report.get("sqlite_integrity"),
-        "jobs_by_state": jobs,
-        "open_inbox": _scalar(conn, "SELECT COUNT(*) FROM inbox_items WHERE state='open'"),
-        "raw_files": [dict(r) for r in conn.execute(
-            "SELECT storage_state, COUNT(*) AS n FROM raw_files GROUP BY storage_state")],
+        "jobs_by_state": query.jobs_by_state(conn),
+        "open_inbox": query.metric_counts(conn)["open_inbox"],
+        "raw_files": query.raw_file_states(conn),
     }
     if project_id is not None:
         data["project_id"] = project_id
-        data["untested_entities"] = _scalar(
-            conn,
-            "SELECT COUNT(*) FROM entities e WHERE e.project_id=? AND e.is_current=1"
-            " AND e.merged_into IS NULL AND NOT EXISTS (SELECT 1 FROM observations o"
-            "   WHERE o.entity_id=e.id AND o.is_current=1)", project_id)
+        data["untested_entities"] = query.untested_count(conn, project_id)
+        # 体检页的五类（§7.4）。**与 `magpie doctor` 同一份实现** —— 两处都只是
+        # `query.health_report` 的一次调用（`core/query.py` 是唯一实现），
+        # 所以"GUI 说 3、CLI 说 2"这种分歧在结构上不可能出现。
+        data["health"] = query.health_report(conn, project_id)
     return ok(data)
 
 
 @router.get("/inbox", summary="Inbox（默认只看 open）")
+@_translating
 def list_inbox(project: str | None = None, state: str = "open", limit: int = 100,
                conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     project_id = _resolve_project(conn, project)
-    rows = conn.execute(
-        "SELECT id, kind, subject_kind, subject_id, severity, state, payload_json,"
-        " occurrence_count, created_at, last_seen_at, created_by_job_id"
-        " FROM inbox_items WHERE project_id=? AND state=? ORDER BY"
-        " CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, id"
-        " LIMIT ?", (project_id, str(state), _page_size(limit))).fetchall()
-    items = []
-    for row in rows:
-        item = dict(row)
-        item["payload"] = _json_or_none(item.pop("payload_json"))
-        items.append(item)
+    items = query.inbox_items(conn, project_id, state=state, limit=limit)
     return ok(items, count=len(items), project_id=project_id)
 
 
@@ -1010,24 +793,10 @@ def resolve_inbox(item_id: int, body: ResolveBody, request: Request) -> dict[str
 
 
 @router.get("/activity", summary="活动日志（agent 干了什么，这里看得到）")
+@_translating
 def list_activity(limit: int = 100, action: str | None = None, job_id: int | None = None,
                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    where, params = ["1=1"], []
-    if action:
-        where.append("action=?")
-        params.append(str(action))
-    if job_id is not None:
-        where.append("job_id=?")
-        params.append(int(job_id))
-    rows = conn.execute(
-        "SELECT id, at, actor, action, target_kind, target_id, job_id, detail"
-        f" FROM activity_log WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
-        (*params, _page_size(limit))).fetchall()
-    items = []
-    for row in rows:
-        item = dict(row)
-        item["detail"] = _json_or_none(item["detail"])
-        items.append(item)
+    items = query.activity_log(conn, limit=limit, action=action, job_id=job_id)
     return ok(items, count=len(items))
 
 
@@ -1037,37 +806,18 @@ def list_activity(limit: int = 100, action: str | None = None, job_id: int | Non
 
 
 @router.get("/export", summary="导出（json|csv|domains|markdown）")
+@_translating
 def export(project: str | None = None, format: str = "json",
            conn: sqlite3.Connection = Depends(get_conn)):
+    """导出。**取数只有一份**（`query.export_entities`），四种格式是四种**渲染** ——
+    一个按格式各查一次的导出迟早会把 `domains` 的那种排序悄悄换成另一种。"""
     project_id = _resolve_project(conn, project)
     fmt = str(format).lower()
     if fmt not in ("json", "csv", "domains", "markdown"):
         raise ApiError(400, "E_BAD_FORMAT", f"不支持的导出格式 {format!r}",
                        hint="支持 json / csv / domains / markdown",
                        supported=["json", "csv", "domains", "markdown"])
-    rows = conn.execute(
-        "SELECT e.id, e.kind, e.lifecycle,"
-        " (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
-        "   AND k.project_id=e.project_id AND k.canonical=1"
-        "   ORDER BY k.entity_key LIMIT 1) AS entity_key,"
-        " o.semantic_field, o.value, o.confidence, o.source_count"
-        " FROM entities e LEFT JOIN observations o"
-        "   ON o.entity_id=e.id AND o.is_current=1"
-        " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
-        " ORDER BY e.id, o.semantic_field", (project_id,)).fetchall()
-
-    entities: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        eid = int(row["id"])
-        entity = entities.setdefault(eid, {
-            "id": eid, "entity_key": row["entity_key"], "kind": str(row["kind"]),
-            "lifecycle": str(row["lifecycle"]), "fields": []})
-        if row["semantic_field"] is not None:
-            entity["fields"].append({"field": str(row["semantic_field"]),
-                                     "value": str(row["value"]),
-                                     "confidence": row["confidence"],
-                                     "source_count": int(row["source_count"])})
-    items = list(entities.values())
+    items = query.export_entities(conn, project_id)
     if fmt == "json":
         return ok(items, project_id=project_id, count=len(items))
     if fmt == "csv":
@@ -1095,24 +845,19 @@ def export(project: str | None = None, format: str = "json",
 
 
 @router.get("/agent/context", summary="★ 给 agent 的上下文包（Markdown + JSON）")
+@_translating
 def agent_context(entity_id: int, depth: int = 1, project: str | None = None,
                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    detail = get_entity(entity_id, project=project, conn=conn)
-    project_id = int(detail["meta"]["project_id"])
-    data = detail["data"]
-    neighbour_ids = _neighbour_ids(conn, project_id, entity_id, depth)
-    neighbours = _graph_payload(conn, project_id, lens=None, kind=None, q=None,
-                                limit=max(len(neighbour_ids), 1),
-                                seeds=neighbour_ids)
-    open_conflicts = _scalar(conn, "SELECT COUNT(*) FROM inbox_items WHERE project_id=?"
-                                  " AND state='open'", project_id)
-    untested = [dict(r) for r in conn.execute(
-        "SELECT e.id, (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
-        " AND k.project_id=e.project_id AND k.canonical=1 LIMIT 1) AS entity_key,"
-        " e.kind FROM entities e WHERE e.project_id=? AND e.is_current=1"
-        " AND e.merged_into IS NULL AND NOT EXISTS (SELECT 1 FROM observations o"
-        "   WHERE o.entity_id=e.id AND o.is_current=1) ORDER BY e.id LIMIT 20",
-        (project_id,))]
+    """它**复用详情那一条路**（`query.entity_detail`），不另取一份 —— 上下文包
+    里说"这个实体有 3 条观测"而详情页说 4 条，是最难查的一类不一致。"""
+    project_id = _resolve_project(conn, project)
+    data = query.entity_detail(conn, project_id, entity_id)
+    neighbour_ids = query.neighbour_ids(conn, project_id, entity_id, depth)
+    neighbours = query.graph_payload(conn, project_id, lens=None, kind=None, q=None,
+                                     limit=max(len(neighbour_ids), 1),
+                                     seeds=neighbour_ids)
+    open_conflicts = query.open_inbox_count(conn, project_id)
+    untested = query.untested_entities(conn, project_id, limit=20)
     payload = {"entity": data["entity"], "observations": data["observations"],
                "relations": data["relations"], "tags": data["tags"],
                "manual": data["manual"], "open_inbox": data["open_inbox"],

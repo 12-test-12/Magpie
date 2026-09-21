@@ -2219,9 +2219,15 @@ def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path)
         "   AND ek.entity_key=? AND o.semantic_field='param.query.limit'",
         (project, endpoint_key)).fetchone()[0] == 4
 
+    # ⚠ 3.6 起这条查询**显式限定冲突两类**：此前它读的是"全部未决项"，而那时
+    # Inbox 里除冲突之外没有别的东西，两者恰好同义。`evidence_missing`
+    # （未知字段，3.6 新增的生产者）也带一个 `field` 键，于是"全部未决项"里会混进
+    # 一个不是冲突的东西 —— 断言的主题是**冲突**，所以把主题写进查询里，而不是
+    # 依赖"Inbox 里恰好只有冲突"这个 3.6 之后不再成立的前提。
     rows = [dict(r) for r in db.execute(
         "SELECT payload_json FROM inbox_items WHERE project_id=?"
-        "   AND state='open'", (project,))]
+        "   AND state='open'"
+        "   AND kind IN ('value_conflict','merge_conflict')", (project,))]
     fields = sorted({json.loads(r["payload_json"])["field"] for r in rows})
     assert not [f for f in fields if f.startswith("param.")], fields
     assert fields == ["declared_status", "method", "path", "status"], fields

@@ -42,6 +42,7 @@
     PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
     FLOOR     不超出声明下限的语法 / 标准库 API / 运行时求值
     READONLY  探索模式只读：frontend/src/** 不得出现增删节点与边的名字（2.8）
+    SQL-FREE  cli/read.py 与 api/routes.py 不得出现 SQL（读这条路只有一份实现，3.5）
 
 关于 PARSE-RO / PARSE-NORM（2.4 的两条硬线）:
 
@@ -999,6 +1000,132 @@ def _rule_readonly() -> list:
 
 
 # ---------------------------------------------------------------------------
+# SQL-FREE · 读这条路只有一份实现（3.5）
+# ---------------------------------------------------------------------------
+#
+# §3.5 的交付标准是「GUI 与 CLI 共用同一实现」。`cli/read.py` 与 `api/routes.py`
+# 曾有同一份语义的**两份实现**（`ls` / `show` 的查询与 `/entities` 的那几条），
+# 而两份实现不会同时出错，也不会以同样的方式出错 —— "同一份数据、两种答案"
+# 没有任何症状，直到有人按错的那一半行动。
+#
+# 收敛成"两边都调 `magpie/core/query.py`"之后，**唯一能让它重新分叉的动作**
+# 就是在其中一个文件里再写一条 SQL。所以这条规则直接禁掉那个动作：这两个文件
+# 里不得出现 SQL 字面量。规则替你守着，不靠自觉 —— 这个项目里真正活下来的
+# 约束都有机制守着。
+#
+# 只扫这两个文件（不是全仓），理由与 READONLY 只扫 `frontend/src` 相同：这两
+# 个文件**就是**那两份实现曾经待的地方。`magpie/cli/**` 的写侧另有一条测试守着
+# （`magpie/cli/tests/test_readonly.py::test_cli_source_contains_no_write_sql`），
+# 它管的是写动词；这条管的是读。
+#
+# ⚠️ **已知边界**（说清楚，别把它读成完整保证）：
+#   * **文档字符串不计**。解释这件事本身要用到 `SELECT` / `FROM` 这些词 ——
+#     本文件与你正在读的这段注释就是例子。注释不在 AST 里，天然不计；
+#     `test_cli_source_contains_no_write_sql` 用的是同一条判定。
+#   * 判据是**字面量**：把 SQL 拼进变量再传进 `execute()`（或从别处 import 一个
+#     拼好的串）绕得过去。更强的命题（"这个模块拿不到数据库"）不成立 ——
+#     它本来就要拿连接去调 query。这条规则保证的是"没人把一条新的 SQL **写**在
+#     这里"，而那恰好是这次收敛之后唯一会重新长出第二份实现的方式。
+#   * **还没收口的一处**（写在这里，免得下一个读这条规则的人以为已经全覆盖）：
+#     `magpie/cli/write.py` 的 `jobs` 那一族 —— `_job_row` / `_job_counts` /
+#     `_decorate_job` / `_job_detail` 里的 activity —— 与 `routes.py` 曾经的
+#     那一段逐字同义（那些 docstring 自己写着"与 `routes._job_counts` 同义"）。
+#     3.5 的改动边界只给了 `cli/read.py` 与 `api/routes.py`，所以它在**这一轮**
+#     没被收进 `query.py`（`query.job_row` / `job_counts` / `job_activity` 已经
+#     在那边就位，接线是删这几段、换成调用）。要把它收口时，把
+#     `magpie/cli/write.py` 加进 `_SQL_FREE_FILES` —— 那条规则会立刻指出每一处。
+_SQL_FREE_FILES = (Path("magpie") / "cli" / "read.py",
+                   Path("magpie") / "api" / "routes.py")
+
+#: SQL 的形状。刻意收得比"含 SQL 关键字"紧一点：`FROM\s+\w` / `SELECT\s` 这类
+#: 要求后面跟着东西，于是中文提示语里孤零零一个英文词不会误报。
+_SQL_SHAPE = re.compile(
+    r"\b(?:SELECT\s|FROM\s+\w|WHERE\s|INSERT\s+INTO|UPDATE\s+\w+\s+SET|"
+    r"DELETE\s+FROM|JOIN\s|GROUP\s+BY|ORDER\s+BY|PRAGMA\s+\w|"
+    r"CREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)|WITH\s+\w+\s+AS\s*\()",
+    re.IGNORECASE)
+
+
+def _docstring_ids(tree) -> set:
+    """AST 里所有文档字符串常量的 `id()`。
+
+    与 `test_readonly` 的判定逐字一致：模块 / 函数 / 类的 body 里**第一个**
+    是字符串常量的 `Expr`。注释不在 AST 里，所以这里只管文档字符串。
+    """
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            body = getattr(node, "body", None)
+            if body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def _sql_literals(tree) -> list:
+    """源码树 → [(行号, 片段)]。**独立成函数是为了能自检**（见下）。"""
+    docstrings = _docstring_ids(tree)
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in docstrings:
+            continue
+        match = _SQL_SHAPE.search(node.value)
+        if match:
+            bad.append((node.lineno, match.group(0).strip()))
+    return bad
+
+
+def _selftest_sql_free() -> list:
+    """反例自检：该报的报、不该报的不报。
+
+    没有自检的静态规则很可能是"碰巧永远不报"—— 那和没写没有区别。这里两个
+    方向都要验：一条真的 SQL 必须被检出；而文档字符串里出现同样的词**不能**
+    被检出（否则这条规则会在第一次有人写"这里不再有 SELECT"时把人逼去删注释）。
+    """
+    problems = []
+    proof = 'def f(conn):\n    return conn.execute("SELECT id FROM entities")\n'
+    if not _sql_literals(ast.parse(proof)):
+        problems.append("SQL-FREE 自检失败：内联的 `SELECT … FROM entities` 未被检出")
+    if not _sql_literals(ast.parse('X = "SELECT "\n')):
+        problems.append("SQL-FREE 自检失败：裸的 `SELECT ` 字面量未被检出")
+    if not _sql_literals(ast.parse('X = "PRAGMA query_only = ON"\n')):
+        problems.append("SQL-FREE 自检失败：`PRAGMA` 未被检出")
+    control = ('"""这里没有 SELECT，也没有 FROM entities —— 这是说明。"""\n'
+               'def f():\n'
+               '    """同上：查询在 core/query.py 里。"""\n'
+               '    return "本步不支持这些过滤条件"\n')
+    hit = _sql_literals(ast.parse(control))
+    if hit:
+        problems.append(f"SQL-FREE 自检失败：文档字符串/中文提示被误报 —— {hit}")
+    return problems
+
+
+def _rule_sql_free() -> list:
+    bad = _selftest_sql_free()
+    for rel in _SQL_FREE_FILES:
+        path = ROOT / rel
+        if not path.exists():
+            # 文件没了也算失败：这两个文件的下场不是"规则静默变绿"，而是
+            # "读这条路被搬去了别处"—— 那时要改的是这份清单，不是让它空转。
+            bad.append(f"未找到 {rel.as_posix()} —— SQL-FREE 断言无从谈起")
+            continue
+        tree, _ = _parse(path, rel)
+        if tree is None:
+            continue
+        for lineno, snippet in _sql_literals(tree):
+            bad.append(_v(rel, lineno,
+                          f"出现了 SQL 字面量 `{snippet}` —— SQL-FREE：读这条路只有"
+                          f"一份实现（magpie/core/query.py）。在这里再写一条 SQL "
+                          f"就是把它变回两份 —— 而两份之间没有任何测试会发现"
+                          f"它们答得不一样"))
+    return bad
+
+
+# ---------------------------------------------------------------------------
 # 规则表与执行
 # ---------------------------------------------------------------------------
 
@@ -1019,6 +1146,8 @@ RULES = (
      _rule_floor),
     ("READONLY", "探索模式只读：frontend/src/** 不得出现增删节点与边的名字",
      _rule_readonly),
+    ("SQL-FREE", "读这条路只有一份实现：cli/read.py 与 api/routes.py 不得出现 SQL",
+     _rule_sql_free),
 )
 
 

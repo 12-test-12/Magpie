@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, ops, store
+from magpie.core import ingest, ops, pipeline, store
 from magpie.core.store import connect, effective_equivalent, init_db, snapshot_effective
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -243,6 +243,61 @@ def test_dry_run_leaves_effective_state_identical(db, tmp_path):
     same, diff = effective_equivalent(db, baseline)
     assert same, f"干跑动了数据：{diff}"
     assert_clean(db)
+
+
+def test_pipeline_dry_run_predicts_real_on_a_multi_step_flow(tmp_path):
+    """多 step 的 flow：干跑算出的数与真跑**逐项相同**。
+
+    为什么单独立一条：`pipeline run` 是**一条命令、多个 step**，而每个 step 各调
+    一次 `ingest_paths`。事务边界要是落在"一次调用"上，第 2 个 step 的干跑就看不见
+    第 1 个 step 刚写下的事实 —— 而真跑一定看得见（每个 step 收尾 COMMIT）。于是
+    `--dry-run` 在**多 step 的 flow 上低报 `updated`**：那些"重述第 1 个 step 已有
+    事实"的记录全被算成新增。干跑唯一的用处就是预测真跑，低报等于说假话。
+
+    这条性质以前只有 `verify_v32r5.py` 盖着 —— 而它要起真子进程、要真实夹具，
+    单元测试一条都没有，这正是它能溜进来的原因。
+    """
+    definition = {
+        "_path": str(tmp_path / "pipeline.yaml"),
+        "name": "多 step 干跑用例",
+        "project": "干跑预演",
+        "scope": {"include": ["*.example.com"], "exclude": []},
+        # 两个来源**刻意重叠**（httpx.jsonl 里的域名 subfinder.txt 也有），所以
+        # 第 2 个 step 一定会重述第 1 个 step 的事实。夹具不重叠时"两边相等"是空的
+        # —— 一个退化成死分支的 updated 同样能让两边相等。
+        "steps": [
+            {"id": "dns", "parser": "domainlist", "source": "subfinder",
+             "source_glob": "recon/subfinder.txt"},
+            {"id": "probe", "source": "httpx", "source_glob": "recon/*httpx*.jsonl",
+             "after": ["dns"]},
+        ],
+    }
+    dry_db, real_db = connect(tmp_path / "dry.db"), connect(tmp_path / "real.db")
+    init_db(dry_db)
+    init_db(real_db)
+    try:
+        dry = pipeline.run_pipeline(dry_db, definition, base_dir=E2E_DIR,
+                                    data_dir=tmp_path / "dry-data", dry_run=True)
+        real = pipeline.run_pipeline(real_db, definition, base_dir=E2E_DIR,
+                                     data_dir=tmp_path / "real-data")
+
+        # 逐 step 比，再比聚合 —— 逐 step 才定位得到"是哪个 step 的可见性不对"。
+        assert ({s["id"]: s["totals"] for s in dry["steps"]}
+                == {s["id"]: s["totals"] for s in real["steps"]}), \
+            f"逐 step 不等：dry={[s['totals'] for s in dry['steps']]} " \
+            f"real={[s['totals'] for s in real['steps']]}"
+        assert dry["totals"] == real["totals"], \
+            f"聚合不等：dry={dry['totals']} real={real['totals']}"
+        # 上面那个相等**不是空的**：这个夹具里第 2 个 step 真的重述了第 1 个的事实。
+        assert real["totals"]["updated"] > 0, \
+            "夹具没造出重述 —— 那上面的相等就证明不了『干跑看得见前一个 step』"
+        # 干跑的硬性标准：跑完**一行都不留**；真跑那一侧反过来必须有事实。
+        assert not any(snapshot_effective(dry_db).values()), "干跑留下了行"
+        assert any(snapshot_effective(real_db).values()), "真跑一条事实都没落"
+        assert_clean(real_db)
+    finally:
+        dry_db.close()
+        real_db.close()
 
 
 # ---------------------------------------------------------------------------

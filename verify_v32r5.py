@@ -23,6 +23,22 @@
 `ingest.ingest_paths`），差别只在 pipeline 按 step 分组、import 是平铺的一串
 文件。`_file_reports()` 把两者折成同一个视图，A 段的断言因此一行都不用分叉。
 
+A2e 为什么逐条命令配对（LARI-34）
+---------------------------------
+A2e 比的是"干跑的 totals 与真跑逐项相同"，而**一条命令 = 一个事务边界**：
+
+  * `pipeline run` 是**一条**命令（两个 step 在同一个事务里，`ingest.dry_run_scope`），
+    所以它的干跑与真跑覆盖的是同一整段流程，聚合比较有定义；
+  * `CliEntry` 刻意起**两条**子进程（`--parser` 是整条命令共用的，两条才表达得出
+    "一个指定、一个仲裁"）。跨进程的干跑不可能共享事务，于是"两段聚合"的干跑
+    从空库出发、真跑的第 2 段从"第 1 段已提交"出发 —— 那个断言的**对象**根本
+    不是同一个库。改成逐条配对：第 i 条命令的干跑跑在"前 i−1 条真跑留下的库
+    状态"上，与第 i 条命令在同一状态上的真跑逐项比。覆盖面不降反升。
+
+跨进程这一条还带出 A2e 的**牙齿**问题：`updated` 判定退回死分支时，干跑与真跑
+会一起把 updated 算成 0，等式照样成立。所以 A2e 里带了一句"重述已有事实必须
+见到 updated"，并由 `teeth_flow`（每次跑都验，见下）证明那句话咬得住。
+
 `redo` 在两条路上不对称，写清楚免得后来人以为漏了
 --------------------------------------------------
 2.5 的最小入口**只登记了 `undo`**（`redo` 在 2.6 / 2.7 的地盘），所以
@@ -38,10 +54,13 @@
 
 自带反例自检
 ------------
-脚本**每次都跑**两个反例，并且要求它们**必须被判红**：
+脚本**每次都跑**三个反例，并且要求它们**必须被判红**：
 
   ① 把 redo 换成 no-op（复原语义被彻底破坏）→ 必须检出；
-  ② 条数一列不动、只改一个字段值 → 必须检出（这一条专门证明"只比条数"会漏）。
+  ② 条数一列不动、只改一个字段值 → 必须检出（这一条专门证明"只比条数"会漏）；
+  ③ 把 `updated` 判定打回死分支（`_existing_facts` 一律空集，效果与 `key[1]`
+     写回 `key` 相同）→ A2e 的牙齿那一半必须检出。而且它顺带证明**只比
+     "干跑 == 真跑"咬不住这个坏法**：那是一个对称的比，两边一起坏，等式照样成立。
 
 一个永远绿的 verify 比没有 verify 更糟：它让人更安心。反例跑不过 = 这个脚本
 自己失效了，比被测代码变红更严重，所以两条都是硬断言。
@@ -64,6 +83,7 @@ C 段（负向输入）仍然只跑 2.5 的入口：它验的是**管线的容�
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -75,7 +95,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from magpie.core import ops, store                                       # noqa: E402
+from magpie.core import ingest, ops, store                               # noqa: E402
 
 #: 真实夹具（2.5 的端到端样例管线就指向这两个）。
 RECON = ROOT / "bench" / "e2e" / "recon"
@@ -198,10 +218,30 @@ def _undo_impact(payload) -> dict | None:
 
 
 def open_db(db_path) -> "store.sqlite3.Connection":
-    """连上子进程刚写过的库 —— 指纹是**直接读库**算的，不走任何报告。"""
+    """连上子进程刚写过的库 —— 指纹是**直接读库**算的，不走任何报告。
+
+    `data_dir` 由**子进程**建（`pipeline.main` 自己 mkdir），所以这里补一次 ——
+    A 段现在在第一条命令之前就要连上库拿指纹，那时目录还不存在。与
+    `pipeline.main` 的同名一步逐字一致，不是新规则。
+    """
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = store.connect(db_path)
     store.init_db(conn)
     return conn
+
+
+def fp_of(db_path) -> dict:
+    """连上、算指纹、断开。
+
+    A 段现在要在**两次子进程调用之间**算指纹（逐条命令配对），所以不能像以前
+    那样把一条连接从头拿到尾晾在那里 —— 拿一次算一次、算完就断，读与写之间
+    不留任何悬着的锁。
+    """
+    conn = open_db(db_path)
+    try:
+        return fingerprint(conn)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +258,16 @@ class PipelineEntry:
     def __init__(self, yaml_path: Path) -> None:
         self.yaml = yaml_path
         self._conn = None
+
+    def commands(self) -> list:
+        """导入命令序列：`pipeline run` 是**一条**命令。
+
+        YAML 里的两个 step **不是**两条命令行 —— 同一个进程、同一条命令、同一个
+        事务（2.5 起 `dry_run_scope` 把边界提到命令上）。所以这条入口的 A2e 比的
+        仍是整条命令的聚合，而那是"干跑预演真跑"最完整的形式：一个 dry 报告对
+        同一份库状态下的一个 real 报告。
+        """
+        return [("pipeline run", self.import_files)]
 
     def import_files(self, db, data_dir, *, dry_run: bool) -> tuple:
         """导入夹具里的两个文件（这一步同时把项目建出来 —— YAML 的 scope 就是它）。"""
@@ -292,35 +342,57 @@ class CliEntry:
         out.append(("project create", code, data, bad))
         return out
 
-    def import_files(self, db, data_dir, *, dry_run: bool) -> tuple:
-        """两个来源各导一次，折成与 `pipeline run` 同形的报告。
+    def commands(self) -> list:
+        """导入命令序列：**一个来源一条 `magpie import`**。
 
         **一次一个文件**（而不是一次给两个路径）是为了与 YAML 的两个 step 对齐：
         `--parser` 是整条命令共用的，合起来就表达不出"一个指定、一个仲裁"。
+
+        这也正是这条入口的 A2e 必须**逐条命令配对**的原因：两条命令是两条真实
+        子进程，跨进程的干跑**不可能**共享事务（`magpie import` 一条命令一个
+        事务，ROLLBACK 之后就没了）——"两段聚合"的干跑对照在这条入口上没有
+        定义。`pipeline run` 那条入口恰好多一个维度：两个 step 在同一个进程、
+        同一个事务里，所以它的聚合比较有定义，保持原样。
+        """
+        return [(f"import {name}", functools.partial(self._import_one, name=name, extra=extra))
+                for name, extra in self.SOURCES]
+
+    def _import_one(self, db, data_dir, *, dry_run: bool, name: str, extra: list) -> tuple:
+        """跑**一条** `magpie import` → (退出码, 该命令的报告, 尾部输出)。"""
+        code, payload, bad = cli_json(
+            "import", str(RECON / name), *extra,
+            *self.project(), "--db", str(db), "--data-dir", str(data_dir),
+            *(["--dry-run"] if dry_run else []), "--json")
+        if payload is None:
+            return code, None, bad
+        if not payload.get("ok"):
+            # 失败的导入仍然带着完整报告（挂在 error.report 上）—— 用它继续，
+            # 让 A 段的断言自己去判"哪里不对"，而不是在这里提前下结论。
+            report = dict(payload["error"].get("report") or {})
+            report["problems"] = [payload["error"].get("message", "")]
+            return code, report, bad
+        return code, payload["data"]["report"], bad
+
+    def import_files(self, db, data_dir, *, dry_run: bool) -> tuple:
+        """**整轮**：顺序跑完命令序列，折成与 `pipeline run` 同形的报告。
+
+        A 段的主体不走这里（它逐条命令跑，见 `ab_flow`）—— 这是幂等那一条
+        （A3：同一批文件再导一次）用的聚合视图。
         """
         merged = {"kind": "import", "dry_run": bool(dry_run), "files": [],
                   "job_ids": [], "totals": {}, "problems": []}
         codes = []
-        for name, extra in self.SOURCES:
-            code, payload, bad = cli_json(
-                "import", str(RECON / name), *extra,
-                *self.project(), "--db", str(db), "--data-dir", str(data_dir),
-                *(["--dry-run"] if dry_run else []), "--json")
+        for _title, run in self.commands():
+            code, report, bad = run(db, data_dir, dry_run=dry_run)
             codes.append(code)
-            if payload is None:
+            if report is None:
                 return code, None, bad
-            if not payload.get("ok"):
-                # 失败的导入仍然带着完整报告（挂在 error.report 上）—— 用它继续，
-                # 让 A 段的断言自己去判"哪里不对"，而不是在这里提前下结论。
-                merged["problems"].append(payload["error"].get("message", ""))
-                merged["files"].extend((payload["error"].get("report") or {}).get("files") or [])
-                continue
-            report = payload["data"]["report"]
             merged["files"].extend(report.get("files") or [])
             merged["job_ids"].extend(report.get("job_ids") or [])
             merged["problems"].extend(report.get("problems") or [])
-            for name, value in (report.get("totals") or {}).items():
-                merged["totals"][name] = merged["totals"].get(name, 0) + int(value)
+            if code == 0:                  # 失败的报告里没有可加的数，别拿它凑
+                for key, value in (report.get("totals") or {}).items():
+                    merged["totals"][key] = merged["totals"].get(key, 0) + int(value)
         return (0 if all(c == 0 for c in codes) else max(codes)), merged, ""
 
     def undo(self, db, job_id: int) -> tuple:
@@ -395,39 +467,81 @@ def ab_flow(entry, work_root: Path, label: str) -> None:
             check(f"A0  {label}：{title} 退出码 0",
                   code == 0 and bool(payload) and payload.get("ok"), f"rc={code} {bad}")
 
-    # A1 干跑。先看一眼：这条入口在**冷启动**下到底跑不跑得起来。
-    # 注意 dry-run 仍会建项目（`resolve_project` 无条件调用），这不是事实 ——
-    # 所以判据是"**事实表**一行不动"，与 §2.6 那行的措辞一致。
-    code, dry, bad = entry.import_files(db_path, data_dir, dry_run=True)
-    check(f"A1a {label}：干跑退出码 0（无 needs_confirmation 文件）",
-          code == 0, f"rc={code} {bad}")
-    check(f"A1b {label}：干跑的报告是合法 JSON 且标了 dry_run",
-          bool(dry) and dry.get("dry_run") is True)
-    cold = fingerprint(open_db(db_path))
-    check(f"A1c {label}：干跑后事实表一行不多（有效状态逐表为 0）",
-          all(cell["rows"] == 0 for cell in cold.values()), str(counts(cold)))
-    dry_totals = dict((dry or {}).get("totals") or {})
+    # A1 干跑 / A2 真跑 —— **逐条命令配对**（LARI-34 的口径裁定②）。
+    #
+    # 一条命令 = 一次子进程调用 = 一个事务边界。第 i 条命令的干跑跑在"前 i−1 条
+    # 命令**真跑**留下的库状态"上，紧接着让第 i 条命令真跑在**同一份状态**上 ——
+    # 两边看到同一个库，totals 才逐项可比。
+    #
+    # 为什么要改：原来比的是"整轮聚合"。`CliEntry` 刻意起两条子进程，干跑的两条
+    # 都从空库出发、真跑的第二条却从"第一条已提交"出发，聚合数字天然对不上 ——
+    # 那个断言在跨进程的入口上**没有定义**。改成逐条配对之后断言没有变松：原来
+    # 比的是两段聚合（2 段），现在每一段都比（还是 2 段），而且第 2 段是在真实
+    # 的前序状态上比的。
+    #
+    # 干跑仍会建项目（`resolve_project` / `magpie project create` 无条件跑），那
+    # 不是事实 —— 所以 A1c 判的是**事实**表，与 §2.6 那行的措辞一致。
+    aggregate = {"files": [], "job_ids": [], "totals": {}, "problems": []}
+    failed: list = []
+    for index, (title, run) in enumerate(entry.commands()):
+        before = fp_of(db_path)
 
-    # A2 真跑。这是"文件到事实"那一步。
-    code, real, bad = entry.import_files(db_path, data_dir, dry_run=False)
-    check(f"A2a {label}：真跑退出码 0", code == 0, f"rc={code} {bad}")
-    job_ids = list((real or {}).get("job_ids") or [])
+        code, dry, bad = run(db_path, data_dir, dry_run=True)
+        check(f"A1a {label}：第 {index+1} 条命令（{title}）干跑退出码 0"
+              f"（无 needs_confirmation 文件）", code == 0, f"rc={code} {bad}")
+        check(f"A1b {label}：第 {index+1} 条命令的干跑报告是合法 JSON 且标了 dry_run",
+              bool(dry) and dry.get("dry_run") is True)
+        # 硬性标准：干跑跑完事实表**一行都不留**。第 1 条命令上它就是原来的
+        # "有效状态逐表为 0"（起点是空库）；第 2 条起判的是"逐行指纹不变"，比
+        # 只判归零更强 —— 干跑既不准留新行，也不准动已有的事实。
+        after = fp_of(db_path)
+        check(f"A1c {label}：第 {index+1} 条命令干跑后有效状态逐行不变（一行不留）",
+              after == before, f"变了的表: {diff_keys(before, after)}")
+        dry_totals = dict((dry or {}).get("totals") or {})
+
+        # A2 真跑。这是"文件到事实"那一步。
+        code, real, bad = run(db_path, data_dir, dry_run=False)
+        check(f"A2a {label}：第 {index+1} 条命令真跑退出码 0", code == 0, f"rc={code} {bad}")
+        real_totals = dict((real or {}).get("totals") or {})
+
+        # 干跑与真跑算出来的数必须**一模一样** —— 否则"干跑"就没在预测真跑，
+        # 只是走了个过场。干跑照样算全量、只是不落库，所以它的 totals 当然不是 0。
+        #
+        # 但只比"两边相等"是一条**对称**的比：`updated` 判定退回死分支时（`key[1]`
+        # 写回 `key`），干跑与真跑会**一起**把 updated 算成 0，等式照样成立 ——
+        # 一条没有牙齿的绿。所以这条断言带上它的牙齿：**只要这次真跑跑在"库里
+        # 已经有这批事实"的状态上**（第 2 条及以后的命令；或者一条命令里的第 2 个
+        # step），就必须至少算出一条 `updated`。判定坏掉时红的是这一半，
+        # `teeth_flow` 每次跑都证明这一半咬得住、而那半条等式咬不住。
+        restates = index > 0 or len((real or {}).get("steps") or []) > 1
+        check(f"A2e {label}：第 {index+1} 条命令干跑 totals 与真跑逐项相同，"
+              f"且重述已有事实时 updated 不为 0（干跑真的在预演）",
+              dry_totals == real_totals
+              and (not restates or int(real_totals.get("updated") or 0) > 0),
+              f"dry={dry_totals} real={real_totals}")
+
+        # 聚合视图：A2b 之后那一串判的是"整批导入真的变成了事实"，逐条命令摊开比
+        # 反而看不清，所以照旧折成一份。
+        aggregate["files"].extend(_file_reports(real or {}))
+        aggregate["job_ids"].extend((real or {}).get("job_ids") or [])
+        aggregate["problems"].extend((real or {}).get("problems") or [])
+        for key, value in real_totals.items():
+            aggregate["totals"][key] = aggregate["totals"].get(key, 0) + int(value)
+        if code != 0:
+            failed.append((title, code, bad))
+
+    real = aggregate
+    job_ids = list(real["job_ids"])
     check(f"A2b {label}：两个来源各落一个 job（夹具真的被导入了）",
           len(job_ids) == 2, f"job_ids={job_ids}")
-    check(f"A2c {label}：报告里没有 problems（路径 / 编码都干净）",
-          not (real or {}).get("problems"), str((real or {}).get("problems")))
+    check(f"A2c {label}：整轮报告里没有 problems（路径 / 编码都干净）",
+          not failed and not real["problems"], f"{failed} {real['problems']}")
 
     conn = open_db(db_path)
     full = fingerprint(conn)
     facts = counts(full)
     check(f"A2d {label}：事实表非空（真实文件确实变成了事实）",
           facts.get("entities", 0) > 0 and facts.get("relations", 0) > 0, str(facts))
-    # 干跑与真跑算出来的数必须**一模一样** —— 否则"干跑"就没在预测真跑，
-    # 只是走了个过场。这一条比"干跑 totals 是 0"有意义得多：干跑照样算全量，
-    # 只是不落库，所以它的 totals 当然不是 0。
-    check(f"A2e {label}：干跑算出的 totals 与真跑逐项相同（干跑真的在预演）",
-          dry_totals == (real or {}).get("totals"),
-          f"dry={dry_totals} real={(real or {}).get('totals')}")
 
     files_by_name = {Path(str(f.get("path"))).name: f for f in _file_reports(real or {})}
     check(f"A2f {label}：两份来源都落了盘：subfinder=done，httpx=partial",
@@ -537,6 +651,96 @@ def ab_flow(entry, work_root: Path, label: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A2e 的牙齿自检：把 updated 打回死分支
+# ---------------------------------------------------------------------------
+
+
+#: 两条"命令"与 `CliEntry.SOURCES` 一一对应（同一个文件、同一种选解析器方式）。
+TEETH_SOURCES = (("subfinder.txt", "domainlist", "subfinder"),
+                 ("httpx.jsonl", None, "httpx"))
+
+
+def _teeth_command(conn, project_id: int, data_dir: Path, source, *, dry_run: bool) -> dict:
+    """跑**一条**导入命令（进程内，与 CLI 的一条 `magpie import` 同形）。"""
+    name, parser, source_name = source
+    return ingest.ingest_paths(
+        conn, ingest.IngestOptions(
+            project_id=project_id, data_dir=data_dir, parser=parser,
+            source_name=source_name, archive="external", dry_run=dry_run),
+        [RECON / name])
+
+
+def teeth_flow(work_root: Path) -> None:
+    """A2e 的牙齿自检：`updated` 判定退回死分支时，A2e 必须变红。
+
+    与 B3 / B5 的分工：那两条验的是"redo 坏了，逐行指纹会不会响"；这一条验的是
+    "`added` / `updated` 的判定坏了，A2e 会不会响"。为什么要专门验一次 —— A2e 的
+    核心是**干跑 == 真跑**，而这是一个**对称**的比：判定坏掉时干跑与真跑**一起**
+    把 updated 算成 0，等式照样成立。所以 A2e 里带了一句"重述已有事实必须见到
+    updated"；这一条自检就是证明那句话不是装饰：
+
+      * 判定完好（`key[1]`）：等式成立 **且** updated > 0 —— A2e 绿；
+      * 判定打回死分支：等式**仍然**成立（那条假绿就是这么来的），而 updated 归零
+        —— A2e 的那一半牙齿必须响。
+
+    "打回死分支"用 `_existing_facts` 一律返回空集来模拟：与把 `key[1]` 写回 `key`
+    的效果**逐字节相同** —— 库里明明有这批事实，判定却一条都认不出来。于是
+    `updated` 成了走不到的分支，每一次重导都被算成 `added`（`LARI-33` 修的就是
+    这个）。
+
+    进程内跑，不进子进程、不读外部开关；两个文件当两条命令（第 2 条命令跑在
+    第 1 条真跑留下的状态上），与 CLI 入口的配对逐字同形。所以它**每次跑都验**，
+    不会像一次性的手工实验那样锈掉。
+    """
+    print()
+    print("=== A2e 的牙齿自检 · updated 打回死分支 ===")
+
+    shutil.rmtree(work_root, ignore_errors=True)
+    work_root.mkdir(parents=True, exist_ok=True)
+    data_dir = work_root / "data"
+    scope = {"include": ["*.example.com"], "exclude": []}
+    origin = ingest._existing_facts
+
+    #: broken → (第 2 条命令的干跑 totals, 第 2 条命令的真跑 totals)
+    observed: dict[bool, tuple] = {}
+    for broken in (False, True):
+        # 死分支：库里的事实一条都认不出来（== 判定写成了 `key`）
+        ingest._existing_facts = (lambda conn, project_id: (set(), set())) \
+            if broken else origin
+        try:
+            got = {}
+            for mode in ("dry", "real"):
+                db_path = work_root / f"{'dead' if broken else 'live'}-{mode}.db"
+                conn = store.connect(db_path)
+                store.init_db(conn)
+                try:
+                    project_id = ops.create_project(conn, f"teeth-{mode}-{broken}", scope)
+                    _teeth_command(conn, project_id, data_dir, TEETH_SOURCES[0],
+                                   dry_run=False)          # 第 1 条命令：真跑
+                    got[mode] = _teeth_command(       # 第 2 条命令：同一状态上干跑 / 真跑
+                        conn, project_id, data_dir, TEETH_SOURCES[1],
+                        dry_run=(mode == "dry"))["totals"]
+                finally:
+                    conn.close()
+            observed[broken] = (got["dry"], got["real"])
+        finally:
+            ingest._existing_facts = origin
+
+    equal_live = observed[False][0] == observed[False][1]
+    equal_dead = observed[True][0] == observed[True][1]
+    updated_live = int(observed[False][1].get("updated") or 0)
+    updated_dead = int(observed[True][1].get("updated") or 0)
+    check("A2e 牙齿自检①：判定完好（key[1]）时干跑 == 真跑，且 updated 不为 0"
+          "（这才是 A2e 要的绿）", equal_live and updated_live > 0,
+          f"相等={equal_live} updated={updated_live} real={observed[False][1]}")
+    check("A2e 牙齿自检②：打回死分支后，等式**仍然**成立"
+          "（所以只比'干跑 == 真跑'是一条假绿，检测不到这个坏法）", equal_dead,
+          f"相等={equal_dead} dry={observed[True][0]} real={observed[True][1]}")
+    check("A2e 牙齿自检③：同一个反例下 updated 归零 —— A2e 里那半条牙齿必须响，"
+          "否则这一条断言没有牙齿", updated_dead == 0, f"updated={updated_dead}")
+
+
+# ---------------------------------------------------------------------------
 # C · 负向输入不崩（2.5 的最小入口）
 # ---------------------------------------------------------------------------
 
@@ -628,6 +832,7 @@ def main() -> int:
     ab_flow(PipelineEntry(PIPELINE_YAML), WORK / "pipeline", PipelineEntry.label)
     ab_flow(CliEntry(), WORK / "cli", CliEntry.label)
 
+    teeth_flow(WORK / "teeth")
     negative_flow(WORK)
 
     print()

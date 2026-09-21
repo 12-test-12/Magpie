@@ -44,6 +44,14 @@ CLI_DIR = ROOT / "magpie" / "cli"
 READ_INVOCATIONS = (
     ("ls", "--limit", "3", "--json"),
     ("ls", "--human"),
+    # §3.5 的具名查询走的是同一条读路径（`ls` 的过滤条件），所以只读纪律
+    # 在这里一并适用：它们**没有**任何写事实的理由。`lens` 同理 —— 它是
+    # 一条新命令，而"新命令是不是只读"正是这组断言该覆盖的新风险。
+    ("ls", "--product", "nginx@1.24.0", "--json"),
+    ("ls", "--in-cidr", "203.0.113.0/24", "--json"),
+    ("ls", "--severity", "critical", "--json"),
+    ("lens", "--json"),
+    ("lens", "services", "--human"),
     ("show", "1", "--json"),
     ("diff", "--since", "last", "--json"),
     ("doctor", "--json"),

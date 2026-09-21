@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass
 
 from .. import __version__
+from ..core import query as core_query
 from .db import DEFAULT_DATA_DIR, Database, resolve_data_dir, resolve_db
 from .envelope import (
     EXIT_OK,
@@ -50,7 +51,7 @@ from .envelope import (
     emit_ok,
     usage_error,
 )
-from .read import RUNNERS
+from .read import RUNNERS, as_cli_error
 from .write import WRITE_COMMANDS
 from . import write
 
@@ -178,18 +179,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     ls = sub.add_parser(
         "ls", parents=[_LOCATION, _FORMAT, _PROJECT],
-        help="实体列表（键集游标分页）",
-        description="列出项目里的实体。分页用 --cursor（上一页末尾的 id）。")
+        help="实体列表（键集游标分页）+ §3.5 的具名查询",
+        description="列出项目里的实体。分页用 --cursor（上一页末尾的 id）。"
+                    "后几个过滤条件是 §3.5 的**具名查询** —— 与 "
+                    "`GET /entities?…` 的同名参数一字不差，两边走同一段实现"
+                    "（`magpie.core.query`）。")
     ls.add_argument("--kind", help="按 kind 过滤（取值见 `magpie schema`）")
+    ls.add_argument("--lens", help="按镜头过滤（取值见 `magpie lens`）")
     ls.add_argument("--q", help="按规范 key 的**子串**过滤")
     ls.add_argument("--tag", help="按标签过滤")
     ls.add_argument("--lifecycle", choices=["active", "retired"], help="按生命周期过滤")
+    # -- 具名查询 ------------------------------------------------------------
+    ls.add_argument("--product", metavar="<产品[@版本]>",
+                    help="谁在跑这个产品（↔ GET /entities?product=）。"
+                         "带版本与不带版本是两个实体：`nginx` 与 `nginx@1.24.0` 问的是两件事")
+    ls.add_argument("--version", metavar="<版本>",
+                    help="产品版本（与 --product 一起用；也可以直接写成 nginx@1.24.0）")
+    ls.add_argument("--endpoint", metavar="<URL 或规范 key>",
+                    help="这个接口的归属服务（↔ GET /entities?endpoint=）。"
+                         "身份含主机，所以裸路径不收 —— 给 URL 或折叠好的 key")
+    ls.add_argument("--severity", help="按 severity 观测筛（vuln 的 severity）")
+    ls.add_argument("--state", help="按 state 观测筛（vuln 的 state）")
+    ls.add_argument("--in-cidr", dest="in_cidr", metavar="<网段>",
+                    help="落在网段里的资产（ip 的地址包含 / cidr 的子网包含；"
+                         "**算出来的**判断，不是一条存着的边）")
     ls.add_argument("--cursor", help="上一页末尾的实体 id")
-    ls.add_argument("--limit", type=int, default=50, help="每页条数（默认 50，上限 500）")
+    ls.add_argument("--limit", type=int, default=core_query.DEFAULT_PAGE,
+                    help=f"每页条数（默认 {core_query.DEFAULT_PAGE}，"
+                         f"上限 {core_query.MAX_PAGE}）")
     # 这两个在 2.7 里就是"传了就 400"：它们要人工状态与 scope 求值，本步没有。
     # 登记它们**不是为了接受**，是为了让"传了却被忽略"不可能发生。
     ls.add_argument("--review-status", dest="review_status", help=argparse.SUPPRESS)
     ls.add_argument("--in-scope", dest="in_scope", help=argparse.SUPPRESS)
+
+    lens = sub.add_parser(
+        "lens", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="镜头：这个镜头下每个 kind 的计数（↔ GET /lenses/{lens}）",
+        description="GUI 的类型徽标与 CLI 共用同一段实现（§3.5）。不给镜头时"
+                    "列出**库里现在能问的**全部镜头 —— 清单来自 "
+                    "kind_registry.lens，不是一张写死的表。")
+    lens.add_argument("lens", nargs="?", metavar="<镜头>",
+                      help="镜头 id（assets / services / api / vuln / …；"
+                           "取值见不给参数时的输出）")
 
     show = sub.add_parser(
         "show", parents=[_LOCATION, _FORMAT, _PROJECT],
@@ -292,11 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
                            f"上限 {write.MAX_JOB_LIMIT}）")
 
     parser.epilog = (
-        "只读：init、ls、show、diff、doctor、schema。"
+        "只读：init、ls、lens、show、diff、doctor、schema。"
         "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
         "放在一起便于对照）。本地服务：app。"
         "search 尚未实现 —— 它以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
-        "契约与退出码表见 `magpie schema --json`。")
+        "契约与退出码表见 `magpie schema --json`；具名查询的清单也在那里。")
     return parser
 
 
@@ -389,6 +420,14 @@ def main(argv: list | None = None) -> int:
     except CliError as exc:
         emit_error(exc, fmt)
         return exc.exit_code
+    except core_query.QueryError as exc:
+        # 查询层的失败（core 不认识退出码）在这里套进 CLI 的信封。
+        # 命令自己捕获并 raise `as_cli_error(exc)` 是为了让 traceback 指向**哪一条
+        # 命令**；这里兜住漏网的那些 —— 一条漏网的 QueryError 会变成一个
+        # traceback，而"响亮地坏掉"不该等于"给调用方一段栈"。
+        err = as_cli_error(exc)
+        emit_error(err, fmt)
+        return err.exit_code
     except sqlite3.Error as exc:
         from .db import _map_sqlite
         err = _map_sqlite(exc, db.path)

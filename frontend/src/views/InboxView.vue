@@ -15,13 +15,24 @@ import { store } from '../store.js'
 
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 }
 const SEVERITY_LABEL = { high: '高', medium: '中', low: '低' }
+
+//: kind → 中文。**键必须与 schema 的 `inbox_items.kind` CHECK 逐个对得上**
+//: （`001_init.sql` 的七个）：2.8 的初版名单（`sniff_uncertain` /
+//: `unregistered_host` / `duplicate_entity` / `out_of_scope` / `version_conflict`）
+//: 一个都不是库里真有的 kind —— 那些名字来自计划书早期的草稿，而数据层从 001 起
+//: 就冻结了另一套。结果是**每一条待办都显示成它的英文 kind**，包括那些已经
+//: 有中文名字的。3.6 把这张表对齐到七个真 kind。
+//:
+//: 分类表（哪一类属于体检页的哪一栏）在 `core/query.py` 的 `HEALTH_CATEGORIES`，
+//: 不在这里 —— 这里只管翻译。
 const KIND_LABEL = {
-  version_conflict: '版本冲突',
-  duplicate_entity: '疑似重复实体',
-  unregistered_host: '未登记 host',
-  orphan_subject: '孤儿主体',
-  sniff_uncertain: '嗅探不确定',
-  out_of_scope: '越界资产',
+  orphan_subject: '孤儿实体',
+  value_conflict: '字段冲突',
+  merge_conflict: '合并冲突',
+  identity_ambiguous: '身份不唯一',
+  evidence_missing: '未知字段',
+  scope_drift: '越界资产',
+  manual_required: '嗅探不确定',
 }
 
 const rows = ref([])
@@ -99,7 +110,7 @@ watch(() => store.view, (value) => {
       <VirtualTable
         :rows="rows"
         :columns="COLUMNS"
-        empty-text="没有待裁决的项。数据层在嗅探不确定 / 版本冲突 / 疑似重复 / 未登记 host / 越界时才会往这里放东西。"
+        empty-text="没有待裁决的项。数据层在嗅探拿不准、字段多值、合并后多值、出现未知字段、资产越界时才会往这里放东西。"
         @row-click="() => {}"
       >
         <template #subject="{ row }">

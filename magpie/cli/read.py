@@ -1,9 +1,18 @@
-"""只读命令的实现：`init` / `ls` / `show` / `search` / `diff` / `doctor` / `schema`。
+"""只读命令的实现：`init` / `ls` / `lens` / `show` / `search` / `diff` / `doctor` / `schema`。
 
-**这个模块里没有一条 SQL 在写事实。** 唯一的写是 `init` 建 schema —— 而它连
-一个 project 都不建。原因不是洁癖：2.2 的价值在于**把"读"这条路的风险压到最低**，
-先冻结契约；一条顺手 `INSERT` 的读命令会把这份价值立刻抹掉，而且不会有任何
-测试替你发现（测试只断言它读得对）。
+**这个模块里没有一条 SQL —— 一条都没有。** 这不是风格问题：2.2 起这里记着一笔
+明写的债（`ls` / `show` 的查询语句与 `api/routes.py` 里的那几条是**同一份语义的
+两份实现**），3.5 把债还掉了：查询全部搬到 `magpie/core/query.py`，这个文件与
+`api/routes.py` 都只**调用**它。约束不靠自觉 —— `check.py` 的 `SQL-FREE` 红线
+静态扫这两个文件，出现 SQL 字面量即整轮变红。
+
+本模块仍然只做三件事：
+
+  * 命令行参数 → `query` 的调用（**过滤条件不许被静默忽略**，见
+    `query.reject_unsupported`）；
+  * `query` 的结果 → 人读表格（`--human`）或原样进信封（`--json`）；
+  * `QueryError` → `CliError`（`as_cli_error`）。core 不认识退出码，CLI 不认识
+    `E_BAD_CIDR` 该是几号退出码 —— 映射表两边各写一份，`code` 只有 core 一份。
 
 与 2.7 的关系（LARI-8《排序变更记录②》的裁定）
 ----------------------------------------------
@@ -13,14 +22,17 @@
   * 过滤条件、分页游标、404/409 的分档与 `/api/v1` 一致 —— 包括"不支持的
     过滤条件必须**响亮拒绝**而不是静默忽略"这条；
   * `search` **故意不实现**。2.7 的 `/search` 返回 501（搜索 DSL 属于 §8），
-    若 CLI 自己发明一套查询语义，就出现了"两条路、一份数据、两种答案"——
-    而"GUI 与 CLI 共用同一实现"是 §3.5 已经写下的原则。所以这里也 501
-    （`E_NOT_IMPLEMENTED`），把 agent 引向 core，而不是给它一个假答案。
+    若 CLI 自己发明一套查询语义，就出现了"两条路、一份数据、两种答案"。
+    所以这里也 501（`E_NOT_IMPLEMENTED`），把 agent 引向 core，而不是给它
+    一个假答案。**具名查询不是 DSL**：`ls --product nginx@1.24.0` 与
+    `GET /entities?product=nginx@1.24.0` 是同一个 `query.dispatch` 的同一次调用，
+    这正是 §3.5 要的"GUI 与 CLI 共用同一实现"。
 
-**已知技术债（明写，不藏着）**：`ls` / `show` 的查询语句与 `api/routes.py` 里
-的那几条是**同一份语义的两份实现**。计划书 §3.5 的 `core/query.py`（"具名查询；
-GUI 与 CLI 共用同一实现"）落地后应当收敛到一处。现在不收敛的理由是本步的兼容性
-约束写着"不触碰 `magpie/core/**`" —— 把它记在这里，别让它变成没人知道的重复。
+`init` 仍然是本模块唯一的写，而且只写 schema
+--------------------------------------------
+`ls` 不能顺手建库 —— 那样"库在哪、谁建的"就没有答案了。建库必须是一个**显式的、
+可以被记一笔的**动作。它连一个 project 都不建：项目的创建是写路径（2.6 / GUI）的
+事，所以 `init` 之后 `magpie ls` 会诚实地告诉你"一个项目都没有"，而不是替你造一个。
 """
 
 from __future__ import annotations
@@ -28,12 +40,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sqlite3
 from typing import Any
 
-from ..core import ingest, ops, store
+from ..core import ingest, ops, query, store
 from . import write
-from .db import Database, current_version, resolve_project
+from .db import Database, resolve_project
 from .envelope import (
     EXIT_DATA,
     EXIT_HUMAN,
@@ -46,22 +57,45 @@ from .envelope import (
     table,
 )
 
-#: `ls` 支持的过滤条件。**唯一声明处** —— 报错信息也从它来（与 2.7 的
-#: `routes._ENTITY_FILTERS` 对齐）。`review_status` / `in_scope` 在 2.7 里
-#: 就是"传了就 400"，它们需要"人工状态"与 scope 求值，本步没有。
-ENTITY_FILTERS = ("kind", "q", "tag", "lifecycle", "cursor", "limit")
+#: `ls` 支持的过滤条件 —— **实现那一侧的唯一声明处**是 `query.ENTITY_FILTERS`
+#: （报错信息也从它来）。这里再导出一次是为了让老的 `from .read import
+#: ENTITY_FILTERS` 照旧可用；本步之后它不该再被新增的代码引用。
+ENTITY_FILTERS = query.ENTITY_FILTERS
 
 #: `diff` 一次最多列多少个实体。**到顶要写进输出**（`truncated`），
 #: 静默截断看起来和"就这么些"一模一样。
 DIFF_ENTITY_LIMIT = 200
 
-#: `ls` 每页上限，与 2.7 的 `MAX_PAGE` 一致。
-MAX_PAGE = 500
-DEFAULT_PAGE = 50
+#: 页大小与项目解析住在 core / db 里，这里只做转发（见模块文档）。
+MAX_PAGE = query.MAX_PAGE
+DEFAULT_PAGE = query.DEFAULT_PAGE
+
+#: `QueryError.code` → 退出码。**只有这里映射**：core 给的是稳定的 code，
+#: 退出码是 CLI 这一侧的契约（`envelope.EXIT_TO_HTTP` 要求它与 HTTP 状态一一
+#: 对应，所以 `E_LENS_NOT_FOUND` 必须落在 2 ↔ 404，而不是 1 ↔ 400）。
+#: 没登记的 code 一律按**数据错**处理：宁可给一个偏保守的退出码，也不要让它
+#: 变成 0（成功）—— 一个"查不动却退出 0"的命令会被脚本当成"查过了，没有"。
+QUERY_EXIT: dict[str, int] = {
+    "E_UNSUPPORTED_FILTER": EXIT_USAGE,
+    "E_BAD_LIMIT": EXIT_USAGE,
+    "E_BAD_CURSOR": EXIT_USAGE,
+    "E_BAD_PRODUCT": EXIT_USAGE,
+    "E_BAD_ENDPOINT": EXIT_USAGE,
+    "E_BAD_CIDR": EXIT_USAGE,
+    "E_BAD_STATE": EXIT_USAGE,
+    "E_BAD_DEPTH": EXIT_USAGE,
+    "E_LENS_NOT_FOUND": EXIT_DATA,
+}
+
+
+def as_cli_error(exc: query.QueryError) -> CliError:
+    """`QueryError` → `CliError`。**唯一的映射点**（见 `QUERY_EXIT`）。"""
+    return CliError(exc.code, exc.message, hint=exc.hint,
+                    exit_code=QUERY_EXIT.get(exc.code, EXIT_DATA), **exc.details)
 
 
 # ---------------------------------------------------------------------------
-# 公共零件（与 `api/routes.py` 的同名零件保持同义）
+# 公共零件（渲染用；取数一律走 `magpie.core.query`）
 # ---------------------------------------------------------------------------
 
 
@@ -74,106 +108,16 @@ def _tbl(header: list[str], rows: list[list[Any]], empty: str = "（无）") -> 
     return table(header, rows) if rows else [f"  {empty}"]
 
 
-def _json_or_none(raw: Any) -> Any:
-    try:
-        return json.loads(raw) if raw else None
-    except (TypeError, ValueError):
-        return raw
-
-
 # `resolve_project` 住在 `db.py`（"库在哪、项目是哪个"是同一件事的两半），
 # 在这里**再导出**一次只是为了让老的 `from .read import resolve_project` 照旧
-# 可用。写命令要用它，而 `write.py` 不能反向依赖本模块 —— 本模块要 import 它。
-
-
-def keys_of(conn: sqlite3.Connection, project_id: int,
-            entity_ids: list[int]) -> dict[int, str]:
-    """entity_id → 规范 key。一次查完，不做 N+1。"""
-    if not entity_ids:
-        return {}
-    marks = ",".join("?" * len(entity_ids))
-    rows = conn.execute(
-        f"SELECT entity_id, entity_key FROM entity_keys"
-        f" WHERE project_id=? AND canonical=1 AND entity_id IN ({marks})",
-        (project_id, *entity_ids)).fetchall()
-    return {int(r["entity_id"]): str(r["entity_key"]) for r in rows}
-
-
-def tags_of(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[str]:
-    return [str(r["tag"]) for r in conn.execute(
-        "SELECT tag FROM entity_tags WHERE project_id=? AND entity_id=?"
-        " AND deleted_at IS NULL ORDER BY tag", (project_id, entity_id))]
-
-
-def manual_keys(conn: sqlite3.Connection, project_id: int, entity_id: int) -> list[str]:
-    row = conn.execute(
-        "SELECT keys_json FROM manual_fields WHERE project_id=? AND subject_kind='entity'"
-        " AND subject_id=?", (project_id, entity_id)).fetchone()
-    keys = _json_or_none(None if row is None else row["keys_json"])
-    return [str(k) for k in keys] if isinstance(keys, list) else []
-
-
-def entity_row(conn: sqlite3.Connection, project_id: int, entity_id: int) -> dict:
-    row = conn.execute(
-        "SELECT id, kind, lifecycle, is_current, merged_into, first_seen, last_seen"
-        " FROM entities WHERE id=? AND project_id=?",
-        (entity_id, project_id)).fetchone()
-    if row is None:
-        raise CliError("E_ENTITY_NOT_FOUND",
-                       f"实体 {entity_id} 不在项目 {project_id} 里", exit_code=EXIT_DATA)
-    entity = dict(row)
-    entity["entity_key"] = keys_of(conn, project_id, [entity_id]).get(entity_id)
-    return entity
-
-
-def _unsupported(filters: dict[str, Any], supported: tuple[str, ...]) -> None:
-    """沉默地忽略一个过滤条件 = 给 agent 一个假答案。**必须响亮地拒绝。**"""
-    unknown = sorted(k for k, v in filters.items() if v not in (None, ""))
-    if unknown:
-        raise CliError(
-            "E_UNSUPPORTED_FILTER",
-            f"本步不支持这些过滤条件：{', '.join(unknown)}",
-            exit_code=EXIT_USAGE,
-            hint=f"支持的过滤条件：{', '.join(supported)}。"
-                 f"被静默忽略的过滤条件会让调用方以为筛过了 —— 那比报错坏得多。",
-            supported=list(supported), rejected=unknown)
-
-
-def _page_size(limit: int) -> int:
-    if limit < 1:
-        raise CliError("E_BAD_LIMIT", f"limit 必须 >= 1，收到 {limit}",
-                       exit_code=EXIT_USAGE)
-    return min(int(limit), MAX_PAGE)
-
-
-def _probe(db_path) -> tuple[int, list]:
-    """`init --dry-run` 的探针：**不建文件、不改任何东西**。
-
-    刻意不走 `Database.connect()`：那条路要求"库必须已经建好且版本自洽"，
-    而干跑最常问的恰恰是"我还什么都没建，它会做什么"。所以这里自己开一条
-    最朴素的连接，只读账本。
-    """
-    from ..core import migrate
-
-    if not db_path.exists():
-        return 0, list(migrate.MIGRATIONS)
-    try:
-        conn = sqlite3.connect(str(db_path))
-    except sqlite3.Error:                                        # pragma: no cover
-        return 0, list(migrate.MIGRATIONS)
-    try:
-        conn.execute("PRAGMA query_only = ON")
-        version = current_version(conn)
-    except sqlite3.DatabaseError as exc:
-        raise CliError("E_DB_NOT_A_DB", f"{db_path} 不是一个可读的 SQLite 库：{exc}",
-                       exit_code=EXIT_DATA) from exc
-    finally:
-        conn.close()
-    return version, [m for m in migrate.MIGRATIONS if m.version > version]
+# 可用。它服务**读命令与写命令两侧**（`write.py` 也用它），所以它没有跟着
+# 查询一起搬进 core —— 那是 `query` 的本步边界，写在 `core/query.py` 的模块
+# 文档里：core 提供"怎么找"（`query.project_id_for`），"找不到时说什么"由各
+# 入口自己决定（退出码 2 ↔ HTTP 404）。
 
 
 # ---------------------------------------------------------------------------
-# init —— 本步唯一的写，而且只写 schema
+# init —— 本模块唯一的写，而且只写 schema
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +139,11 @@ def cmd_init(args, ctx) -> tuple[dict, list[str]]:
         # §6.3 的"`--dry-run` 到处可用"。对 init 来说它的意思是"只说要做什么"，
         # 所以**连文件都不该建** —— 一个 0 字节的 magpie.db 会让下一次 init
         # 报告"库已存在"，那是真的副作用，不是"什么都没做"。
-        version, pending = _probe(db.path)
+        try:
+            version = query.probe_schema_version(db.path)
+        except query.QueryError as exc:
+            raise as_cli_error(exc) from exc
+        pending = [m for m in migrate.MIGRATIONS if m.version > version]
         data = {"db": db.display, "created": not existed, "applied": [],
                 "pending": [{"version": m.version, "name": m.name} for m in pending],
                 "schema_version": version, "dry_run": True}
@@ -219,13 +167,13 @@ def cmd_init(args, ctx) -> tuple[dict, list[str]]:
             hint="迁移**只增不改**：已应用的迁移文件被改动会让新库与老库看起来"
                  "一样、实际不一样。新增一个迁移文件，不要改旧的。") from exc
 
+    projects = query.projects(conn)
     data = {
         "db": db.display,
         "created": not existed,
         "applied": applied,
         "schema_version": db.schema_version,
-        "projects": [dict(r) for r in conn.execute(
-            "SELECT id, name FROM projects ORDER BY id")],
+        "projects": projects,
     }
     human = [
         f"{'建库' if not existed else '升级'}：{db.display}",
@@ -233,72 +181,103 @@ def cmd_init(args, ctx) -> tuple[dict, list[str]]:
         + (f"（本次应用 {len(applied)} 个迁移："
            f"{', '.join('v%d %s' % (m['version'], m['name']) for m in applied)}）"
            if applied else "（已是最新，未做任何改动）"),
-        f"项目数：{len(data['projects'])}"
+        f"项目数：{len(projects)}"
         + ("（空库里一个项目都没有 —— 建项目是 2.6 写路径的事）"
-           if not data["projects"] else ""),
+           if not projects else ""),
     ]
     return data, human
 
 
 # ---------------------------------------------------------------------------
-# ls
+# ls —— 列表，也是**所有具名查询的入口**（见 core/query.py 的模块文档）
 # ---------------------------------------------------------------------------
 
 
+#: `ls` 的表头。**具名查询共用它** —— 无论问的是"谁在跑 nginx"还是"高危漏洞
+#: 有哪些"，回的都是同一张 entity 列表（`query.entities_page` 的那个形状）。
+_LS_COLUMNS = ["ID", "KIND", "KEY", "LIFECYCLE", "OBS", "OUT", "FIRST_SEEN"]
+
+
+def _ls_rows(items: list[dict]) -> list[list[Any]]:
+    return [[i["id"], i["kind"], i["entity_key"], i["lifecycle"],
+             i["observation_count"], i["out_degree"], i["first_seen"]]
+            for i in items]
+
+
 def cmd_ls(args, ctx) -> tuple[dict, list[str]]:
-    """实体列表。键集游标分页 —— 与 `/api/v1/entities` 同一套语义。"""
-    _unsupported({"review_status": args.review_status, "in_scope": args.in_scope},
-                 ENTITY_FILTERS)
-    size = _page_size(args.limit)
-    conn: sqlite3.Connection = ctx.conn()
+    """实体列表。键集游标分页 —— 与 `/api/v1/entities` 同一套语义、同一段实现。
+
+    `--product` / `--endpoint` / `--severity` / `--state` / `--in-cidr` 是 §3.5
+    的**具名查询**，不是一套新语法：它们与 `GET /entities?…` 的同名参数一字不差，
+    两边都从 `query.dispatch` 进（那一个函数决定"这组条件在问哪一问"）。
+    """
+    query.reject_unsupported({"review_status": args.review_status,
+                              "in_scope": args.in_scope})
+    conn = ctx.conn()
+    try:
+        # 用法错**先于**数据错报出来（见 `query.check_page_filters`）：在空库上
+        # 把 `--limit 0` 报成"必须显式给 --project"会把用户引向错误的方向。
+        query.check_page_filters(limit=args.limit, cursor=args.cursor)
+        project_id = resolve_project(conn, args.project)
+        result = query.dispatch(
+            conn, project_id, kind=args.kind, lens=args.lens, q=args.q, tag=args.tag,
+            lifecycle=args.lifecycle, product=args.product, version=args.version,
+            endpoint=args.endpoint, severity=args.severity, state=args.state,
+            in_cidr=args.in_cidr, cursor=args.cursor, limit=args.limit)
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
+
+    items = result["entities"]
+    # `notes` 与 `query` 一起进输出：一个空列表必须带着"为什么是空的"（产品
+    # 实体根本没有？网段里的候选是算出来的？）—— 少了它，空结果会被读成
+    # "筛过了，就是没有"。
+    data = {"query": result["query"], "entities": items, "count": len(items),
+            "filters": result["filters"], "notes": result["notes"]}
+    human = _tbl(_LS_COLUMNS, _ls_rows(items),
+                 empty="（本项目当前没有符合条件的实体 —— 这是结果，不是错误）")
+    if result["next_cursor"]:
+        human.append(f"… 还有下一页：--cursor {result['next_cursor']}")
+    for note in result["notes"]:
+        human.append(f"  ⚠ {note}")
+    return data, human
+
+
+# ---------------------------------------------------------------------------
+# lens —— 镜头页的类型徽标与计数（↔ GET /lenses/{lens}）
+# ---------------------------------------------------------------------------
+
+
+def cmd_lens(args, ctx) -> tuple[dict, list[str]]:
+    """镜头：这个镜头下每个 kind 的类型徽标与计数。
+
+    GUI 的镜头页用它渲染左侧的类型面板与数量徽标；CLI 与它共用 `query.lens_view`
+    那一段实现（§3.5）。不给 `<镜头>` 时列出**库里现在能问的**全部镜头 ——
+    清单来自 `kind_registry.lens`，不来自一张写死的表：一个还没有 kind 的镜头
+    （比如还没有解析器产出的 `traffic`）不是一个能问出东西的镜头，它不该在
+    清单里假装存在。
+    """
+    conn = ctx.conn()
     project_id = resolve_project(conn, args.project)
+    try:
+        if args.lens:
+            view = query.lens_view(conn, project_id, args.lens)
+            human = [f"镜头 {view['lens']}（{sum(k['count'] for k in view['kinds'])} 个实体）："]
+            human += _tbl(["KIND", "计数", "PRODUCED_BY"],
+                          [[k["kind"], k["count"], ",".join(k["produced_by"]) or "—"]
+                           for k in view["kinds"]],
+                          empty="（这个镜头下没有任何 kind —— 这是结果，不是错误）")
+            return view, human
+        lenses = query.lens_ids(conn)
+        overview = [query.lens_view(conn, project_id, lens) for lens in lenses]
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
 
-    where = ["e.project_id=?", "e.is_current=1", "e.merged_into IS NULL"]
-    params: list[Any] = [project_id]
-    if args.kind:
-        where.append("e.kind=?")
-        params.append(str(args.kind))
-    if args.lifecycle:
-        where.append("e.lifecycle=?")
-        params.append(str(args.lifecycle))
-    if args.q:
-        where.append("EXISTS (SELECT 1 FROM entity_keys k WHERE k.entity_id=e.id"
-                     " AND k.project_id=e.project_id AND k.entity_key LIKE ?)")
-        params.append(f"%{args.q}%")
-    if args.tag:
-        where.append("EXISTS (SELECT 1 FROM entity_tags t WHERE t.entity_id=e.id"
-                     " AND t.project_id=e.project_id AND t.tag=? AND t.deleted_at IS NULL)")
-        params.append(str(args.tag))
-    if args.cursor not in (None, "", "null"):
-        if not str(args.cursor).isdigit():
-            raise CliError("E_BAD_CURSOR",
-                           f"cursor 必须是上一页末尾的实体 id，收到 {args.cursor!r}",
-                           exit_code=EXIT_USAGE)
-        where.append("e.id > ?")
-        params.append(int(args.cursor))
-
-    rows = conn.execute(
-        "SELECT e.id, e.kind, e.lifecycle, e.first_seen, e.last_seen,"
-        " (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
-        "   AND k.project_id=e.project_id AND k.canonical=1"
-        "   ORDER BY k.entity_key LIMIT 1) AS entity_key,"
-        " (SELECT COUNT(*) FROM observations o WHERE o.entity_id=e.id AND o.is_current=1)"
-        "   AS observation_count,"
-        " (SELECT COUNT(*) FROM relations r WHERE r.src_id=e.id AND r.is_current=1)"
-        "   AS out_degree"
-        f" FROM entities e WHERE {' AND '.join(where)}"
-        " ORDER BY e.id LIMIT ?", (*params, size)).fetchall()
-    items = [dict(r) for r in rows]
-    next_cursor = str(items[-1]["id"]) if len(items) == size and items else None
-
-    data = {"entities": items, "count": len(items)}
-    human = _tbl(["ID", "KIND", "KEY", "LIFECYCLE", "OBS", "OUT", "FIRST_SEEN"],
-                 [[i["id"], i["kind"], i["entity_key"], i["lifecycle"],
-                   i["observation_count"], i["out_degree"], i["first_seen"]]
-                  for i in items],
-                 empty="（本项目当前没有实体 —— 这是结果，不是错误）")
-    if next_cursor:
-        human.append(f"… 还有下一页：--cursor {next_cursor}")
+    data = {"query": "lens", "lenses": overview}
+    human = ["镜头（由 kind_registry.lens 决定）："]
+    human += _tbl(["LENS", "KIND", "计数"],
+                  [[view["lens"], k["kind"], k["count"]]
+                   for view in overview for k in view["kinds"]],
+                  empty="（库里一个 kind 都没有 —— 检查迁移是否应用过）")
     return data, human
 
 
@@ -307,35 +286,21 @@ def cmd_ls(args, ctx) -> tuple[dict, list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _entity_for_alias(conn: sqlite3.Connection, project_id: int,
-                      text: str) -> int | None:
-    """生效 alias → entity_id。
-
-    `entity_alias` 上有一条**部分唯一索引**（`001_init.sql`:
-    `(project_id, alias_key) WHERE revoked_by_job_id IS NULL`），所以这里
-    `fetchone()` 是**真的**唯一，不是碰巧唯一 —— 唯一性由数据库保证，不由
-    调用方的写法保证。
-    """
-    row = conn.execute(
-        "SELECT entity_id FROM entity_alias WHERE project_id=? AND alias_key=?"
-        " AND revoked_by_job_id IS NULL", (project_id, text)).fetchone()
-    if row is not None:
-        return int(row["entity_id"])
-    # 兜底：key 表里有、alias 表里没有。体检项 `key_without_alias` 会报这种状态，
-    # 但在它被报出来之前，`show <key>` 不该比数据库更早地失败。
-    row = conn.execute(
-        "SELECT entity_id FROM entity_keys WHERE project_id=? AND entity_key=?",
-        (project_id, text)).fetchone()
-    return None if row is None else int(row["entity_id"])
+def _not_found(text: str) -> CliError:
+    return CliError(
+        "E_ENTITY_NOT_FOUND", f"没有 id 为 {text} 的实体，也没有 key 为 {text!r} 的实体",
+        exit_code=EXIT_DATA,
+        hint="key 是**规范写法**（normalize 之后）：域名小写去尾点、"
+             "IDN 转 punycode、服务是 host:port。`magpie ls --q <片段>` 可以模糊找。")
 
 
-def _resolve_ref(conn: sqlite3.Connection, project_id: int, ref: str) -> int:
+def _resolve_ref(conn, project_id: int, ref: str) -> int:
     """`<id|entity_key>` → entity_id。
 
     **歧义必须交给人，不能替人挑一个**（退出码 3 存在的意义）。
 
     歧义从哪里来 —— 这里要写准，因为一开始我以为它来自 alias 表：**不是**，
-    生效 alias 的 key 在库内唯一（见 `_entity_for_alias`）。真正的歧义是
+    生效 alias 的 key 在库内唯一（见 `query.target_entity_id`）。真正的歧义是
     **同一个字面量有两种读法**：`show 42` 既可能是"实体 id 42"，也可能是
     "key 恰好是 `42` 的那个实体"。两者都存在且指向不同实体时，命令**不能猜**：
     猜错的那一半不会有任何症状，直到某天有人按一个错误的结论行动。
@@ -348,7 +313,7 @@ def _resolve_ref(conn: sqlite3.Connection, project_id: int, ref: str) -> int:
       * 数字、但库里**没有**这个 id → 按 **key** 读（"42" 是一个合法的 key）。
     """
     text = str(ref)
-    by_key = _entity_for_alias(conn, project_id, text)
+    by_key = query.target_entity_id(conn, project_id, text)
 
     if not text.isdigit():
         if by_key is None:
@@ -356,9 +321,7 @@ def _resolve_ref(conn: sqlite3.Connection, project_id: int, ref: str) -> int:
         return by_key
 
     by_id = int(text)
-    exists_id = conn.execute(
-        "SELECT 1 FROM entities WHERE id=? AND project_id=?",
-        (by_id, project_id)).fetchone() is not None
+    exists_id = query.entity_exists(conn, project_id, by_id)
 
     if by_key is not None and exists_id and by_key != by_id:
         # 候选里用 `store.display_key` 而不是自己拼一个 —— §4.5 写明
@@ -383,61 +346,22 @@ def _resolve_ref(conn: sqlite3.Connection, project_id: int, ref: str) -> int:
     raise _not_found(text)
 
 
-def _not_found(text: str) -> CliError:
-    return CliError(
-        "E_ENTITY_NOT_FOUND", f"没有 id 为 {text} 的实体，也没有 key 为 {text!r} 的实体",
-        exit_code=EXIT_DATA,
-        hint="key 是**规范写法**（normalize 之后）：域名小写去尾点、"
-             "IDN 转 punycode、服务是 host:port。`magpie ls --q <片段>` 可以模糊找。")
-
-
 def cmd_show(args, ctx) -> tuple[dict, list[str]]:
-    """实体详情（观测 / 关系 / 标签 / Inbox / 时间线）。形状与 `/entities/{id}` 同义。"""
-    conn: sqlite3.Connection = ctx.conn()
+    """实体详情（观测 / 关系 / 标签 / Inbox / 时间线）。形状与 `/entities/{id}` 同义。
+
+    两边调的是**同一个** `query.entity_detail` —— 这正是 §3.5 要的那件事：此前
+    这一段在 CLI 与 API 里各写了一遍，两份的字段恰好一致纯属当时的运气。
+    """
+    conn = ctx.conn()
     project_id = resolve_project(conn, args.project)
     entity_id = _resolve_ref(conn, project_id, args.ref)
-    entity = entity_row(conn, project_id, entity_id)
+    try:
+        data = query.entity_detail(conn, project_id, entity_id)
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
 
-    observations = [dict(r) for r in conn.execute(
-        "SELECT id, semantic_field, value, value_kind, confidence, source_count,"
-        " job_count, origin, observed_at, observed_at_accuracy"
-        " FROM observations WHERE entity_id=? AND project_id=? AND is_current=1"
-        " ORDER BY semantic_field, id", (entity_id, project_id))]
-
-    rows = conn.execute(
-        "SELECT id, rel, src_id, dst_id, confidence, source_count, job_count"
-        " FROM relations WHERE project_id=? AND is_current=1"
-        " AND (src_id=? OR dst_id=?) ORDER BY rel, id",
-        (project_id, entity_id, entity_id)).fetchall()
-    other_ids = sorted({int(r["dst_id"]) if int(r["src_id"]) == entity_id
-                        else int(r["src_id"]) for r in rows})
-    keys = keys_of(conn, project_id, other_ids)
-    relations = []
-    for row in rows:
-        item = dict(row)
-        other = int(row["dst_id"]) if int(row["src_id"]) == entity_id else int(row["src_id"])
-        item["direction"] = "out" if int(row["src_id"]) == entity_id else "in"
-        item["other_id"] = other
-        item["other_key"] = keys.get(other)
-        relations.append(item)
-
-    inbox = [dict(r) for r in conn.execute(
-        "SELECT id, kind, severity, state, payload_json, created_at FROM inbox_items"
-        " WHERE project_id=? AND subject_kind='entity' AND subject_id=? AND state='open'"
-        " ORDER BY id", (project_id, entity_id))]
-    for item in inbox:
-        item["payload"] = _json_or_none(item.pop("payload_json"))
-
-    timeline = [dict(r) for r in conn.execute(
-        "SELECT id, actor, action, at, job_id FROM activity_log"
-        " WHERE target_kind='entity' AND target_id=? ORDER BY id DESC LIMIT 20",
-        (entity_id,))]
-
-    data = {"entity": entity, "observations": observations, "relations": relations,
-            "tags": tags_of(conn, project_id, entity_id),
-            "manual": {"protected_fields": manual_keys(conn, project_id, entity_id)},
-            "open_inbox": inbox, "timeline": timeline}
-
+    entity = data["entity"]
+    observations, relations = data["observations"], data["relations"]
     human = [f"#{entity['id']}  {entity['entity_key']}  "
              f"({entity['kind']} / {entity['lifecycle']})",
              f"  first_seen={entity['first_seen']}  last_seen={entity['last_seen']}",
@@ -453,7 +377,7 @@ def cmd_show(args, ctx) -> tuple[dict, list[str]]:
          for r in relations])
     human += ["", f"标签：{', '.join(data['tags']) or '（无）'}",
               f"人工保护字段：{', '.join(data['manual']['protected_fields']) or '（无）'}",
-              f"未决 Inbox：{len(inbox)} 条"]
+              f"未决 Inbox：{len(data['open_inbox'])} 条"]
     return data, human
 
 
@@ -471,36 +395,31 @@ def cmd_search(args, ctx) -> tuple[dict, list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_since(conn: sqlite3.Connection, project_id: int, spec: str) -> dict:
+def _resolve_since(conn, project_id: int, spec: str) -> dict:
     """`<job_id|ISO|last>` → 一个时间点 + 它是怎么来的。
 
     **口径**：`--since` 是"从那一刻起"。`last` = 本项目的最后一个作业，
-    判定用的是 `jobs.started_at` —— 一次导入的多个 job 的 `started_at` 几乎
-    相同，所以 `diff --since last` 得到的是**这一批导入**带来的全部变化，
-    而不是只剩最后那个文件的那一点。
+    判定用的是 `jobs.started_at`（见 `query.last_job`：一次导入的多个 job 的
+    `started_at` 几乎相同，所以得到的是**这一批导入**带来的全部变化）。
 
-    刻意**不**用 `entities.first_seen / last_seen` 做增量判据：那两列只在
-    实体创建时写一次（`store.new_entity`），之后没有任何地方更新它们 ——
-    拿 `last_seen` 当"最后活跃时间"会得到一个永远停在建库那天的答案。
-    作业归属（`contributions.job_id`）才是模型里**真的存在**的事实。
+    刻意**不**用 `entities.first_seen / last_seen` 做增量判据 —— 那两列只在
+    实体创建时写一次，之后没有任何地方更新它们。作业归属（`contributions.job_id`）
+    才是模型里**真的存在**的事实。
     """
     text = str(spec)
-    if text.isdigit():
-        row = conn.execute("SELECT id, started_at FROM jobs WHERE id=? AND project_id=?",
-                           (int(text), project_id)).fetchone()
-        if row is None:
-            raise CliError("E_JOB_NOT_FOUND",
-                           f"项目 {project_id} 里没有作业 {text}", exit_code=EXIT_DATA,
-                           hint="`magpie doctor --json` 的 jobs 段列出全部作业。")
-        return {"spec": text, "at": str(row["started_at"]), "job_id": int(row["id"])}
-    if text == "last":
-        row = conn.execute("SELECT id, started_at FROM jobs WHERE project_id=?"
-                           " ORDER BY id DESC LIMIT 1", (project_id,)).fetchone()
-        if row is None:
-            return {"spec": "last", "at": None, "job_id": None}
-        return {"spec": "last", "at": str(row["started_at"]), "job_id": int(row["id"])}
-    stamp = store.parse_time(text)
-    if stamp is None:
+    try:
+        if text.isdigit():
+            at = query.job_started_at(conn, project_id, int(text))
+            return {"spec": text, "at": at, "job_id": int(text)}
+        if text == "last":
+            found = query.last_job(conn, project_id)
+            if found is None:
+                return {"spec": "last", "at": None, "job_id": None}
+            job_id, at = found
+            return {"spec": "last", "at": at, "job_id": job_id}
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
+    if store.parse_time(text) is None:
         raise CliError(
             "E_BAD_SINCE",
             f"--since 只收作业 id / ISO 时间 / 'last'，收到 {text!r}",
@@ -508,30 +427,6 @@ def _resolve_since(conn: sqlite3.Connection, project_id: int, spec: str) -> dict
             hint="例：`--since last`、`--since 3`、`--since 2026-09-18T00:00:00Z`。",
             accepted=["<job_id>", "<ISO8601>", "last"])
     return {"spec": text, "at": text, "job_id": None}
-
-
-_SINCE_SQL = """
-WITH win AS (
-    SELECT c.id, c.job_id, c.contribution_kind, c.semantic_field, c.field_value,
-           c.observed_at, c.observed_at_accuracy,
-           CASE WHEN c.subject_kind='entity' THEN c.subject_id
-                ELSE c.owner_entity_id END AS entity_id
-      FROM v_active_contributions c
-      JOIN jobs j ON j.id = c.job_id
-     WHERE c.project_id = ? AND j.started_at >= ?
-),
-before AS (
-    SELECT DISTINCT CASE WHEN c.subject_kind='entity' THEN c.subject_id
-                         ELSE c.owner_entity_id END AS entity_id
-      FROM v_active_contributions c
-      JOIN jobs j ON j.id = c.job_id
-     WHERE c.project_id = ? AND j.started_at < ?
-)
-SELECT w.*, (b.entity_id IS NULL) AS is_new
-  FROM win w LEFT JOIN before b ON b.entity_id = w.entity_id
- WHERE w.entity_id IS NOT NULL
- ORDER BY w.entity_id, w.id
-"""
 
 
 def cmd_diff(args, ctx) -> tuple[dict, list[str]]:
@@ -548,7 +443,7 @@ def cmd_diff(args, ctx) -> tuple[dict, list[str]]:
         把 diff 改成按 `observed_at` 排序，这个计数就是那个改动唯一会在
         输出里留下的痕迹。
     """
-    conn: sqlite3.Connection = ctx.conn()
+    conn = ctx.conn()
     project_id = resolve_project(conn, args.project)
     since = _resolve_since(conn, project_id, args.since)
 
@@ -560,8 +455,7 @@ def cmd_diff(args, ctx) -> tuple[dict, list[str]]:
         empty["notes"].append("本项目还没有任何作业 —— 没有可比的基准。")
         return empty, ["（本项目还没有任何作业，无从 diff）"]
 
-    rows = conn.execute(_SINCE_SQL,
-                        (project_id, since["at"], project_id, since["at"])).fetchall()
+    rows = query.changes_since(conn, project_id, since["at"])
 
     grouped: dict[int, dict] = {}
     accuracy = {"exact": 0, "approximate": 0, "unknown": 0}
@@ -583,13 +477,8 @@ def cmd_diff(args, ctx) -> tuple[dict, list[str]]:
         })
 
     ids = sorted(grouped)
-    keys = keys_of(conn, project_id, ids)
-    kinds: dict[int, str] = {}
-    if ids:
-        marks = ",".join("?" * len(ids))
-        kinds = {int(r["id"]): str(r["kind"]) for r in conn.execute(
-            f"SELECT id, kind FROM entities WHERE project_id=? AND id IN ({marks})",
-            (project_id, *ids))}
+    keys = query.keys_of(conn, project_id, ids)
+    kinds = query.kinds_by_ids(conn, project_id, ids)
     for eid, bucket in grouped.items():
         bucket["entity_key"] = keys.get(eid)
         bucket["kind"] = kinds.get(eid)
@@ -662,7 +551,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
     一个刻意的取舍：这三项都不进 `healthy`。`healthy` 是**数据坏没坏**的判断
     （不变量 + 孤儿 + GC），而格式漂移是"某个上游工具可能改了输出"—— 那是一个
     **要你去看一眼**的信号，不是一条数据损坏。把两者混进同一个布尔，会让
-    "healthy=false" 同时意味着"库坏了"和"某天 httpx 加了个字段"，于是没人
+    "healthy=false"同时意味着"库坏了"和"某天 httpx 加了个字段"，于是没人
     再认真对待它。
 
     在 CLI 里重写这些判断的代价不是"多写几行"，而是**两个真相**：体检报告与
@@ -673,7 +562,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
     码一一对应 —— 所以 CLI 同样退出 0，健康与否写在 `data.healthy` 里。
     脚本要的是 `magpie doctor --json` 里的那个布尔值，不是一个粗粒度的数字。
     """
-    conn: sqlite3.Connection = ctx.conn()
+    conn = ctx.conn()
     report = store.integrity_check(conn)
     violations = report["violations"]
     by_kind: dict[str, int] = {}
@@ -684,9 +573,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
     orphans = store.orphan_subjects(conn)
     purge = store.purge_eligible(conn)
 
-    jobs = [dict(r) for r in conn.execute(
-        "SELECT id, project_id, kind, state, applied, started_at, finished_at"
-        " FROM jobs ORDER BY id")]
+    jobs = query.all_jobs(conn)
     for job in jobs:
         try:
             job["scope"] = ops.explain_job_scope(conn, int(job["id"]))
@@ -695,16 +582,19 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
             # 它自己就是一条体检结论。
             job["scope"] = {"error": f"{type(exc).__name__}: {exc}"}
 
-    counts = {
-        "projects": _scalar(conn, "SELECT COUNT(*) FROM projects"),
-        "entities": _scalar(conn, "SELECT COUNT(*) FROM entities WHERE is_current=1"),
-        "observations": _scalar(conn,
-                                "SELECT COUNT(*) FROM observations WHERE is_current=1"),
-        "relations": _scalar(conn, "SELECT COUNT(*) FROM relations WHERE is_current=1"),
-        "jobs": len(jobs),
-        "open_inbox": _scalar(conn, "SELECT COUNT(*) FROM inbox_items WHERE state='open'"),
-    }
+    counts = query.metric_counts(conn)
     imports = _import_health(ctx)
+
+    # 体检页的五类（§7.4）。**与 `/doctor` 逐字同义的选择**：项目解析不了时
+    # 不报错，而是**少算这一项**，且那一项在输出里不出现（不是 0）——
+    # "这个库有 2 个项目而你一个都没指定"与"这个项目一类问题都没有"是两件事，
+    # 让后者去冒充前者，正是体检页最不该犯的错。
+    health = None
+    health_skipped = None
+    try:
+        health = query.health_report(conn, resolve_project(conn, getattr(args, "project", None)))
+    except CliError as exc:
+        health_skipped = f"{exc.code}：{exc.message}"
 
     healthy = bool(report["ok"]) and not orphans and not purge["purge"]
     data = {
@@ -720,6 +610,8 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
         "counts": counts,
         "imports": imports,
     }
+    if health is not None:
+        data["health"] = health
     human = [f"{'健康' if healthy else '**不健康**'}",
              f"  sqlite integrity_check：{report['sqlite_integrity']}",
              f"  不变量违例：{len(violations)} 条"
@@ -733,6 +625,19 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
                   [[j["id"], j["kind"], j["state"], j["applied"], j["started_at"],
                     ("error" if "error" in j["scope"]
                      else j["scope"].get("interpret_with"))] for j in jobs])
+    human += [""]
+    if health is not None:
+        # 五类问题（§7.4 的体检页）。数字与 GUI **同一份实现**：两处都只是
+        # `query.health_report` 的一次调用，"两边给出不同的数"因此不可能。
+        human.append(f"五类问题（项目 {health['project_id']}，未决 " +
+                     f"{health['open_inbox']} 条）：")
+        for category in health["categories"]:
+            human.append(f"  {category['label']}：{category['count']} 条"
+                         f"（{' / '.join(category['kinds'])}）")
+        for note in health["notes"]:
+            human.append(f"  ⚠ {note}")
+    else:
+        human.append(f"五类问题：未计算（{health_skipped}）")
     human += ["", "导入体检（2.6）：",
               f"  解析器漂移：{len(imports['parser_drift'])} 项"
               + (f"  {[d['drift'] for d in imports['parser_drift']]}" if imports["parser_drift"] else ""),
@@ -785,8 +690,7 @@ def _import_health(ctx) -> dict:
             "当时可见**，没有报告就没有它的痕迹。这一项因此为空，"
             "而不是'没有漂移'。")
     covered = {int(r["job_id"]) for r in reports if r.get("job_id") is not None}
-    jobs_with_fingerprint = _scalar(
-        conn, "SELECT COUNT(*) FROM jobs WHERE parser_fingerprint IS NOT NULL")
+    jobs_with_fingerprint = query.jobs_with_parser_fingerprint(conn)
     return {
         "reports_dir": str(reports_dir),
         "reports": reports,
@@ -853,10 +757,6 @@ def _read_report(path) -> dict | None:
     }
 
 
-def _scalar(conn: sqlite3.Connection, sql: str, *params: Any) -> int:
-    return int(conn.execute(sql, params).fetchone()[0])
-
-
 # ---------------------------------------------------------------------------
 # schema
 # ---------------------------------------------------------------------------
@@ -897,9 +797,7 @@ def _query_syntax(parser) -> dict:
     （agent 会照着它拼参数）。直接从 argparse 的注册表读，两边就不可能分叉。
 
     **嵌套的命令展平成一个带空格的键**（`project create`），与 `RUNNERS` 的键
-    逐字一致。2.2 时这里写着"嵌套的子命令不在本步的合同里" —— 那是当时只有扁平
-    命令时的一句实话；`project create` 落地后，同一句话就会变成"agent 的说明书
-    上少了这条命令"，而那正是这份输出存在的理由。
+    逐字一致。
     """
     commands: dict[str, Any] = {}
 
@@ -953,35 +851,21 @@ def _query_syntax(parser) -> dict:
 
 
 def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
-    """一条命令吐出类型、关系动词、字段与查询语法（§6.3）。**agent 无需读源码。**"""
-    conn: sqlite3.Connection = ctx.conn()
-    kinds = [{"kind": str(r["kind"]), "lens": str(r["lens"]),
-              "identity_rule": str(r["identity_rule"]),
-              "fixture_path": str(r["fixture_path"]),
-              "produced_by": _json_or_none(r["produced_by"]) or []}
-             for r in conn.execute(
-                 "SELECT kind, lens, identity_rule, fixture_path, produced_by"
-                 " FROM kind_registry ORDER BY kind")]
-    verbs = [{"verb": str(r["verb"]), "inverse": r["inverse"],
-              "description": str(r["description"])}
-             for r in conn.execute(
-                 "SELECT verb, inverse, description FROM relation_vocabulary"
-                 " ORDER BY verb")]
+    """一条命令吐出类型、关系动词、字段与查询语法（§6.3）。**agent 无需读源码。**
+
+    还有一样东西也在这里：**具名查询的清单**（`query.NAMED_QUERIES`）。agent
+    据此知道"哪些问题可以直接问"，而不必自己拼过滤条件 —— 拼接就是发明语义，
+    而 2.2 已经拒绝过一次"CLI 自己发明查询语义"。
+    """
+    conn = ctx.conn()
+    kinds = query.kinds(conn)
+    verbs = query.relation_verbs(conn)
 
     notes: list[str] = []
-    observed: dict[str, list[dict]] = {}
-    project_spec = args.project
+    observed: list[dict] = []
     try:
-        project_id = resolve_project(conn, project_spec)
-        for row in conn.execute(
-                "SELECT e.kind AS kind, o.semantic_field AS field,"
-                " o.value_kind AS value_kind, COUNT(*) AS n"
-                " FROM observations o JOIN entities e ON e.id = o.entity_id"
-                " WHERE o.project_id=? AND o.is_current=1"
-                " GROUP BY 1, 2, 3 ORDER BY 1, 2", (project_id,)):
-            observed.setdefault(str(row["kind"]), []).append(
-                {"field": str(row["field"]), "value_kind": str(row["value_kind"]),
-                 "count": int(row["n"])})
+        project_id = resolve_project(conn, args.project)
+        observed = query.observed_fields(conn, project_id)
     except CliError as exc:
         if exc.code != "E_PROJECT_REQUIRED":
             raise
@@ -995,6 +879,10 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
         "schema_version": ctx.db.schema_version,
         "kinds": kinds,
         "relation_verbs": verbs,
+        "named_queries": {name: {"help": help_text,
+                                 "filters": [f for f in query.ENTITY_FILTERS
+                                             if f not in ("cursor", "limit")]}
+                          for name, help_text in sorted(query.NAMED_QUERIES.items())},
         "fields": {"entity": list(ENTITY_FIELDS),
                    "observation": observed,
                    "observation_note": OBSERVATION_FIELDS_NOTE},
@@ -1007,14 +895,17 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
                   [[k["kind"], k["lens"], ",".join(k["produced_by"])] for k in kinds])
     human += ["", "关系动词（relation_vocabulary）："]
     human += _tbl(["VERB", "INVERSE"], [[v["verb"], v["inverse"]] for v in verbs])
+    human += ["", "具名查询（§3.5）："]
+    human += _tbl(["名字", "说明"], [[name, help_text]
+                                     for name, help_text in sorted(query.NAMED_QUERIES.items())])
     human += ["", "实体字段："]
     human += _tbl(["NAME", "TYPE", "可筛", "说明"],
                   [[f["name"], f["type"], f.get("filter") or "—",
                     (f.get("note") or "")[:40]] for f in ENTITY_FIELDS])
     human += ["", "观测字段（本库实际出现）："]
     human += _tbl(["KIND", "FIELD", "VALUE_KIND", "N"],
-                  [[k, f["field"], f["value_kind"], f["count"]]
-                   for k, fields in sorted(observed.items()) for f in fields])
+                  [[k["kind"], f["field"], f["value_kind"], f["count"]]
+                   for k in observed for f in k["fields"]])
     for note in notes:
         human.append(f"  ⚠ {note}")
     return data, human
@@ -1028,6 +919,7 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
 RUNNERS = {
     "init": cmd_init,
     "ls": cmd_ls,
+    "lens": cmd_lens,
     "show": cmd_show,
     "search": cmd_search,
     "diff": cmd_diff,

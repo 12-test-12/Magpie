@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.5.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.6.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。

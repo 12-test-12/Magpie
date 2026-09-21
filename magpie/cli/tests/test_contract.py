@@ -381,6 +381,12 @@ def test_doctor_zero_exit_when_data_is_unhealthy(loaded_db):
     """
     conn = sqlite3.connect(str(loaded_db), isolation_level=None)
     try:
+        # 这个库是**真导入**出来的，所以它自己的未决项数不是 0（3.6 起导入会开
+        # 越界 / 未知字段的待办）。断言因此是**相对**的：加了一条，就多一条。
+        # 写成 `== 1` 会让这条用例偷偷依赖"夹具库里一条待办都没有"这个与它
+        # 要验的东西（退出码 0）毫无关系的前提。
+        before = int(conn.execute(
+            "SELECT COUNT(*) FROM inbox_items WHERE state='open'").fetchone()[0])
         conn.execute("INSERT INTO inbox_items(project_id, kind, subject_kind,"
                      " subject_id, fingerprint, severity, state, payload_json,"
                      " created_at, last_seen_at)"
@@ -391,7 +397,7 @@ def test_doctor_zero_exit_when_data_is_unhealthy(loaded_db):
     code, payload = envelope("doctor", "--db", str(loaded_db), "--json")
     data = assert_ok(payload)
     assert code == 0
-    assert data["counts"]["open_inbox"] == 1
+    assert data["counts"]["open_inbox"] == before + 1
     assert data["healthy"] is True          # 未决 Inbox 不是"不健康"，它是待办
 
 
@@ -517,7 +523,7 @@ def _subparsers(parser) -> dict:
 #: 2.2 交付的只读命令。`schema` 的描述里这几条必须在（它们是最老的一批消费者
 #: 依赖的东西）。刻意不是"全集相等"：那条断言在 `test_schema_..._real_parser`
 #: 里已经逐项做过了，这里再钉一次是为了让"加命令时顺手删掉一条老的"也能红。
-RUNNER_COMMANDS = {"init", "ls", "show", "search", "diff", "doctor", "schema",
+RUNNER_COMMANDS = {"init", "ls", "lens", "show", "search", "diff", "doctor", "schema",
                    "project create", "import", "undo", "redo", "jobs"}
 
 
@@ -555,6 +561,7 @@ def test_every_registered_command_is_dispatchable(empty_db):
     invocations = {
         "init": ("init",),
         "ls": ("ls",),
+        "lens": ("lens",),
         "show": ("show", "1"),
         "search": ("search", "q"),
         "diff": ("diff", "--since", "last"),

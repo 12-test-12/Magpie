@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib
 import inspect
@@ -617,6 +618,15 @@ def _existing_facts(conn: sqlite3.Connection, project_id: int) -> tuple[set, set
     算成新增）或误中（新增被算成更新）。`field_namespace` 是其中一员：它是
     schema 里真实存在的列，也真的区分两种字段 —— 读少了它，`entity_field`
     的 display_name 与同名 `observation_field` 就会撞成一个键。
+
+    **两半都必须只算"还活着"的事实**（这就是 `v_field_owner` 与
+    `v_active_contributions` 在这里出现的原因）。字段那一半走 `v_field_owner`，
+    于是被 undo 抑制掉的贡献自动出局；关系那一半一度只查了 `relations` 表与
+    别名，**没有任何活跃性判据** —— `relations` 行在 undo 里是**不删**的
+    （撤销写的是抑制边，事实层只追加），于是 undo 之后那几条关系仍然"看得见"，
+    重导时被算成 `updated`，而库里一条活跃事实都没有。判据与字段那一半对齐：
+    关系要有**活跃的关系贡献**才算数 —— 用贡献流而不是 `relations.is_current`
+    缓存列，因为缓存是投影、贡献才是事实（本模块反复重申的那条纪律）。
     """
     fields: set[tuple[str, str, str, str]] = set()
     for row in conn.execute(
@@ -631,6 +641,9 @@ def _existing_facts(conn: sqlite3.Connection, project_id: int) -> tuple[set, set
     for row in conn.execute(
         "SELECT sa.alias_key AS s, r.rel AS rel, da.alias_key AS d"
         "  FROM relations r"
+        "  JOIN v_active_contributions c"
+        "    ON c.contribution_kind = 'relation' AND c.subject_kind = 'relation'"
+        "   AND c.subject_id = r.id"
         "  JOIN entity_alias sa ON sa.entity_id = r.src_id AND sa.project_id = r.project_id"
         "  JOIN entity_alias da ON da.entity_id = r.dst_id AND da.project_id = r.project_id"
         " WHERE r.project_id = ? AND sa.revoked_by_job_id IS NULL"
@@ -718,22 +731,44 @@ class _JobTxn:
     —— 必须一行都不留，所以它**不**做 checkpoint，全程一个事务、末尾 ROLLBACK。
     两条路径共用同一份写入代码，差异只在 COMMIT / ROLLBACK 这一处（T1 模板的
     纪律：dry-run 说真话的前提是它与真跑同一条路径）。
+
+    **`shared=True` 时本对象不自持事务**（干跑，边界在上一级）
+    ----------------------------------------------------------
+    上面那句"**全程**一个事务"以前是句空话：`_JobTxn` 是**按文件**实例化的，
+    每个文件结束时各自 ROLLBACK，于是第 N 个文件看不见前 N-1 个文件刚写下的
+    事实。真跑里每个文件收尾会 COMMIT，第 2 个文件**看得见**第 1 个文件 ——
+    干跑却看不见，同一条命令行两边的 `added` / `updated` 于是对不上（实测
+    `import subfinder.txt httpx.jsonl`：真跑 added=193/updated=12，干跑
+    added=205/updated=0）。干跑的全部价值是"预测真跑"，它自己没有资格另立一套
+    可见性。
+
+    所以干跑的每个文件一律标 `shared=True`：不 BEGIN、不 COMMIT、不 ROLLBACK
+    ——本文件的写入因此对**同一事务里的后续文件与后续 step** 可见。边界由谁开？
+    见 `dry_run_scope`：**一条命令行**。`magpie import` 一条命令就是一轮
+    `ingest_paths`，边界落在 `ingest_paths`；`pipeline run` 是一条命令、多个
+    step，边界落在 `run_pipeline`（每个 step 各是一次 `ingest_paths` 调用，
+    各自开边界的话第 2 个 step 又看不见第 1 个了）。真跑永远 `shared=False`
+    （事务边界就是文件边界，取消语义依赖它）。
     """
 
-    def __init__(self, conn: sqlite3.Connection, *, dry_run: bool, batch: int) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, dry_run: bool, batch: int,
+                 shared: bool = False) -> None:
         self.conn = conn
         self.dry_run = dry_run
         self.batch = batch
+        #: 事务由调用方（`ingest_paths`）开与关，本文件不碰边界
+        self.shared = shared
         self._since_commit = 0
         self.commits = 0
 
     def __enter__(self) -> "_JobTxn":
-        self.conn.execute("BEGIN IMMEDIATE")
+        if not self.shared:
+            self.conn.execute("BEGIN IMMEDIATE")
         return self
 
     def checkpoint(self) -> None:
         self._since_commit += 1
-        if self.dry_run or self._since_commit < self.batch:
+        if self.dry_run or self.shared or self._since_commit < self.batch:
             return
         self.conn.execute("COMMIT")
         self.conn.execute("BEGIN IMMEDIATE")
@@ -741,8 +776,52 @@ class _JobTxn:
         self.commits += 1
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        if self.shared:
+            return False               # 边界归 `ingest_paths`，见上
         self.conn.execute("ROLLBACK" if (self.dry_run or exc_type is not None) else "COMMIT")
         return False
+
+
+@contextlib.contextmanager
+def dry_run_scope(conn: sqlite3.Connection, enabled: bool) -> Iterator[bool]:
+    """干跑的**命令级**事务边界：整段跑在一个事务里，末尾一律 ROLLBACK。
+
+    yield 出去的布尔值是"本对象是否真的持着事务" —— 调用方（`run_pipeline`）
+    必须把它原样传给 `ingest_paths(..., _shared_txn=...)`，别在两处各判一次。
+
+    为什么需要"命令级"
+    ------------------
+    `ingest_paths` 自己的边界是**一次调用**。一次调用就是一条命令行时（`magpie
+    import`、GUI 导入、API 导入）那是对的，但 `pipeline run` 是**一条命令、多个
+    step**（`magpie/core/pipeline.py` 每个 step 调一次 `ingest_paths`），于是：
+
+      * 真跑：每个 step 各自收尾 COMMIT，第 2 个 step **看得见**第 1 个 step
+        刚落下的事实；
+      * 干跑（修这条之前）：每次调用各自 BEGIN/ROLLBACK，第 2 个 step **看不见**
+        —— 同一条命令行，两端的库状态在干跑/真跑下就已经不同了。
+
+    后果不是"数字难看"，而是 `pipeline run --dry-run` 在**多 step 的 flow 上低报
+    `updated`**：它把"重述第 1 个 step 已有事实"的那些记录全算成新增。干跑唯一的
+    价值就是预测真跑，一个会说假话的干跑比没有干跑更糟 —— 人会照着它的数做判断。
+
+    所以命令级入口用本对象把**整条命令**包起来。修完之后，`pipeline` 入口的
+    "干跑 totals == 真跑 totals"是一条真正的端到端断言，不需要任何特判。
+
+    真跑时它是**空的**（`enabled=False`，不开事务、不碰边界）—— 真跑的事务边界
+    就是每个文件的边界，取消语义依赖它（见 `_JobTxn`）。
+    """
+    if not enabled:
+        yield False
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield True
+    finally:
+        # 与 `ingest_paths` 的收尾同一条理由：不能误回滚别人的事务。BEGIN 失败
+        # 时异常会直接抛出，这里判一次 `in_transaction` 就不会顺手把外面的工作
+        # 也撤掉。
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
 
 
 # ---------------------------------------------------------------------------
@@ -843,29 +922,53 @@ def _emit_progress(opts: IngestOptions, ctx: ParseContext | None,
 
 
 def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
-                 paths: Sequence[str | Path]) -> dict[str, Any]:
-    """导入一批文件（每个文件一个 job）。返回聚合报告。"""
+                 paths: Sequence[str | Path], *,
+                 _shared_txn: bool = False) -> dict[str, Any]:
+    """导入一批文件（每个文件一个 job）。返回聚合报告。
+
+    **干跑时整轮共用一个事务**（`shared=True`，见 `_JobTxn`）：真跑里第 N 个
+    文件看得见前 N-1 个文件已提交的事实，干跑必须看得见同样多，否则同一条
+    命令行的 totals 会与真跑对不上 —— 而"干跑预测真跑"正是它唯一的价值。
+    事务边界在这里开、也在这里关：无论中途哪个文件失败或中断，末尾一律
+    ROLLBACK（干跑的硬性标准：跑完一行都不留）。
+
+    `_shared_txn` 是**内部**参数，为真时表示"边界不归我，调用方持着它" ——
+    `pipeline run` 一条命令多个 step，边界必须落在整条命令上（见 `dry_run_scope`），
+    否则第 2 个 step 看不见第 1 个 step 写下的事实。默认 `False`：一次调用一条
+    命令的入口（CLI / GUI / API 的导入）行为与以前逐字节相同。
+    """
     files, problems = discover(paths)
     parsers, source_pkg = load_parsers()
     reports: list[dict[str, Any]] = []
-    for index, path in enumerate(files):
-        if opts.cancel_check is not None and opts.cancel_check():
-            reports.append({"path": str(path), "state": "cancelled", "job_id": None,
-                            "reason": "中断：该文件尚未开始", "counts": Counters().as_dict()})
-            continue
-        _emit_progress(opts, None, {"event": "file_start", "file": path.name,
-                                    "path": str(path), "index": index,
-                                    "total": len(files)})
-        try:
-            report = ingest_file(conn, opts, path, parsers=parsers)
-        except Exception as exc:            # 单个文件失败不该毁掉整轮导入
-            report = _problem_report(path, f"{type(exc).__name__}: {exc}")
-        reports.append(report)
-        _emit_progress(opts, None, {"event": "file_done", "file": path.name,
-                                    "path": str(path), "index": index,
-                                    "total": len(files), "job_id": report.get("job_id"),
-                                    "state": report.get("state"),
-                                    "counts": report.get("counts")})
+    #: 干跑才谈"谁来持边界"：真跑的事务边界就是文件边界，取消语义依赖它。
+    owns_txn = opts.dry_run and not _shared_txn
+    if owns_txn:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        for index, path in enumerate(files):
+            if opts.cancel_check is not None and opts.cancel_check():
+                reports.append({"path": str(path), "state": "cancelled", "job_id": None,
+                                "reason": "中断：该文件尚未开始",
+                                "counts": Counters().as_dict()})
+                continue
+            _emit_progress(opts, None, {"event": "file_start", "file": path.name,
+                                        "path": str(path), "index": index,
+                                        "total": len(files)})
+            try:
+                report = ingest_file(conn, opts, path, parsers=parsers,
+                                     _shared_txn=opts.dry_run)
+            except Exception as exc:        # 单个文件失败不该毁掉整轮导入
+                report = _problem_report(path, f"{type(exc).__name__}: {exc}")
+            reports.append(report)
+            _emit_progress(opts, None, {"event": "file_done", "file": path.name,
+                                        "path": str(path), "index": index,
+                                        "total": len(files), "job_id": report.get("job_id"),
+                                        "state": report.get("state"),
+                                        "counts": report.get("counts")})
+    finally:
+        # 不能在 BEGIN 失败时误回滚别人的事务，所以判 `in_transaction`。
+        if owns_txn and conn.in_transaction:
+            conn.execute("ROLLBACK")
     totals: dict[str, int] = {}
     for rep in reports:
         for name, value in rep.get("counts", {}).items():
@@ -885,14 +988,19 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
 
 
 def ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
-                parsers: Sequence[Any] | None = None) -> dict[str, Any]:
+                parsers: Sequence[Any] | None = None,
+                _shared_txn: bool = False) -> dict[str, Any]:
     """一个文件的完整管线（§5.1 的 12 个阶段）。失败也返回可读报告，不抛堆栈。
 
     顺手按 `opts.report_dir` 落一份机器可读的副本（默认 None = 不落，见
     `_write_report`）。落盘失败**不影响**这条报告的返回：一份写不下去的诊断
     副本，不该把一次成功的导入变成失败。
+
+    `_shared_txn` 是**内部**参数：为真时本文件不持事务边界，由 `ingest_paths`
+    开的整轮干跑事务兜着（见 `_JobTxn`）。单文件调用（含 CLI 的 `--dry-run`）
+    保持默认，自持事务、末尾 ROLLBACK。
     """
-    report = _ingest_file(conn, opts, path, parsers=parsers)
+    report = _ingest_file(conn, opts, path, parsers=parsers, _shared_txn=_shared_txn)
     _write_report(opts, report)
     return report
 
@@ -931,7 +1039,8 @@ def _write_report(opts: IngestOptions, report: dict[str, Any]) -> str | None:
 
 
 def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
-                 parsers: Sequence[Any] | None = None) -> dict[str, Any]:
+                 parsers: Sequence[Any] | None = None,
+                 _shared_txn: bool = False) -> dict[str, Any]:
     """上一条的实现体（`ingest_file` 负责落盘副本，这里只算报告）。"""
     path = Path(path)
     if parsers is None:
@@ -997,13 +1106,14 @@ def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
 
     source_name = opts.source_name or str(parser_cls.tool)
     return _run_job(conn, opts, path, digest, size, probe, parser_cls, fingerprint,
-                    _definition_hash(parser_cls), source_name, arbitration)
+                    _definition_hash(parser_cls), source_name, arbitration,
+                    _shared_txn=_shared_txn)
 
 
 def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: str,
              size: int, probe: Probe, parser_cls: Any, fingerprint: str,
              definition_hash: str, source_name: str,
-             arbitration: dict[str, Any]) -> dict[str, Any]:
+             arbitration: dict[str, Any], *, _shared_txn: bool = False) -> dict[str, Any]:
     """解析 → 写入 → 冲突 → 报告 → 收尾。**唯一的写入路径**。"""
     ctx = ParseContext(project_id=opts.project_id, source_name=source_name,
                        source_override=opts.source_name, _cancel=opts.cancel_check)
@@ -1016,7 +1126,8 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
     badlines_path: str | None = None
     commits = 0
 
-    with _JobTxn(conn, dry_run=opts.dry_run, batch=opts.batch_size) as txn:
+    with _JobTxn(conn, dry_run=opts.dry_run, batch=opts.batch_size,
+                 shared=_shared_txn) as txn:
         raw_id, locator_uri, storage_state = archive_file(conn, opts, path, digest, size)
         source_id = store.register_source(conn, name=source_name,
                                           authority_level=opts.authority_level,
@@ -1054,7 +1165,13 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                 evidence_id = _evidence_for_line(conn, opts, raw_id, ctx, evidence_cache)
                 _write_record(conn, opts, job_id, source_id, evidence_id, rec,
                               _endpoint_kind(rec))
-                if key in (existing_rels if key[0] == "relation" else existing_fields):
+                # **取 `key[1]`，不是 `key`**：`_fact_key` 返回的是 `(类别, 键)`
+                # 这样一个二元组，而 `_existing_facts` 给的两半分别是不带标签的
+                # 三元组（关系）与四元组（字段）。拿整个二元组去比对，两边**永远**
+                # 对不上 —— `updated` 成了走不到的分支，每一次重导都被算成 `added`。
+                # 判据的形状写在 `_fact_key` / `_existing_facts` 的 docstring 里，
+                # `test_datalayer_audit` 的 #7 用例也正是拿 `[1]` 去对撞的。
+                if key[1] in (existing_rels if key[0] == "relation" else existing_fields):
                     counters.updated += 1
                 else:
                     counters.added += 1
@@ -1097,11 +1214,24 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         # 而且 v_integrity_violations 会当场判 cache_understated。撤销同样是
         # 靠这条路径把缓存投影回事实，所以它与 ops.undo 走的是同一个函数。
         # 中断时也必须走到这里：已提交的部分要处于**一致**状态才谈得上可 undo。
-        store.recompute(conn, delta=ops._recompute_subjects_of_job(  # noqa: SLF001
-            conn, job_id))
+        touched = ops._recompute_subjects_of_job(conn, job_id)    # noqa: SLF001
+        store.recompute(conn, delta=touched)
 
-        # --- 阶段 9/10：冲突检测 → 进 Inbox ---
+        # --- 阶段 9/10：冲突 / 格式漂移 / 越界 → 进 Inbox ---
+        # 三件事都走 `ops` 的 `refresh_*`，全部只**开待办**、不改事实：
+        # 体检页的五类正是这张表的归组（见 query.HEALTH_CATEGORIES），所以
+        # "谁发现了问题"与"体检页显示什么"是同一件事的两个说法。
         ops.refresh_observation_conflicts(conn, opts.project_id)
+        # 未知字段（§5.6）：`ctx.unknown_fields` 在这次解析里已经数好了，
+        # 不在这里落成待办，它就只活在报告文件里（事后无迹可查）。
+        ops.refresh_unknown_fields(conn, opts.project_id, job_id=job_id,
+                                   fields=ctx.unknown_fields, file_name=path.name,
+                                   fingerprint=fingerprint)
+        # 越界资产：只判**这个作业刚写进去的实体** —— 作业为自己写的行负责，
+        # 而不是替整个库重新判一遍（那会让每次导入付一次全库扫描）。
+        ops.refresh_scope_drift(
+            conn, opts.project_id, job_id=job_id,
+            entity_ids=[sid for kind, sid in touched if kind == "entity"])
         counters.conflicts = max(0, _open_value_conflicts(conn, opts.project_id)
                                  - conflicts_before)
 
@@ -1388,7 +1518,8 @@ def _no_parser_report(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
 __all__ = [
     "Cancelled", "Counters", "IngestOptions", "ParseContext", "Probe",
     "SNIFF_ADOPT_MARGIN", "SNIFF_ADOPT_SCORE",
-    "arbitrate", "archive_file", "discover", "ingest_file", "ingest_paths",
+    "arbitrate", "archive_file", "discover", "dry_run_scope", "ingest_file",
+    "ingest_paths",
     "INPUT_SUFFIXES", "iter_lines", "load_parsers", "parser_drift_report",
     "probe_file",
     "sha256_file", "sniff_rank",

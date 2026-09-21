@@ -313,7 +313,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.5.0"
+    "version": "0.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -393,6 +393,7 @@
     },
     "/api/v1/agent/context": {
       "get": {
+        "description": "它**复用详情那一条路**（`query.entity_detail`），不另取一份 —— 上下文包\n里说\"这个实体有 3 条观测\"而详情页说 4 条，是最难查的一类不一致。",
         "operationId": "agent_context_api_v1_agent_context_get",
         "parameters": [
           {
@@ -502,6 +503,7 @@
     },
     "/api/v1/doctor": {
       "get": {
+        "description": "体检。判断全部来自数据层（`store.integrity_check` 等），取数全部走\n`query` —— 这个路由只负责把两块拼起来。\n\n`?project=` 找不到时**故意不报错**：体检是\"这个库怎么样\"，它必须在那一个\n项目都用不了的时候也能跑完（`data.untested_entities` 才需要项目）。\n这与\"静默忽略一个过滤条件\"不是一回事：这里没有筛任何东西，只是少算一项，\n而少算的那一项**在输出里没有出现**（不是 0）。",
         "operationId": "doctor_api_v1_doctor_get",
         "parameters": [
           {
@@ -550,6 +552,7 @@
     },
     "/api/v1/entities": {
       "get": {
+        "description": "实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` 是\n§3.5 的**具名查询**（`query.dispatch` 决定这组条件在问哪一问）—— 与\n`magpie ls` 的同名 flag 一字不差，两边走同一段实现。\n\n`meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来的\n而不是连出来的…… 一个空列表必须带着\"为什么是空的\"，否则它会被读成\n\"筛过了，就是没有\"（这正是 `review_status` 那条纪律的同一个理由）。",
         "operationId": "list_entities_api_v1_entities_get",
         "parameters": [
           {
@@ -582,6 +585,22 @@
                 }
               ],
               "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lens",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lens"
             }
           },
           {
@@ -630,6 +649,102 @@
                 }
               ],
               "title": "Lifecycle"
+            }
+          },
+          {
+            "in": "query",
+            "name": "product",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Product"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Endpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "in_cidr",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "In Cidr"
             }
           },
           {
@@ -715,7 +830,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "实体列表（键集游标分页）"
+        "summary": "实体列表（键集游标分页）+ §3.5 的具名查询"
       }
     },
     "/api/v1/entities/{entity_id}": {
@@ -909,6 +1024,7 @@
     },
     "/api/v1/export": {
       "get": {
+        "description": "导出。**取数只有一份**（`query.export_entities`），四种格式是四种**渲染** ——\n一个按格式各查一次的导出迟早会把 `domains` 的那种排序悄悄换成另一种。",
         "operationId": "export_api_v1_export_get",
         "parameters": [
           {
@@ -963,6 +1079,7 @@
     },
     "/api/v1/graph": {
       "get": {
+        "description": "注意 `_unsupported({\"depth\": depth})`：`depth` 在 `/graph` 上**仍然**是\n\"传了就 400\"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默\n忽略，调用方就会以为按深度筛过了。",
         "operationId": "get_graph_api_v1_graph_get",
         "parameters": [
           {
@@ -1790,6 +1907,7 @@
     },
     "/api/v1/lenses/{lens}": {
       "get": {
+        "description": "镜头页的类型徽标与计数。\n\n与 `magpie lens` 调的是**同一个** `query.lens_view` —— GUI 的镜头页与 CLI\n的类型计数因此不可能给出不同的数（§3.5）。`total` 是这个镜头的实体总数，\n界面直接用它，不必自己把 kinds 加起来（加错了一次就少一个数）。",
         "operationId": "get_lens_api_v1_lenses__lens__get",
         "parameters": [
           {
@@ -1842,7 +1960,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "镜头页（assets|products|endpoints|flows|vulns）"
+        "summary": "镜头页（assets|services|api|vuln|traffic|graph）"
       }
     },
     "/api/v1/meta": {

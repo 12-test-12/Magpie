@@ -14,7 +14,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from . import scope as scope_module
 from . import store
+from . import query
 from .store import (
     UNHASHED_PARSER,
     InvariantError,
@@ -799,6 +801,90 @@ def refresh_observation_conflicts(conn: sqlite3.Connection, project_id: int) -> 
             conflict_field=str(row["semantic_field"]),
             payload={"field": str(row["semantic_field"]), "values": values},
         )
+        opened += 1 if created else 0
+    return opened
+
+
+def refresh_unknown_fields(conn: sqlite3.Connection, project_id: int, *,
+                           fields: dict[str, int] | None = None,
+                           file_name: str | None = None,
+                           fingerprint: str | None = None,
+                           job_id: int | None = None) -> int:
+    """把"解析器不认识的字段名"登记为 inbox 项（§5.6 的格式漂移信号）。
+
+    为什么这一条需要人看一眼（而不是静静地记在报告里）
+    ------------------------------------------------
+    `ctx.on_unknown_field` 从 2.4 起就在数这些名字，`Counters.unknown_fields` 也
+    一直落在导入报告的 `counts` 里 —— 但**报告是导入那一刻的文件**，事后无迹可查
+    （`_import_health` 的注释把这条写死了：没有留下报告的作业就统计不到）。于是
+    "上游某天加了一个字段"这件事，只有在导入那一次被看见，第二天就没了。
+
+    它要人做的裁决很具体：那个字段是什么、要不要为它补一条归一化 / 一条观测。
+    所以它是一条**待办**，不是一条日志 —— 待办的表就是 Inbox。
+
+    几个刻意的选择：
+
+      * **按字段名各开一条**（不是每个文件一条）：同一个字段在两个文件里出现，
+        要做的裁决是同一件 —— 合并成一条 `occurrence_count` 累加，
+        正是 `_open_inbox` 的 fingerprint 机制在做的事；
+      * `sources` 放**解析器指纹**而不是文件名：指纹在一次导入里是常量，所以
+        同一份文件的两次导入、同一解析器的两个文件，都折进同一条；
+      * `severity='low'`：格式漂移是"要你去看一眼"的信号，不是数据损坏 ——
+        `cmd_doctor` 早就把这条分工写死了（漂移不进 `healthy`）。把它报成 high
+        会让真正的高危项淹在里面；
+      * 主体用 `entity:0`（项目级占位）：解析器报的是**字段名**，那一刻还没有
+        任何实体可指 —— 与 `_no_parser_report` 同一个占位约定；
+      * `fields` 为空时**一行不写**：干净的夹具因此完全不受影响（生产者必须是
+        惰性的，否则每个既有导入都会凭空多出一条待办）。
+
+    返回新开的条数（复用已存在的 open 项不算）。
+    """
+    counts = fields or {}
+    opened = 0
+    for name in sorted(counts):
+        count = int(counts[name])
+        _, created = _open_inbox(
+            conn, project_id=project_id, kind="evidence_missing",
+            subject_kind="entity", subject_id=0,
+            values=[str(name)], sources=[str(fingerprint or "")],
+            job_id=job_id, severity="low",
+            payload={"reason": "unknown_field", "field": str(name), "count": count,
+                     "file": file_name, "parser": fingerprint})
+        opened += 1 if created else 0
+    return opened
+
+
+def refresh_scope_drift(conn: sqlite3.Connection, project_id: int, *,
+                        entity_ids: list[int] | None = None,
+                        job_id: int | None = None) -> int:
+    """把"落在项目 scope 之外"的资产登记为 inbox 项（`scope_drift`）。
+
+    **判据不在这里** —— 哪条资产越界由 `query.out_of_scope_entities` 说了算，
+    它底下是 `scope.py` 的唯一一份匹配语义（子域通配 / 网段包含 / 大小写折叠）。
+    读写两侧调同一个函数，所以"体检页说 3、Inbox 说 2"这种分歧不可能出现。
+
+    `entity_ids` 给了就只判这几条 —— 导入路径传的是**这个作业刚写进去的实体**：
+    一个作业为自己写的行负责，而不是替整个库重新判一遍（那会让每次导入付一次
+    全库扫描，而 100 万观测的库上这一步比导入本身还贵）。
+
+    没配 scope 的项目（include / exclude 都空）**一行不写**：`scope.in_scope`
+    对这种项目回的是 `None`（不问），不是 `False`（越界）。把"没配"读成"全越界"
+    会让每个项目在第一次导入时刷出一屏假待办 —— 那是把体检页变成噪音。
+
+    返回新开的条数。重复导入同一份文件不会新增（fingerprint 含实体键）。
+    """
+    scope_obj = query.project_scope(conn, project_id)
+    opened = 0
+    for entity in query.out_of_scope_entities(conn, project_id,
+                                              entity_ids=entity_ids):
+        _, created = _open_inbox(
+            conn, project_id=project_id, kind="scope_drift",
+            subject_kind="entity", subject_id=int(entity["id"]),
+            values=[str(entity["entity_key"])], sources=[],
+            job_id=job_id, severity="medium",
+            payload={"reason": "out_of_scope", "entity_key": str(entity["entity_key"]),
+                     "kind": str(entity["kind"]),
+                     "scope": scope_module.describe(scope_obj)})
         opened += 1 if created else 0
     return opened
 

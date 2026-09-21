@@ -240,47 +240,62 @@ def run_pipeline(conn: sqlite3.Connection, definition: dict[str, Any], *,
     step_reports: list[dict[str, Any]] = []
     produced: dict[str, int] = {}
 
-    for step in steps:
-        sid = str(step["id"])
-        pattern = str(step.get("source_glob") or step.get("source") or "")
-        matched = sorted(base.glob(pattern)) if pattern else []
-        deps = [str(d) for d in (step.get("after") or [])]
-        dependency_empty = bool(deps) and all(produced.get(d, 0) == 0 for d in deps)
+    # 干跑的事务边界是**整条命令**，不是一次 `ingest_paths` —— 见 `dry_run_scope`。
+    # 修之前这条命令的干跑是"每个 step 各自一个事务、各自 ROLLBACK"，第 2 个 step
+    # 看不见第 1 个 step 刚写下的事实，于是多 step 的 flow 上 `--dry-run` **低报
+    # `updated`**（重述已有事实的记录被算成新增）。真跑那一边每个 step 收尾 COMMIT，
+    # 第 2 个 step 看得见 —— 同一条命令行，两端的库状态本就不同，干跑说的不是真话。
+    #
+    # 边界开在 `resolve_project` **之后**：干跑仍然建项目（"文件的落点必须先存在"
+    # 是这条链路的前半段，不是事实），那部分照旧提交；被回滚的只有事实。
+    with ingest.dry_run_scope(conn, dry_run) as command_txn:
+        for step in steps:
+            sid = str(step["id"])
+            pattern = str(step.get("source_glob") or step.get("source") or "")
+            matched = sorted(base.glob(pattern)) if pattern else []
+            deps = [str(d) for d in (step.get("after") or [])]
+            dependency_empty = bool(deps) and all(produced.get(d, 0) == 0 for d in deps)
 
-        problems: list[str] = []
-        if not matched:
-            problems.append(f"source_glob {pattern!r} 没有匹配到任何文件（基准目录 {base}）")
+            problems: list[str] = []
+            if not matched:
+                problems.append(
+                    f"source_glob {pattern!r} 没有匹配到任何文件（基准目录 {base}）")
 
-        opts = ingest.IngestOptions(
-            project_id=project["id"], data_dir=dd,
-            parser=step.get("parser"), source_name=step.get("source"),
-            authority_level=str(step.get("authority") or "unverified"),
-            archive=str(step.get("archive") or archive),
-            dry_run=bool(dry_run or step.get("dry_run")), actor=actor,
-            # 报告副本落进 `reports/`（坏行明细本来就在那儿）。doctor 报"未知
-            # 字段"只能靠它 —— 那个信号只活在一次解析里，事后无迹可查。
-            report_dir=dd / "reports",
-            batch_size=int(step.get("batch_size") or ingest.DEFAULT_BATCH))
-        report = ingest.ingest_paths(conn, opts, matched)
-        produced[sid] = sum(1 for f in report["files"]
-                            if f.get("state") in _PRODUCED_STATES)
-        step_reports.append({
-            "id": sid,
-            "parser": step.get("parser"),
-            "source_glob": pattern,
-            "after": deps,
-            "dependency_empty": dependency_empty,
-            "matched": len(matched),
-            "problems": problems + list(report.get("problems") or []),
-            "totals": report["totals"],
-            "job_ids": report["job_ids"],
-            "files": [{k: f.get(k) for k in
-                       ("path", "state", "job_id", "inbox_item_id", "sha256", "parser",
-                        "counts", "reconcile", "integrity", "unknown_fields_detail",
-                        "skip_reason", "reason", "parse_error", "badlines_report",
-                        "encoding", "arbitration")}
-                      for f in report["files"]],
-        })
+            opts = ingest.IngestOptions(
+                project_id=project["id"], data_dir=dd,
+                parser=step.get("parser"), source_name=step.get("source"),
+                authority_level=str(step.get("authority") or "unverified"),
+                archive=str(step.get("archive") or archive),
+                dry_run=bool(dry_run or step.get("dry_run")), actor=actor,
+                # 报告副本落进 `reports/`（坏行明细本来就在那儿）。doctor 报"未知
+                # 字段"只能靠它 —— 那个信号只活在一次解析里，事后无迹可查。
+                report_dir=dd / "reports",
+                batch_size=int(step.get("batch_size") or ingest.DEFAULT_BATCH))
+            # `command_txn` 为真（整条命令干跑）时本 step 不自持边界。step 自己写
+            # 了 `dry_run: true` 而命令没开 `--dry-run` 时它是假 —— 那种 step 仍
+            # 自持边界，与以前一模一样。
+            report = ingest.ingest_paths(conn, opts, matched,
+                                         _shared_txn=command_txn)
+            produced[sid] = sum(1 for f in report["files"]
+                                if f.get("state") in _PRODUCED_STATES)
+            step_reports.append({
+                "id": sid,
+                "parser": step.get("parser"),
+                "source_glob": pattern,
+                "after": deps,
+                "dependency_empty": dependency_empty,
+                "matched": len(matched),
+                "problems": problems + list(report.get("problems") or []),
+                "totals": report["totals"],
+                "job_ids": report["job_ids"],
+                "files": [{k: f.get(k) for k in
+                           ("path", "state", "job_id", "inbox_item_id", "sha256",
+                            "parser", "counts", "reconcile", "integrity",
+                            "unknown_fields_detail", "skip_reason", "reason",
+                            "parse_error", "badlines_report", "encoding",
+                            "arbitration")}
+                          for f in report["files"]],
+            })
 
     totals: dict[str, int] = {}
     for step in step_reports:
