@@ -8,10 +8,11 @@
  *   右栏 实体详情（只在画布页）
  *   底部 日志抽屉
  *
- * 首屏只有一次 `Promise.all`（meta / projects / graph / lenses）—— 没有瀑布式
- * 的串行请求，否则每多一层就多一个 RTT。这是"首屏 < 1.5s"这条契约里**界面
- * 能控制的那一半**；另一半是服务端与浏览器的，见 `bench/test_perf_web.py`
- * 里对口径的说明。
+ * 首屏的请求是 `projects → meta → (graph ∥ lenses)`：镜头清单由
+ * `meta.kinds[].lens` 推导，所以它必须排在 `lenses` 前面（3.2 之前的两者并行
+ * 是"镜头写死在代码里"才成立的前提）。除此之外没有瀑布 —— 多一层就多一个
+ * RTT，而这是"首屏 < 1.5s"这条契约里**界面能控制的那一半**；另一半是服务端
+ * 与浏览器的，见 `bench/test_perf_web.py` 里对口径的说明。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import TopBar from './components/TopBar.vue'
@@ -105,6 +106,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <LensView v-else-if="store.view === 'assets'" lens="assets" label="资产" />
         <LensView v-else-if="store.view === 'services'" lens="services"
                   label="服务与中间件" />
+        <LensView v-else-if="store.view === 'vuln'" lens="vuln" label="漏洞" />
         <JobsView v-else-if="store.view === 'jobs'" />
         <InboxView v-else-if="store.view === 'inbox'" />
         <DoctorView v-else-if="store.view === 'doctor'" />

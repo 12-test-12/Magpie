@@ -36,7 +36,10 @@ import { buildAggregate, filterGraph, shouldAggregate, toFlow } from './graph.js
 const _projects = ref([])
 const _project = ref('')
 const _meta = ref(null)
-const _lenses = reactive({ assets: null, services: null })
+//: 镜头载荷，键是镜头 id。**空对象起步**：有哪几个镜头由库里的
+//: `kind_registry.lens` 决定（`/meta` 把它带回来），不在这里写死。
+const _lenses = reactive({})
+const _lensKeys = ref([])
 const _openInboxCount = ref(0)
 
 const _raw = reactive({ nodes: [], edges: [], layout: {} })
@@ -76,6 +79,14 @@ const _counts = computed(() => ({
 /** 超过阈值就自动进聚合视图（§7.3 防视觉混乱第 ② 条）。 */
 const _aggregate = computed(() => shouldAggregate(_raw.nodes))
 
+/** 左栏要渲染的镜头清单：**有哪些镜头**来自库（`kind_registry.lens`），
+ *  这里只负责排个稳定的顺序、配个人读的名字。 */
+const _lensRows = computed(() => _lensKeys.value.map((key) => ({
+  key,
+  label: LENS_LABELS[key] || key,
+  data: _lenses[key],
+})))
+
 /** 当前该渲染什么：聚合后的类型节点，还是逐个实体。 */
 const _visible = computed(() => {
   const filtered = filterGraph(_raw.nodes, _raw.edges, {
@@ -98,12 +109,26 @@ const _visible = computed(() => {
 
 export const VIEWS = [
   { key: 'explore', label: '画布', hint: '探索模式（只读）' },
-  { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机' },
+  { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段' },
   { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品' },
+  { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）' },
   { key: 'jobs', label: '作业历史', hint: '导入 / undo / redo' },
   { key: 'inbox', label: 'Inbox', hint: '待裁决' },
   { key: 'doctor', label: '数据体检', hint: '完整性 / 孤儿 / 未测' },
 ]
+
+//: 镜头的人读名字与**展示顺序**（计划书 §3.5 的六个）。两者都是**界面**的事：
+//: "有哪几个镜头"由 `kind_registry.lens` 说了算，`/meta` 把它带回来。这里排不
+//: 进来的镜头（以后新增的）不会消失 —— 它们排在已知的之后，名字就用 id。
+const LENS_LABELS = {
+  assets: '资产',
+  services: '服务与中间件',
+  api: '接口',
+  traffic: '流量',
+  vuln: '漏洞',
+  graph: '图谱',
+}
+const LENS_ORDER = ['assets', 'services', 'api', 'traffic', 'vuln', 'graph']
 
 export const store = reactive({
   // -- 状态 --
@@ -133,6 +158,8 @@ export const store = reactive({
   counts: _counts,
   aggregate: _aggregate,
   visible: _visible,
+  lensRows: _lensRows,
+  lensKeys: _lensKeys,
 
   // -- 动作 --
   pushLog,
@@ -201,13 +228,33 @@ export async function createProject(name) {
   return created
 }
 
+/**
+ * 取回**库里真有归属**的每一个镜头。
+ *
+ * 镜头清单来自 `GET /meta` 的 `kinds[].lens` —— 也就是 `kind_registry.lens`，
+ * 那份词表的唯一事实来源。**刻意不在这里写死 `['assets', 'services']`**：
+ * 写死之后，"3.2 登记了 vuln kind"这件事不会让漏洞镜头出现，而症状是
+ * "数据在库里、界面里没有那一页"—— 一种只能靠人记住去改代码的坏法。
+ *
+ * 反过来，某个镜头没有归属的 kind 时 `GET /lenses/{lens}` 会 404 —— 那也不是
+ * 故障：界面显示"这个镜头还是空的"就好。
+ */
 export async function loadLenses() {
-  for (const lens of ['assets', 'services']) {
+  const meta = _meta.value || await loadMeta()
+  const keys = [...new Set((meta.kinds || []).map((kind) => kind.lens))]
+    .filter(Boolean)
+    .sort((a, b) => {
+      const rank = (key) => {
+        const index = LENS_ORDER.indexOf(key)
+        return index < 0 ? LENS_ORDER.length : index
+      }
+      return rank(a) - rank(b) || String(a).localeCompare(String(b))
+    })
+  _lensKeys.value = keys
+  for (const lens of keys) {
     try {
       _lenses[lens] = await get(`/lenses/${lens}`)
     } catch (err) {
-      // 某个镜头还没有归属的 kind（阶段 3 才会补齐）—— 这不是错误，界面显示
-      // "这个镜头还是空的"就好，不必把一个 404 渲染成故障。
       _lenses[lens] = { lens, kinds: [], total: 0, missing: true }
     }
   }
@@ -233,9 +280,13 @@ export async function loadGraph() {
 }
 
 export async function reload() {
-  // 顺序有意：图形要项目定下来才好读；元信息与镜头互相独立，可以一起等。
+  // 顺序有意：图形要项目定下来才好读；而**镜头清单现在是 `meta` 推导出来的**
+  // （`meta.kinds[].lens`），所以它必须排在 `loadLenses` 前面 —— 两件事原来
+  // 是并行的，那是"镜头清单写死在代码里"才成立的前提。代价是首屏多一个 RTT，
+  // 换来的是"登记一个 kind，镜头页自己出现"，值得。
   await loadProjects()
-  await Promise.all([loadMeta(), loadGraph(), loadLenses()])
+  await loadMeta()
+  await Promise.all([loadGraph(), loadLenses()])
 }
 
 export async function selectProject(name) {

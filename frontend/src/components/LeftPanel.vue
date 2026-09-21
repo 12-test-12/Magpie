@@ -10,30 +10,32 @@
  * 管线列表按计划书 §7.1 应该在这里，但 `GET /pipelines` 目前是 **501**
  * （2.6 未开工）。这里把它**明确**标出来，而不是留一个点了没反应的按钮 ——
  * 一个空按钮比没有按钮更让人恼火（2.7 那个静态页的文件头就写着这条）。
+ *
+ * ⚠️ 镜头清单**不在这里写死**：有哪几个镜头由 `kind_registry.lens` 决定
+ * （`store.lensRows` 从 `/meta` 推导）。3.2 之前这里是 `['assets','services']`
+ * 两个字面量，于是"登记了 `vuln` kind"不会让漏洞镜头出现 —— 数据在库里、
+ * 界面里没有那一页，而唯一的修法是有人记得来改这个文件。
  */
 import { computed } from 'vue'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
 
-const LENS_VIEW = { assets: 'assets', services: 'services' }
-
-const lensRows = computed(() => ['assets', 'services'].map((key) => ({
-  key,
-  label: key === 'assets' ? '资产' : '服务与中间件',
-  data: store.lenses[key],
-})))
+const lensRows = computed(() => store.lensRows)
 
 function isActiveLens(key) {
-  return store.view === LENS_VIEW[key]
+  return store.view === key
 }
 
 function openLens(key) {
-  store.setView(LENS_VIEW[key])
+  store.setView(key)
 }
 
 function kindFilter(kind) {
   return store.filter.kinds.includes(kind)
 }
+
+const noKinds = computed(() => !lensRows.value.some(
+  (row) => row.data && row.data.kinds && row.data.kinds.length))
 </script>
 
 <template>
@@ -69,10 +71,7 @@ function kindFilter(kind) {
             <span class="badge">{{ kind.count }}</span>
           </li>
         </template>
-        <li v-if="!store.lenses.assets?.kinds?.length && !store.lenses.services?.kinds?.length"
-            class="dim empty">
-          还没有登记的类型
-        </li>
+        <li v-if="noKinds" class="dim empty">还没有登记的类型</li>
       </ul>
       <button v-if="store.filter.kinds.length" class="ghost clear"
               @click="store.clearFilter()">

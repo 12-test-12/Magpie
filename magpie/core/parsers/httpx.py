@@ -58,6 +58,16 @@ _MAX_ADDRESSES = 16
 #: 一条 host 最多收几个 CNAME。
 _MAX_CNAMES = 16
 
+#: nuclei 的 `-jsonl` 也是每行一个 JSON 对象，而且**带 `host`**。上面那条
+#: "有 host / input / status_code / scheme 就算 httpx"的判据会把它整份认领
+#: （0.95），于是同一份文件两个解析器都拿满分、仲裁因为拉不开差距而把它推给
+#: 人工裁决（§5.4）—— 3.2 加了 nuclei 之后这条是**必然**会撞上的。
+#:
+#: 判据是"排除 nuclei 自己的签名字段"，**不是**"排除带 info 的对象"：
+#: 后者是一句关于另一个工具的猜测，而这个列表是它真实写在每一行里的东西。
+#: httpx 自己的输出里没有这两个 key，所以这条排除不会误伤它（黄金夹具守着）。
+_NUCLEI_MARKERS = ("template-id", "matched-at")
+
 
 class HttpxParser(Parser):
     tool = "httpx"
@@ -73,6 +83,9 @@ class HttpxParser(Parser):
         阈值刻意放在 **0.5** 而不是 1.0：真实 JSONL 里断行/截断是常态
         （我们自己的样例里就有一条），拿"全部行都合法"当采用条件，会让一条
         坏行把整份文件推给人工裁决。
+
+        nuclei 的行（带 `template-id`）**不**计入 —— 它同样是带 `host` 的 JSON
+        对象，理由见 `_NUCLEI_MARKERS`。
         """
         lines = [ln.strip() for ln in sample.replace("\x00", "").splitlines()]
         lines = [ln for ln in lines if ln][:50]
@@ -84,8 +97,9 @@ class HttpxParser(Parser):
                 obj = json.loads(line)
             except (ValueError, TypeError):
                 continue
-            if isinstance(obj, dict) and ("host" in obj or "input" in obj
-                                          or "status_code" in obj or "scheme" in obj):
+            if not isinstance(obj, dict) or _is_nuclei_finding(obj):
+                continue
+            if "host" in obj or "input" in obj or "status_code" in obj or "scheme" in obj:
                 hits += 1
         if hits == 0:
             return 0.0
@@ -231,6 +245,11 @@ class HttpxParser(Parser):
                             attrs={"family": name, "version": version or None})
             yield RawRelation(src=("service", svc),
                               dst=("product", key), rel="runs")
+
+
+def _is_nuclei_finding(obj: dict[str, Any]) -> bool:
+    """这一行是不是 nuclei 的一条命中（见 `_NUCLEI_MARKERS`）。"""
+    return any(marker in obj for marker in _NUCLEI_MARKERS)
 
 
 def service_key(host: str, port: Any, scheme: str) -> str:

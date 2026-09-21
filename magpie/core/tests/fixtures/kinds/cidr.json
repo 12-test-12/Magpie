@@ -1,0 +1,57 @@
+{
+  "kind": "cidr",
+  "lens": "assets",
+  "identity_rule": "网段的规范写法（normalize.normalize_cidr）：网络地址 + 前缀长度，主机位补齐（10.0.0.7/24 → 10.0.0.0/24），IPv4-mapped IPv6 折成 IPv4。**网段与单个 IP 是两个 kind**，不互相折叠 —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，会让「哪台机器」的答案变成「哪一段」。",
+  "golden": [
+    "nmap/1"
+  ],
+  "examples": [
+    {
+      "rule": "normalize.normalize_cidr",
+      "args": [
+        "10.0.0.0/24"
+      ],
+      "key": "10.0.0.0/24",
+      "why": "已经是规范写法"
+    },
+    {
+      "rule": "normalize.normalize_cidr",
+      "args": [
+        "10.0.0.7/24"
+      ],
+      "key": "10.0.0.0/24",
+      "why": "主机位补齐 —— 10.0.0.7/24 与 10.0.0.0/24 说的是同一段，不补就变成两个实体"
+    },
+    {
+      "rule": "normalize.normalize_cidr",
+      "args": [
+        "2001:DB8::/32"
+      ],
+      "key": "2001:db8::/32",
+      "why": "IPv6 十六进制小写化，同一段只有一种写法"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.normalize_cidr",
+      "args": [
+        "10.0.0.7"
+      ],
+      "why": "没有掩码的不是网段（它可能是一台机器）—— 单个 IP 走 ip，不走 cidr"
+    },
+    {
+      "rule": "normalize.normalize_cidr",
+      "args": [
+        "10.0.0.0/33"
+      ],
+      "why": "前缀长度越界"
+    },
+    {
+      "rule": "normalize.normalize_ip",
+      "args": [
+        "10.0.0.0/24"
+      ],
+      "why": "反向：网段绝不能被当成一台机器 —— 两条规则各自把对方的输入挡在门外"
+    }
+  ]
+}

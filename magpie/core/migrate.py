@@ -48,6 +48,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 追加进 ip / service / product 的 produced_by。**新增迁移，不改 003**
     # （红线 R4：已应用的迁移被改动 → 校验和不匹配 → 直接报错）。
     Migration(4, "kind_cidr", SCHEMA_DIR / "004_kind_cidr.sql"),
+    # 登记 `vuln`（第一个真实产出者是 3.2 的 nuclei）与关系动词 `found_on`，
+    # 并把 `nuclei@1` 追加进 domain / ip / service 的 produced_by。
+    # 同样**新增迁移、不改 003 / 004**（红线 R4）。
+    Migration(5, "kind_vuln", SCHEMA_DIR / "005_kind_vuln.sql"),
 )
 
 

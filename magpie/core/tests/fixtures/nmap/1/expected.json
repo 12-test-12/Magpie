@@ -1,0 +1,905 @@
+{
+  "tool": "nmap",
+  "format_version": "1",
+  "input": "input.xml",
+  "bad_lines": [],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.10",
+      "display": "203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "ip",
+        "203.0.113.10"
+      ],
+      "field": "mac",
+      "value": "00:11:22:33:44:55"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "ip",
+        "203.0.113.10"
+      ],
+      "field": "hostname",
+      "value": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.10:80",
+      "display": "203.0.113.10:80",
+      "subtitle": "tcp/80 on 203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "port",
+      "value": "80"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "protocol",
+      "value": "tcp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "reason",
+      "value": "syn-ack"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "script",
+      "value": "http-title: Example Domain"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "service",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "product",
+      "value": "nginx"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "version",
+      "value": "1.24.0"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "service_method",
+      "value": "probed"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "service_conf",
+      "value": "10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "cpe",
+      "value": "cpe:/a:igor_sysoev:nginx:1.24.0"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "field": "cpe_vendor",
+      "value": "igor_sysoev"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "nginx@1.24.0",
+      "display": "nginx",
+      "subtitle": "1.24.0",
+      "attrs": {
+        "family": "nginx",
+        "version": "1.24.0",
+        "vendor": "igor_sysoev",
+        "cpe_part": "a",
+        "source": "cpe"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "field": "vendor",
+      "value": "igor_sysoev"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.10:80"
+      ],
+      "dst": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.10:443",
+      "display": "203.0.113.10:443",
+      "subtitle": "tcp/443 on 203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "port",
+      "value": "443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "protocol",
+      "value": "tcp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "reason",
+      "value": "syn-ack"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "service",
+      "value": "ssl"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "product",
+      "value": "nginx"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "version",
+      "value": "1.24.0"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "tunnel",
+      "value": "ssl"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "service_method",
+      "value": "probed"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "service_conf",
+      "value": "10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "cpe",
+      "value": "cpe:/a:igor_sysoev:nginx:1.24.0"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "field": "cpe_vendor",
+      "value": "igor_sysoev"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "nginx@1.24.0",
+      "display": "nginx",
+      "subtitle": "1.24.0",
+      "attrs": {
+        "family": "nginx",
+        "version": "1.24.0",
+        "vendor": "igor_sysoev",
+        "cpe_part": "a",
+        "source": "cpe"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "field": "vendor",
+      "value": "igor_sysoev"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.10:443"
+      ],
+      "dst": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.10:631",
+      "display": "203.0.113.10:631",
+      "subtitle": "udp/631 on 203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "port",
+      "value": "631"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "protocol",
+      "value": "udp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "reason",
+      "value": "udp-response"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "service",
+      "value": "ipp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "service_method",
+      "value": "table"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "field": "service_conf",
+      "value": "3"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "ipp",
+      "display": "ipp",
+      "attrs": {
+        "family": "ipp",
+        "version": null,
+        "vendor": null,
+        "cpe_part": null,
+        "source": "service"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.10:631"
+      ],
+      "dst": [
+        "product",
+        "ipp"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.10:5900",
+      "display": "203.0.113.10:5900",
+      "subtitle": "tcp/5900 on 203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:5900"
+      ],
+      "field": "port",
+      "value": "5900"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:5900"
+      ],
+      "field": "protocol",
+      "value": "tcp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:5900"
+      ],
+      "field": "state",
+      "value": "closed"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.10:5900"
+      ],
+      "field": "reason",
+      "value": "reset"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "ip",
+        "203.0.113.10"
+      ],
+      "field": "script",
+      "value": "smb-os-discovery"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.11",
+      "display": "203.0.113.11"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.11:22",
+      "display": "203.0.113.11:22",
+      "subtitle": "tcp/22 on 203.0.113.11"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "port",
+      "value": "22"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "protocol",
+      "value": "tcp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "reason",
+      "value": "syn-ack"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "service",
+      "value": "ssh"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "product",
+      "value": "OpenSSH"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "version",
+      "value": "9.0p1"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "extrainfo",
+      "value": "Ubuntu Linux; protocol 2.0"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "service_method",
+      "value": "probed"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "service_conf",
+      "value": "10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "cpe",
+      "value": "cpe:/o:linux:linux_kernel:5.15"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "cpe_vendor",
+      "value": "linux"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "cpe",
+      "value": "cpe:/h:hp:proliant_dl380"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "field": "cpe_vendor",
+      "value": "hp"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "openssh",
+      "display": "openssh",
+      "attrs": {
+        "family": "openssh",
+        "version": null,
+        "vendor": null,
+        "cpe_part": null,
+        "source": "service"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "dst": [
+        "product",
+        "openssh"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "linux_kernel@5.15",
+      "display": "linux_kernel",
+      "subtitle": "5.15",
+      "attrs": {
+        "family": "linux_kernel",
+        "version": "5.15",
+        "vendor": "linux",
+        "cpe_part": "o",
+        "source": "cpe"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "product",
+        "linux_kernel@5.15"
+      ],
+      "field": "vendor",
+      "value": "linux"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "dst": [
+        "product",
+        "linux_kernel@5.15"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "proliant_dl380",
+      "display": "proliant_dl380",
+      "attrs": {
+        "family": "proliant_dl380",
+        "version": null,
+        "vendor": "hp",
+        "cpe_part": "h",
+        "source": "cpe"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "product",
+        "proliant_dl380"
+      ],
+      "field": "vendor",
+      "value": "hp"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "203.0.113.11:22"
+      ],
+      "dst": [
+        "product",
+        "proliant_dl380"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "10.0.0.7",
+      "display": "10.0.0.7"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "10.0.0.7:8080",
+      "display": "10.0.0.7:8080",
+      "subtitle": "tcp/8080 on 10.0.0.7"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "port",
+      "value": "8080"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "protocol",
+      "value": "tcp"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "reason",
+      "value": "syn-ack"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "service",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "product",
+      "value": "Apache httpd"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "version",
+      "value": "2.4.49-2.4.51"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "service_method",
+      "value": "probed"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "service_conf",
+      "value": "10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "cpe",
+      "value": "cpe:/a:apache:httpd:2.4.49-2.4.51"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "cpe_vendor",
+      "value": "apache"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "field": "cpe_range",
+      "value": "2.4.49-2.4.51"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "httpd@2.4.49",
+      "display": "httpd",
+      "subtitle": "2.4.49",
+      "attrs": {
+        "family": "httpd",
+        "version": "2.4.49",
+        "vendor": "apache",
+        "cpe_part": "a",
+        "source": "cpe"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "product",
+        "httpd@2.4.49"
+      ],
+      "field": "vendor",
+      "value": "apache"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "10.0.0.7:8080"
+      ],
+      "dst": [
+        "product",
+        "httpd@2.4.49"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "10.0.0.99",
+      "display": "10.0.0.99"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "ip",
+        "10.0.0.99"
+      ],
+      "field": "nmap_status",
+      "value": "down"
+    },
+    {
+      "type": "entity",
+      "kind": "cidr",
+      "key": "203.0.113.0/24",
+      "display": "203.0.113.0/24"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "cidr",
+        "203.0.113.0/24"
+      ],
+      "field": "nmap_target",
+      "value": "up"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-09-17T10:00:01.100Z", "port": "80", "url": "http://203.0.113.10/", "input": "203.0.113.10", "title": "Acme Console", "scheme": "http", "webserver": "nginx/1.24.0", "content_type": "text/html", "method": "GET", "host": "203.0.113.10", "path": "/", "status_code": 200, "content_length": 5213, "failed": false, "tech": ["Nginx:1.24.0"], "a": ["203.0.113.10"]}

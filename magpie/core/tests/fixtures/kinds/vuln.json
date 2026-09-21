@@ -1,0 +1,108 @@
+{
+  "kind": "vuln",
+  "lens": "vuln",
+  "identity_rule": "漏洞的身份是 `template-id@规范化目标`（normalize.vuln_key）：目标是 normalize.vuln_target_parts 算出的规范写法（scheme 与小写主机名，显式端口，丢掉查询串、片段与 userinfo）。**身份必须带目标** —— 只用 template-id 就答不出\"命中了几个地方\"，唯一的补救是加计数器，而计数器绕开 contributions 模型、undo 之后留下幻影行。同一个模板命中不同资产是两个实体（两件事）；命中同一个目标两次算出同一个 key，管线的去重把它记成 skipped。",
+  "golden": [
+    "nuclei/1"
+  ],
+  "examples": [
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "CVE-2021-44228",
+        "https://app.example.com/?token=x"
+      ],
+      "key": "CVE-2021-44228@https://app.example.com:443/",
+      "why": "查询串被丢掉 —— 它常带一次性 token，留着会让同一个漏洞每次扫描都算成新的"
+    },
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "CVE-2021-44228",
+        "https://app.example.com:443/"
+      ],
+      "key": "CVE-2021-44228@https://app.example.com:443/",
+      "why": "默认端口折叠：省略与写出来是同一个目标，不折叠就裂成两个实体"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "HTTPS://APP.Example.COM/Admin"
+      ],
+      "key": "https://app.example.com:443/Admin",
+      "why": "scheme 与主机名折小写（DNS 不区分大小写），**路径原样保留**（路径区分大小写）"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "203.0.113.10:3389"
+      ],
+      "key": "203.0.113.10:3389",
+      "why": "network 模板给的是 host:port，没有 scheme —— 不替 nuclei 补一个 http://"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "https://user:pw@app.example.com/x"
+      ],
+      "key": "https://app.example.com:443/x",
+      "why": "userinfo 是凭据：既不该进身份，也不该落库（§4.5 明文凭据永不落库）"
+    },
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "exposed-git-config",
+        "https://app.example.com/.git/config"
+      ],
+      "key": "exposed-git-config@https://app.example.com:443/.git/config",
+      "why": "同一个模板命中不同目标是**两个** key —— 这正是「不需要计数器」的理由"
+    }
+  ],
+  "rejects": [
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "",
+        "https://app.example.com/"
+      ],
+      "why": "空 template-id：模板是身份的一半，缺了它漏洞无处可挂"
+    },
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "a@b",
+        "https://app.example.com/"
+      ],
+      "why": "`@` 是身份串的分隔符，出现在 template-id 里会让两个漏洞算出同一个 key（静默合并）"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "nas"
+      ],
+      "why": "单标签主机不是完整域名（与 domain 这条 kind 的身份规则一致）"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "https://"
+      ],
+      "why": "有 scheme 但没有主机名"
+    },
+    {
+      "rule": "normalize.normalize_vuln_target",
+      "args": [
+        "http://a b/"
+      ],
+      "why": "目标里有空白字符"
+    },
+    {
+      "rule": "normalize.vuln_key",
+      "args": [
+        "CVE-2021-44228",
+        ""
+      ],
+      "why": "空目标：身份的另一半没了，这条记录根本不该落库"
+    }
+  ]
+}

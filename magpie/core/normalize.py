@@ -38,6 +38,8 @@ __all__ = [
     "normalize_cidr",
     "normalize_domain",
     "normalize_ip",
+    "normalize_template_id",
+    "normalize_vuln_target",
     "path_template",
     "prerelease_tuple",
     "product_name",
@@ -45,6 +47,9 @@ __all__ = [
     "try_domain",
     "try_ip",
     "version_tuple",
+    "vuln_identity",
+    "vuln_key",
+    "vuln_target_parts",
 ]
 
 
@@ -447,3 +452,229 @@ def product_name(raw: object) -> str:
     _require_no_homoglyphs(text, "产品名")
     text = text.lower()
     return _PRODUCT_ALIASES.get(text, text)
+
+
+# ---------------------------------------------------------------------------
+# 漏洞（vuln）· 3.2 nuclei
+# ---------------------------------------------------------------------------
+#
+# 这一节是 `vuln` 这个 kind 的**身份规则本身**（登记在
+# `kind_registry.identity_rule` 里），所以它必须住在 `normalize.py` ——
+# 解析器只调用它，不得内联自己的一套（`check.py` 的 PARSE-NORM 守着这条）。
+#
+# 一个漏洞的身份由**两件事**共同决定：
+#
+#     (template-id, 规范化之后的目标)   →  "template-id@目标"
+#
+# 为什么**不能**只用 template-id：那样"这个模板命中了几个地方"就答不出来了，
+# 而唯一的补救办法是给实体挂一个计数器 —— 那正是本步点名要防的写法
+# （计数器绕开 contributions 模型，`undo` 之后会留下幻影行，而且没有测试会
+# 发现）。同一个模板命中两个不同的资产是**两件事**，它们该是两个实体。
+#
+# 为什么**不需要**计数器：同一个模板命中同一个目标两次是**同一件事** ——
+# 两次算出同一个 `(kind, key)`，落库时第二条记录的 facts 完全重复，管线的
+# `seen` 集合把它记成 `skipped`（一条贡献都不写）。所以"同模板重复命中不重复
+# 计数"是这条身份规则的**推论**，不是另造的一个机制。
+
+#: scheme → 默认端口。只用于**补齐与折叠**：`https://a/` 与 `https://a:443/`
+#: 说的是同一个目标，不统一就会裂成两个实体。表里没有的 scheme（`nuclei` 的
+#: 模板类型不止 http）一律原样保留端口 —— 编一个默认端口出来比留空更糟。
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443, "ftp": 21}
+
+#: scheme 的合法字符集（RFC 3986）。刻意**不做**已知 scheme 的白名单：
+#: 拒绝一份真实数据比放过一个陌生的 scheme 贵得多。
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789+-.")
+
+
+def normalize_template_id(raw: object) -> str:
+    """nuclei 的 `template-id` → 身份里用的那一份。**原样保留，只做形状校验**。
+
+    刻意不做大小写折叠：`template-id` 是 nuclei 自己给的标识符（`CVE-2021-44228`、
+    `tech-detect`），它是模板文件的身份，不是一段人类文本。折叠它等于替工具
+    决定"这两个模板是同一个"，而那件事没有依据。
+
+    `@` 被拒绝：它是身份串（`template-id@目标`）的分隔符，出现在模板名里会让
+    两个不同的漏洞算出同一个 key —— 那是**静默**的实体合并（两个漏洞变成一个，
+    谁也不会发现）。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"template-id 必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if not text:
+        raise NormalizeError("空 template-id（没有它就没有漏洞的身份）")
+    if "\x00" in text:
+        raise NormalizeError("template-id 含 NUL 字节")
+    if any(ch.isspace() for ch in text):
+        raise NormalizeError(f"template-id 含空白字符：{text!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise NormalizeError("template-id 含控制字符")
+    _require_no_homoglyphs(text, "template-id")
+    if "@" in text:
+        raise NormalizeError(
+            f"template-id 含 `@`：它是身份串 `template-id@目标` 的分隔符，"
+            f"出现在里面会让两个不同的漏洞算出同一个 key：{text!r}")
+    return text
+
+
+def vuln_target_parts(raw: object) -> dict[str, object]:
+    """nuclei 的 `matched-at` / `url` / `host` → 漏洞目标的规范五件套。
+
+    两种形状都要认，而且**规范化之后仍然是两种形状**：
+
+        https://app.example.com/admin?x=1  →  https://app.example.com:443/admin
+        203.0.113.10:3389                  →  203.0.113.10:3389
+        app.example.com                    →  app.example.com
+
+    为什么不统一补成一个 URL：`matched-at` 是模板自己写的，http 模板给完整 URL，
+    network / dns 模板给 `host:port` 或裸主机名。给后两者补一个 `http://` 是
+    **编造**（nuclei 没说那个端口上跑 HTTP），而编出来的 scheme 会跟着漏洞的
+    身份走一辈子。所以有 scheme 就规范化它，没有就**不添**。
+
+    丢弃的三样东西，每一样都有具体代价：
+
+    * **查询串与片段** —— 它们常常带一次性 token。留着会让同一个漏洞每次扫描
+      都算成一个新的（"同模板重复命中不重复计数"当场失效）；
+    * **userinfo（`user:pass@`）** —— 它是凭据。计划书 §4.5 的硬规则是明文凭据
+      永不落库，而身份串是要落库的；
+    * **默认端口** —— `https://a:443/` 与 `https://a/` 是同一个目标。统一之后
+      **总是写出显式端口**（`https://a:443/`），免得"省略"与"写出来"又变成
+      两种写法（这正是 `Nginx` / `nginx` 那类混乱的同一形状）。
+
+    大小写：scheme 与主机名折小写（DNS 不区分大小写）；**路径原样保留** ——
+    路径区分大小写，`/Admin` 与 `/admin` 是两个真实路由。
+
+    host 在返回值里**不带方括号**（`2001:db8::1`，不是 `[2001:db8::1]`）：
+    调用方要拿它去算 `service` 的 key，而方括号是 URL 正文的书写形式，
+    不是主机名的写法。只有拼回 `target` 时才加回去。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"漏洞目标必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if not text:
+        raise NormalizeError("空漏洞目标（matched-at）")
+    if "\x00" in text:
+        raise NormalizeError("漏洞目标含 NUL 字节")
+    if any(ch.isspace() for ch in text):
+        raise NormalizeError(f"漏洞目标含空白字符：{text!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise NormalizeError("漏洞目标含控制字符")
+    _require_no_homoglyphs(text, "漏洞目标")
+
+    scheme = ""
+    rest = text
+    if "://" in text:
+        scheme, _, rest = text.partition("://")
+        scheme = scheme.lower()
+        if not scheme or not all(ch in _SCHEME_CHARS for ch in scheme):
+            raise NormalizeError(f"漏洞目标的 scheme 不合法：{text!r}")
+        if scheme[0].isdigit():
+            raise NormalizeError(f"漏洞目标的 scheme 不合法（以数字开头）：{text!r}")
+
+    # 查询串与片段先丢：`#` 在路径里没有别的含义，而 `?` 之后全是参数。
+    rest = rest.split("#", 1)[0].split("?", 1)[0]
+    authority, slash, tail = rest.partition("/")
+    path = "/" + tail if slash else "/"
+    if "@" in authority:                     # userinfo：凭据，不进身份
+        authority = authority.rsplit("@", 1)[1]
+    raw_host, raw_port = _split_authority(authority)
+    host = _normalize_target_host(raw_host)
+
+    port: int | None = None
+    if raw_port:
+        if not raw_port.isascii() or not raw_port.isdigit():
+            raise NormalizeError(f"漏洞目标的端口不是数字：{raw_port!r}")
+        port = int(raw_port)
+        if not 0 < port <= 65535:
+            raise NormalizeError(f"漏洞目标的端口越界：{port}")
+
+    if scheme:
+        default = _DEFAULT_PORTS.get(scheme)
+        if port is None:
+            port = default                    # 陌生 scheme 时仍是 None：不编端口
+        target = f"{scheme}://{_bracket(host)}" + (f":{port}" if port else "") + path
+    else:
+        target = host + (f":{port}" if port else "")
+
+    return {"target": target, "scheme": scheme, "host": host, "port": port,
+            "path": path, "host_kind": "ip" if try_ip(host) is not None else "domain"}
+
+
+def normalize_vuln_target(raw: object) -> str:
+    """`vuln_target_parts` 的字符串面 —— 身份串与观测值用的都是它。"""
+    return str(vuln_target_parts(raw)["target"])
+
+
+def vuln_key(template_id: object, target: object) -> str:
+    """**`vuln` 的身份规则本身**：`template-id@规范化目标`。
+
+    公开函数而不是内联表达式，理由与 `httpx.service_key` 相同：
+    `fixtures/kinds/vuln.json` 要能**执行**它来证明身份规则不是一句空话。
+
+    目标传规范写法或原始 `matched-at` 都可以 —— `vuln_target_parts` 是幂等的
+    （`https://a:443/` 再规范化一遍还是它自己）。
+    """
+    return str(vuln_identity(template_id, target)["key"])
+
+
+def vuln_identity(template_id: object, target: object) -> dict[str, object]:
+    """身份与目标一起算：`{"key": …, "parts": …}`。
+
+    存在的理由只有一个但是很硬：解析器**既**要 key（挂实体）**又**要 parts
+    （把资产挂到 service / domain / ip 上），而分两次调就会把同一个目标规范化
+    **两遍**。那是纯浪费 —— 10 万行的一份 `-jsonl` 就是 20 万次域名归一化，
+    而解析是整条管线里唯一按行计费的环节（§9.2 ⑤ 的预算）。
+
+    拆成"key 函数 + parts 函数"再在调用点拼 key 是不行的：那会把身份串的
+    拼法搬到解析器里，正是 PARSE-NORM 要防的"各写一套"。
+    """
+    parts = vuln_target_parts(target)
+    key = f"{normalize_template_id(template_id)}@{parts['target']}"
+    return {"key": key, "parts": parts}
+
+
+def _bracket(host: str) -> str:
+    """IPv6 拼回 URL 时加方括号；域名加了反而是错的。"""
+    return f"[{host}]" if ":" in host else host
+
+
+def _split_authority(authority: str) -> tuple[str, str]:
+    """`host[:port]` → `(host, port)`。**只认 ASCII 数字的端口**（同 `_strip_port`）。
+
+    IPv6 字面量必须写成 `[::1]:443`：不先切方括号的话，`rpartition(":")` 会把
+    `::1` 的最后一个冒号当成端口分隔符，于是 `2001:db8::1` 变成一个主机
+    `2001:db8:` 加一个端口 `1` —— 一个谁也不会发现它错了的目标。
+    """
+    if not authority:
+        raise NormalizeError("漏洞目标里没有主机名")
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end < 0:
+            raise NormalizeError(f"IPv6 字面量没有闭合的 `]`：{authority!r}")
+        host, tail = authority[:end + 1], authority[end + 1:]
+        if not tail:
+            return host, ""
+        if tail.startswith(":"):
+            return host, tail[1:]
+        raise NormalizeError(f"主机名后面有多余字符：{authority!r}")
+    head, sep, last = authority.rpartition(":")
+    if sep and last.isascii() and last.isdigit():
+        return head, last
+    return authority, ""
+
+
+def _normalize_target_host(raw: str) -> str:
+    """目标主机 → IP（走 `normalize_ip`）或域名（走 `normalize_domain`）。
+
+    单标签主机（`nas`）默认被 `normalize_domain` 拒绝 —— 与 `domain` 这个 kind
+    的身份规则是同一条（单标签在资产清单里几乎总是噪声或误报）。这里**不**
+    放宽：nuclei 的目标要挂到资产上，而那个资产自己也得能成为实体。
+    """
+    text = raw.strip()
+    if not text:
+        raise NormalizeError("漏洞目标里没有主机名")
+    if text.startswith("[") and text.endswith("]"):
+        return normalize_ip(text[1:-1])
+    ip = try_ip(text)
+    if ip is not None:
+        return ip
+    return normalize_domain(text)

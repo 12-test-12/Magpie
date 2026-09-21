@@ -326,19 +326,20 @@ class RelationSpec:
     inverse: str = ""
 
 
-#: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr`）。刻意先窄后宽：每个登记的
-#: kind 都要带三件套，而 `endpoint` / `vuln` 之流的三件套只有在阶段 3 各自的
-#: 解析器里才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束
-#: （计划书 §3.3 的教训）。
+#: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`）。刻意先窄
+#: 后宽：每个登记的 kind 都要带三件套，而 `endpoint` / `apischema` 之流的三件套
+#: 只有在阶段 3 各自的解析器里才有真实形状。提前登记它们等于凭空设计一套必然
+#: 要返工的约束（计划书 §3.3 的教训）。
 #:
 #: `cidr` 是这条纪律的正面例子：`ip` 的身份规则里 2.4 就写着"网段是另一种
 #: kind"，但**那时没有产出者**，所以它一直没有被登记；3.1 的 nmap `<target>`
 #: 是第一个真实产出者，三件套同期到位（迁移 `schema/004_kind_cidr.sql`）。
+#: 3.2 的 `vuln` 走的是同一条路（迁移 `schema/005_kind_vuln.sql`）。
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
-             produced_by=("domainlist@1", "httpx@1", "nmap@1")),
+             produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1")),
     KindSpec(kind="ip", fixture="fixtures/kinds/ip.json", lens="assets",
-             produced_by=("httpx@1", "nmap@1")),
+             produced_by=("httpx@1", "nmap@1", "nuclei@1")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -346,9 +347,19 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("nmap@1",)),
     KindSpec(kind="host", fixture="fixtures/kinds/host.json", lens="assets"),
     KindSpec(kind="service", fixture="fixtures/kinds/service.json", lens="services",
-             produced_by=("httpx@1", "nmap@1")),
+             produced_by=("httpx@1", "nmap@1", "nuclei@1")),
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
              produced_by=("httpx@1", "nmap@1")),
+    #: 漏洞（3.2 起有产出者：nuclei 的 `-jsonl`）。**镜头归属是 003 里已冻结的
+    #: `vuln`** —— 003 的 `CHECK` 是冻结的，而 R4 不许改 003，所以新增 lens id
+    #: 事实上不可能；`vuln` 恰好在六个镜头之内。
+    #:
+    #: 它的身份是 `template-id@规范化目标`（`normalize.vuln_key`），**不是**
+    #: template-id 一个人：只用 template-id 就答不出"这个模板命中了几个地方"，
+    #: 而唯一的补救是给实体挂一个计数器 —— 那会绕开 contributions 模型，
+    #: `undo` 之后留下幻影行（迁移 005 的文件头把这条说透了）。
+    KindSpec(kind="vuln", fixture="fixtures/kinds/vuln.json", lens="vuln",
+             produced_by=("nuclei@1",)),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。
@@ -368,6 +379,11 @@ RELATION_VOCABULARY: tuple[RelationSpec, ...] = (
         verb="runs",
         description="服务上跑着某个产品（example.com:443 --runs--> nginx@1.24.0）。计划书 §4.2 的核心目标：中间件版本的主关系。",
         inverse="runs_on",
+    ),
+    RelationSpec(
+        verb="found_on",
+        description="漏洞落在某个资产上（CVE-2021-44228@https://app.example.com:443/ --found_on--> app.example.com:443）。端点 kind 是 vuln 与 service（目标里没有 scheme 也没有端口时退化为 domain / ip）。",
+        inverse="has_finding",
     ),
 )
 

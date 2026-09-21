@@ -32,7 +32,12 @@ from conftest import ENV                                             # noqa: E40
 from magpie.cli.envelope import EXIT_TO_HTTP, EXIT_USAGE             # noqa: E402
 from magpie.core import ops, store                                   # noqa: E402
 
-MIGRATIONS = 3          # schema/ 下已应用的迁移数（`migrate.MIGRATIONS` 的长度）
+# schema/ 下已应用的迁移数（`migrate.MIGRATIONS` 的长度）。
+# 3.2 加了 `005_kind_vuln.sql`（登记 `vuln` kind 与 `found_on` 动词，并把
+# `nuclei@1` 追加进既有 kind 的 `produced_by`）—— 新增迁移必须同步改这一行，
+# 否则 `schema --json` 的契约数字会与真实库对不上，而那条断言正是为
+# "迁移与描述分叉"准备的。
+MIGRATIONS = 5
 
 #: 子进程的公共环境（定义在 `conftest.py`，两个测试文件共用一份）。
 ENV = ENV

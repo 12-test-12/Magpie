@@ -1,6 +1,8 @@
 <script setup>
 /**
- * 镜头页（计划书 §7.4）。本阶段先做**资产**与**服务与中间件**两个。
+ * 镜头页（计划书 §7.4）。有哪几个镜头**不在这里写死**：左侧导航的清单由
+ * `store.lensRows` 从 `kind_registry.lens` 推导（3.2 起如此），这一页只是渲染
+ * 当前这一个。
  *
  * 镜头不是"另一张表"：它是同一份数据按 `kind_registry.lens` 切出来的视图
  * （§3.5）。所以这里不新增任何数据源 —— kind 列表来自 `GET /lenses/{lens}`，
@@ -11,6 +13,20 @@
  * 后者是把 10 万行搬到浏览器里。**已知边界**：每个 kind 上限 500 条
  * （`/entities` 的 `MAX_PAGE`），超出的部分本页看不到 —— 分页控件属于后续
  * 步骤，这里把这件事写在页脚，而不是假装列表是完整的。
+ *
+ * 按 `severity` / `state` 筛（3.2 的漏洞镜头）
+ * --------------------------------------------
+ * 这两维是 `vuln` 实体上的**观测**，而 `GET /entities` 只回实体行、不回观测
+ * —— 所以本页在**已载入的那一页**上按需补齐它们：走的就是详情面板用的同一个
+ * `GET /entities/{id}`，**不是**一条漏洞专用接口（那正是 §3.5"GUI 与 CLI 共用
+ * 同一实现"要避免的第二条路）。
+ *
+ * 代价与边界都写在这里，不藏着：
+ *   * 只有 `vuln` 镜头会做这件事（`FACETS`），别的镜头一次多余请求都没有；
+ *   * 补齐只针对**已经载入的行**（≤ 500，且 8 路并发），结果按 id 缓存，
+ *     切筛选/重排不会重取；
+ *   * 服务端筛选是 3.5 的 `core/query.py` 的事 —— 那时这一整段会换成一次
+ *     `GET /entities?severity=…`，本文件的这部分代码随之删掉。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import VirtualTable from '../components/VirtualTable.vue'
@@ -25,11 +41,28 @@ const props = defineProps({
 
 const PAGE = 500
 
+/**
+ * 哪些镜头需要"从观测补一列"，以及补哪几列。
+ *
+ * 写成一张表而不是 `if (lens === 'vuln')`：下一个有枚举字段的 kind（3.3 的
+ * endpoint 方法、3.4 的接口类型）加一行就够了，而每种来源各写一段"取详情、
+ * 抽字段、建下拉"的重复代码正是会分叉的地方。
+ */
+const FACETS = { vuln: ['severity', 'state'] }
+
+/** 补齐时的并发上限。逐个串行会把 500 行变成肉眼可见的等待，全并发又会把
+ *  单写队列的邻居饿着 —— 8 路在本地回环上是"感觉不到"与"不添乱"之间。 */
+const ENRICH_CONCURRENCY = 8
+
 const rows = ref([])
 const loading = ref(false)
 const error = ref('')
 const selected = ref(null)
 const truncated = ref([])
+/** id → {severity, state}。跨刷新保留：同一个实体的观测不会因为换了筛选而变。 */
+const facets = ref({})
+const enriching = ref(false)
+const facetFilter = ref({ severity: '', state: '' })
 
 const COLUMNS = [
   { key: 'entity_key', label: '实体', mono: true },
@@ -40,12 +73,41 @@ const COLUMNS = [
   { key: 'last_seen', label: '最近', mono: true, width: '170px' },
 ]
 
+const facetFields = computed(() => FACETS[props.lens] || [])
 const kinds = computed(() => (store.lenses[props.lens]?.kinds || []))
+const lockedKinds = computed(() => kinds.value.map((entry) => entry.kind))
+
+/** 下拉里的选项来自**这一页真的出现过的值**，不是一份代码里写死的清单 ——
+ *  一个筛不出任何行的选项比没有这个选项更让人困惑。 */
+function options(field) {
+  const seen = new Set()
+  for (const kind of lockedKinds.value) {
+    for (const row of rows.value) {
+      if (row.kind !== kind) continue
+      const value = (facets.value[row.id] || {})[field]
+      if (value) seen.add(value)
+    }
+  }
+  return [...seen].sort()
+}
+
+function matchesFacets(row) {
+  const found = facets.value[row.id] || {}
+  return facetFields.value.every(
+    (field) => !facetFilter.value[field] || found[field] === facetFilter.value[field])
+}
+
+const visibleRows = computed(() => rows.value.filter(matchesFacets))
+
+function setFacet(field, value) {
+  facetFilter.value = Object.assign({}, facetFilter.value, { [field]: value })
+}
 
 async function load() {
   loading.value = true
   error.value = ''
   selected.value = null
+  facetFilter.value = { severity: '', state: '' }
   const collected = []
   const capped = []
   try {
@@ -68,6 +130,37 @@ async function load() {
   } finally {
     loading.value = false
   }
+  await enrich()
+}
+
+/** 给需要补列的镜头取回观测（见文件头的"代价与边界"）。失败静默降级：
+ *  补不到的那一列留空、筛选里不出现那个值 —— 比整页报错好，因为**列表本身
+ *  是好的**，缺的只是一列。 */
+async function enrich() {
+  if (!facetFields.value.length || !rows.value.length) return
+  const pending = rows.value.filter((row) => !(row.id in facets.value))
+  if (!pending.length) return
+  enriching.value = true
+  const queue = pending.slice()
+  const run = async () => {
+    while (queue.length) {
+      const row = queue.shift()
+      try {
+        const detail = await get(`/entities/${row.id}`)
+        const values = {}
+        for (const observation of detail.observations || []) {
+          if (facetFields.value.includes(observation.semantic_field)) {
+            values[observation.semantic_field] = observation.value
+          }
+        }
+        facets.value = Object.assign({}, facets.value, { [row.id]: values })
+      } catch (err) {
+        facets.value = Object.assign({}, facets.value, { [row.id]: {} })
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: ENRICH_CONCURRENCY }, run))
+  enriching.value = false
 }
 
 function pick(row) {
@@ -76,12 +169,29 @@ function pick(row) {
   store.setView('explore')
 }
 
+const FACET_LABELS = { severity: '严重度', state: '状态' }
+
+/** 表格列：补列插在「类型」之后，而不是排到最后 —— 严重度是漏洞镜头里
+ *  第一眼要看的东西，把它挤到「最近」右边等于没有。 */
+const columns = computed(() => {
+  const out = COLUMNS.slice()
+  const extra = facetFields.value.map((field) => ({
+    key: field, label: FACET_LABELS[field] || field, width: '78px',
+  }))
+  out.splice(2, 0, ...extra)
+  return out
+})
+
+/** 表格行 = 通过筛选的行 + 补回来的那几列。 */
+const tableRows = computed(() => visibleRows.value.map((row) => Object.assign(
+  {}, row, facets.value[row.id] || {})))
+
 onMounted(load)
 // 切换镜头要重载；项目换了也要 —— 行是按项目隔离的。
 watch(() => props.lens, load)
 watch(() => store.project, load)
-// 首次挂载时 `lenses` 可能还没到（App 的 boot 在并行拉）。kind 列表一到就重载，
-// 否则这个页面会停在一个"空镜头"上，而它其实只是比数据早了一拍。
+// 首次挂载时 `lenses` 可能还没到（App 的 boot 还在拉 meta → lenses）。kind 列表
+// 一到就重载，否则这个页面会停在一个"空镜头"上，而它其实只是比数据早了一拍。
 watch(() => kinds.value.length, (now, before) => {
   if (now && now !== before) load()
 })
@@ -102,12 +212,29 @@ watch(() => kinds.value.length, (now, before) => {
 
     <p v-if="error" class="bad small">{{ error }}</p>
 
+    <div v-if="facetFields.length" class="facets">
+      <label v-for="field in facetFields" :key="field" class="facet">
+        <span class="faint">{{ FACET_LABELS[field] || field }}</span>
+        <select :value="facetFilter[field]"
+                @change="setFacet(field, $event.target.value)">
+          <option value="">全部</option>
+          <option v-for="value in options(field)" :key="value" :value="value">
+            {{ value }}
+          </option>
+        </select>
+      </label>
+      <span v-if="enriching" class="faint small">正在读取观测…</span>
+      <span v-else-if="visibleRows.length !== rows.length" class="faint small">
+        {{ visibleRows.length }} / {{ rows.length }} 条
+      </span>
+    </div>
+
     <div class="table-wrap">
       <VirtualTable
-        :rows="rows"
-        :columns="COLUMNS"
+        :rows="tableRows"
+        :columns="columns"
         :selected-key="selected ? selected.id : null"
-        :empty-text="loading ? '载入中…' : '这个镜头下还没有实体 —— 先导入一份 httpx 输出试试。'"
+        :empty-text="loading ? '载入中…' : '这个镜头下还没有实体 —— 先导入一份 httpx 或 nuclei 输出试试。'"
         @row-click="pick"
       >
         <template #entity_key="{ row }">
@@ -125,6 +252,11 @@ watch(() => kinds.value.length, (now, before) => {
         点一行会在画布上打开它的详情。过滤走 SQL（逐个 kind 查询），
         不是在浏览器里筛全库 —— 计划书 §7.5 的"排序过滤在 SQL"。
       </span>
+      <span v-if="facetFields.length">
+        严重度 / 状态是这两个实体上的观测：本页只对已载入的这 {{ rows.length }} 条
+        补齐它们（走详情面板用的同一个 `GET /entities/{id}`），服务端筛选是 3.5
+        的 `core/query.py` 的事。
+      </span>
     </footer>
   </div>
 </template>
@@ -132,6 +264,16 @@ watch(() => kinds.value.length, (now, before) => {
 <style scoped>
 .lens { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 8px; }
 .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.facets { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.facet { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.facet select {
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  padding: 2px 6px;
+  font-size: 11px;
+}
 .spacer { flex: 1; }
 .table-wrap { flex: 1; min-height: 0; }
 .small { font-size: 11px; }
