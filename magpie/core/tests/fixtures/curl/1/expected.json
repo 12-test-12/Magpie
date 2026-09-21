@@ -118,9 +118,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.limit",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -129,9 +127,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.name",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -140,9 +136,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.tag",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -151,9 +145,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.password",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "entity",
@@ -240,9 +232,7 @@
         "api.example.com/v2/pets/{id}"
       ],
       "field": "param.query.fields",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "entity",
@@ -434,21 +424,8 @@
         "endpoint",
         "api.example.com/v2/pets"
       ],
-      "field": "param.body.tag",
-      "value": {
-        "in": "body:form"
-      }
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "endpoint",
-        "api.example.com/v2/pets"
-      ],
       "field": "param.body.weight",
-      "value": {
-        "in": "body:form"
-      }
+      "value": "body"
     }
   ]
 }

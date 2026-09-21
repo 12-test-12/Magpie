@@ -44,7 +44,9 @@ Postman 的导出是团队里最常见的一种"接口清单"：它既不是规�
 
 * `mode=raw` 时**只**尝试 `json.loads` 出顶层键名，解析不出来就一个参数都不落
   （一份 XML / GraphQL body 的键不是"参数"）；
-* `mode=urlencoded` / `formdata` 只取 `key`，**`value` 一个字都不读**。
+* `mode=urlencoded` / `formdata` 只取 `key`，**`value` 一个字都不读**；
+* `mode` **本身不进参数值** —— 位置一律是粗档 `body`，理由见 `_apis.py` 的文件头
+  （同一个参数换个编码就变成两个值，是拿请求的维度污染参数的维度）。
 
 这与 HAR 那边是同一条线（`har.py` 的文件头）。
 """
@@ -308,14 +310,15 @@ def _params(request: dict) -> list[tuple[str, dict]]:
     body = request.get("body")
     if not isinstance(body, dict):
         return out
+    # 位置一律是**粗档** `body`，不按 `mode` 分 —— 理由见 `_apis.py` 的文件头。
     mode = body.get("mode")
     if mode in ("urlencoded", "formdata"):
         for item in _json.as_list(body.get(mode)):
             if isinstance(item, dict) and isinstance(item.get("key"), str):
-                out.append((item["key"], {"in": f"body:{mode}"}))
+                out.append((item["key"], {"in": "body"}))
     elif mode == "raw":
         for name in _json_object_keys(body.get("raw")):
-            out.append((name, {"in": "body:json"}))
+            out.append((name, {"in": "body"}))
     return out
 
 

@@ -125,10 +125,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.header.X-Request-Id",
-      "value": {
-        "in": "header",
-        "type": "string"
-      }
+      "value": "header"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.header.X-Request-Id.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -137,10 +143,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.limit",
-      "value": {
-        "in": "query",
-        "type": "integer"
-      }
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.query.limit.type",
+      "value": "integer"
     },
     {
       "type": "observation",
@@ -149,10 +161,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.path.limit",
-      "value": {
-        "in": "path",
-        "type": "string"
-      }
+      "value": "path"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.path.limit.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -161,11 +179,25 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.name",
-      "value": {
-        "in": "body",
-        "type": "string",
-        "required": true
-      }
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.name.required",
+      "value": true
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.name.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -174,10 +206,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.tag",
-      "value": {
-        "in": "body",
-        "type": "string"
-      }
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.tag.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -186,10 +224,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.address.street",
-      "value": {
-        "in": "body",
-        "type": "string"
-      }
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.address.street.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -198,10 +242,16 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.address.zip",
-      "value": {
-        "in": "body",
-        "type": "string"
-      }
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.address.zip.type",
+      "value": "string"
     },
     {
       "type": "entity",
@@ -279,11 +329,25 @@
         "api.example.com/v2/pets/{petId}"
       ],
       "field": "param.path.petId",
-      "value": {
-        "in": "path",
-        "type": "string",
-        "required": true
-      }
+      "value": "path"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{petId}"
+      ],
+      "field": "param.path.petId.required",
+      "value": true
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{petId}"
+      ],
+      "field": "param.path.petId.type",
+      "value": "string"
     },
     {
       "type": "observation",
@@ -292,10 +356,16 @@
         "api.example.com/v2/pets/{petId}"
       ],
       "field": "param.query.verbose",
-      "value": {
-        "in": "query",
-        "type": "boolean"
-      }
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets/{petId}"
+      ],
+      "field": "param.query.verbose.type",
+      "value": "boolean"
     },
     {
       "type": "entity",
@@ -373,10 +443,16 @@
         "api.example.com/v2/external"
       ],
       "field": "param.query.q",
-      "value": {
-        "in": "query",
-        "ref": "Q"
-      }
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/external"
+      ],
+      "field": "param.query.q.ref",
+      "value": "Q"
     },
     {
       "type": "observation",

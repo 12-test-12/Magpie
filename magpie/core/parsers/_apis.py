@@ -47,12 +47,39 @@ PARSE-RO（不得 import 写入口）照常管它。
    schema 展开轻松超过 400 字符 —— (一) 要么放宽这条纪律，要么截断，而
    **截断 JSON 等于不可解析**（比不落还糟）。(二) 下每条值是一个小字典。
 
-字段名是 **`param.<位置>.<名字>`**（`param.query.limit` / `param.path.petId` /
-`param.body.name`）。位置那一层不是装饰：**同名不同位是两个参数**（`?id=` 与
-`/{id}` 各自可以有），而 `v_field_conflicts` 的判据是"同实体同字段多值"—— 少了
-位置那一层，一个 `id` 写在两处就会变成一个假冲突。位置取自 `in`，`:` 后面的
-MIME 归到 `body` 一档（`body:application/json` 与 `body:urlencoded` 都是 body），
-MIME 本身留在值里。
+字段名与值：**位置进名字，细节进属性字段**
+-------------------------------------------
+一个参数落成**最多三条**观测，粒度是"一条事实一条"：
+
+    param.query.limit            值 = "query"       ← "这个接口有这个参数"
+    param.query.limit.type       值 = "integer"     ← 只有知道类型的来源才写
+    param.query.limit.required   值 = true          ← 只有声明了必填的来源才写
+
+**位置进字段名**（`param.<位置>.<名字>`），因为**同名不同位是两个参数**
+（`?id=` 与 `/{id}` 各自可以有），而 `v_field_conflicts` 的判据是"同实体同字段
+多值"—— 少了位置那一层，一个 `id` 写在两处就会变成一个假冲突。
+
+⚠️  **值里只放位置，不放 MIME、不放类型** —— 这是被一次真实的四源导入逼出来的：
+第一版把 `{"in": "body:json", "required": true, "type": "string"}` 整个字典当值，
+于是**每个被契约与流量同时看到的参数都会开一条 Inbox**：
+
+    param.query.limit  ← 契约说 {"in":"query","type":"integer"}，流量说 {"in":"query"}
+    param.body.name    ← JSON / 表单 / 契约三种写法，三份值
+
+一次四源导入开 11 条冲突，其中 **6 条是这么来的**。它们一条都不在说"数据有矛盾"，
+说的是"这个模型没有'同一个字段、精度不同的两端'这个概念"—— 而用假冲突去表达它，
+代价是 Inbox 彻底失去信噪比（3.6 的体检正是靠它）。所以：
+
+* **MIME 不进参数值**。`application/json` 与 `x-www-form-urlencoded` 是**这一次
+  请求**的属性，不是参数的属性 —— 同一个参数换个编码就变成两个值，是拿请求的
+  维度去污染参数的维度。HAR / Postman / curl 一律只写 `body`。
+  （"这个接口收什么编码"是真实的问题，但它属于请求而不是参数；本步只取接口形状，
+  不为它另立观测。）
+* **类型与必填只由知道的来源写、且写在自己的字段上**。契约知道类型，流量不知道 ——
+  让流量"缺一个键"去和契约的完整值对撞，是把**信息量的差异**误报成**值的冲突**。
+  分成 `<参数>.type` / `<参数>.required` 之后，有则有、无则无，两边都不冲突。
+
+代价写在明处：一个参数最多三行、字段名最多四段（`param.query.limit.required`）。
 
 字段名是**动态**的（`param.<位置>.<名字>`），这是选 (二) 必须一起接受的代价，
 写在这里免得下游各自发现：
@@ -116,9 +143,9 @@ __all__ = ["DECLARED_FIELDS", "MAX_PARAM_DEPTH", "ApiSink", "param_field"]
 def param_field(location: str, name: str) -> str:
     """参数 → 观测字段名：`param.<位置>.<名字>`。
 
-    位置取 `in` 的**第一段**：`body:application/json` 与 `body:urlencoded` 都是
-    `body`（MIME 留在观测值里）—— 参数树的第二层是"这个参数填在哪"，不是
-    MIME 类型表。位置那一层的理由见文件头。
+    位置是**粗档**（`query` / `path` / `header` / `cookie` / `body`）：参数树的
+    第二层问的是"这个参数填在哪"，不是一张 MIME 类型表。位置那一层的理由与
+    "`in` 只取第一段"的理由都见文件头。
     """
     bucket = location.split(":", 1)[0] or "unknown"
     return f"param.{bucket}.{name}"
@@ -278,7 +305,11 @@ class ApiSink:
 
     def _param(self, endpoint_key: str, name: str, detail: dict,
                ctx: ParseContext, lineno: int) -> Iterator[Record]:
-        """一个参数 → 一条 `param.<名字>` 观测。
+        """一个参数 → **最多三条**观测（存在 / 类型 / 必填），见文件头的裁定。
+
+        `detail` 的形状：`{"in": <位置>, <属性>: <值>, …}`。**位置进字段名**，
+        其余键各落成一条 `<参数>.<属性>` 观测 —— 只有知道的来源才写，
+        于是"契约知道类型、流量不知道"不再表现为一条假冲突。
 
         参数名认不出（模板变量、非法字符）时**记一条坏行**：把它清洗成一个
         合法名字会让一条模板变量伪装成一个真实参数（"宁可明确地拒绝"）。
@@ -289,11 +320,22 @@ class ApiSink:
             ctx.on_bad_line(lineno, f"不是可识别的参数名：{exc}",
                             str(name)[:MAX_VALUE_CHARS])
             return
-        payload = {k: v for k, v in detail.items() if v not in (None, "", [], {})}
-        if not payload:
-            payload = {"in": "unknown"}
-        field = param_field(str(payload.get("in") or "unknown"), canonical)
-        if not self._first(("obs", endpoint_key, field, repr(sorted(payload.items())))):
+        location = str(detail.get("in") or "unknown").split(":", 1)[0] or "unknown"
+        base = param_field(location, canonical)
+        yield from self._observation(endpoint_key, base, location)
+        for attribute in sorted(detail):
+            if attribute == "in":
+                continue
+            value = detail[attribute]
+            if value in (None, "", [], {}):
+                continue
+            yield from self._observation(endpoint_key, f"{base}.{attribute}", value)
+
+    def _observation(self, endpoint_key: str, field: str,
+                     value: Any) -> Iterator[Record]:
+        """一条去重过的观测（同一个 key 在本文件里只声明一次）。"""
+        marker = ("obs", endpoint_key, field, repr(value))
+        if not self._first(marker):
             return
         yield RawObservation(entity_ref=("endpoint", endpoint_key), type=field,
-                             value=payload)
+                             value=value)

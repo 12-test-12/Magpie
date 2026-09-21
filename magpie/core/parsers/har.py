@@ -193,8 +193,10 @@ class HarParser(Parser):
                 *[(item.get("name"), {"in": "query"})
                   for item in _json.as_list(request.get("queryString"))
                   if isinstance(item, dict) and isinstance(item.get("name"), str)],
-                *[(item.get("name"),
-                   {"in": _form_location(request.get("postData"))})
+                # 位置是**粗档**（`body`），不带 MIME —— 理由见 `_apis.py` 的文件头：
+                # `application/json` 与 `x-www-form-urlencoded` 是**这一次请求**的
+                # 属性，塞进参数值会让同一个参数换个编码就变成两个值（一条假冲突）。
+                *[(item.get("name"), {"in": "body"})
                   for item in _form_params(request.get("postData"))],
             ])
 
@@ -211,14 +213,6 @@ def _form_params(post_data: Any) -> list[dict]:
         return []
     return [item for item in params
             if isinstance(item, dict) and isinstance(item.get("name"), str)]
-
-
-def _form_location(post_data: Any) -> str:
-    """表单参数在 `in` 里怎么写：HAR 没给位置，就按 mimeType 说一句人话。"""
-    mime = post_data.get("mimeType") if isinstance(post_data, dict) else None
-    if isinstance(mime, str) and mime:
-        return f"body:{mime}"
-    return "body"
 
 
 def parse_text(text: str, ctx: ParseContext | None = None) -> list[Record]:

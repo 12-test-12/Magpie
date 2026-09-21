@@ -488,7 +488,7 @@ def _query_names(target: str) -> list[str]:
 
 
 def _data_names(blob: str) -> list[tuple[str, str]]:
-    """一段请求体 → `(键名, 位置)`。
+    """一段请求体 → `(键名, 位置)`。位置一律是粗档 `body`（`_apis.py` 的文件头）。
 
     两种形状认，其余一律**不猜**：
 
@@ -507,14 +507,14 @@ def _data_names(blob: str) -> list[tuple[str, str]]:
         except ValueError:
             parsed = None
         if isinstance(parsed, dict):
-            return [(str(key), "body:json") for key in parsed]
+            return [(str(key), "body") for key in parsed]
     if "=" not in text:
         return []
     out: list[tuple[str, str]] = []
     for pair in text.split("&"):
         name = pair.partition("=")[0].strip()
         if name:
-            out.append((name, "body:form"))
+            out.append((name, "body"))
     return out
 
 

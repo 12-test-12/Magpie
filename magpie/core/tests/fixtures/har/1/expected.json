@@ -118,9 +118,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.limit",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -129,9 +127,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.token",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -167,9 +163,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.name",
-      "value": {
-        "in": "body:application/x-www-form-urlencoded"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -178,9 +172,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.password",
-      "value": {
-        "in": "body:application/x-www-form-urlencoded"
-      }
+      "value": "body"
     },
     {
       "type": "entity",

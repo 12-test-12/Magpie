@@ -123,9 +123,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.limit",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -134,9 +132,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.query.token",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -154,9 +150,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.name",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -165,9 +159,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.tag",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -176,9 +168,7 @@
         "api.example.com/v2/pets"
       ],
       "field": "param.body.password",
-      "value": {
-        "in": "body:json"
-      }
+      "value": "body"
     },
     {
       "type": "entity",
@@ -256,9 +246,7 @@
         "api.example.com/v2/pets/{id}"
       ],
       "field": "param.query.fields",
-      "value": {
-        "in": "query"
-      }
+      "value": "query"
     },
     {
       "type": "observation",
@@ -267,9 +255,7 @@
         "api.example.com/v2/pets/{id}"
       ],
       "field": "param.body.verbose",
-      "value": {
-        "in": "body:urlencoded"
-      }
+      "value": "body"
     },
     {
       "type": "observation",
@@ -278,9 +264,7 @@
         "api.example.com/v2/pets/{id}"
       ],
       "field": "param.body.secret",
-      "value": {
-        "in": "body:urlencoded"
-      }
+      "value": "body"
     },
     {
       "type": "entity",

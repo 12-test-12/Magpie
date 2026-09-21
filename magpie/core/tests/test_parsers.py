@@ -2136,14 +2136,17 @@ def test_apischema_multi_status_from_traffic_is_the_pre_existing_gap(db, project
 
 def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
                                                                    tmp_path):
-    """参数树的落地形状（`_apis.py` 先定死的那个裁定）：**一个参数一条观测**。
+    """参数树的落地形状（`_apis.py` 先定死的那个裁定）：**一条事实一条观测**。
 
-    三条判据，每一条都对着一个下游：
+    四条判据，每一条都对着一个下游：
 
     * 字段名是 `param.<位置>.<名字>` —— 于是"哪些接口要 `id` 参数"是一条 SQL
       （3.5 的 `query.py` 写得出、GUI 与 CLI 共用同一实现）；
     * **同名不同位是两个参数**（`param.query.limit` 与 `param.path.limit`）。
       少了位置那一层，一个 `id` 写在两处就会变成一个**假冲突**；
+    * **类型与必填各在自己的字段上**（`param.query.limit.type` /
+      `param.body.name.required`），值里只有位置 —— 于是"契约知道类型、流量
+      不知道"不会被记成"同一个字段有两个值"（下一条用例就是它的可观测后果）；
     * 参数挂在 **endpoint** 上，不是 apischema 上 —— 挂在契约上会让
       `/user/{id}` 与 `/order/{id}` 的 `id` 并成一个字段，参数树退化成关键词表。
     """
@@ -2153,26 +2156,75 @@ def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
 
     endpoint_key = "api.example.com/v2/pets"
     assert _obs_values(db, project, "endpoint", endpoint_key,
-                       "param.query.limit") == ['{"in":"query","type":"integer"}']
+                       "param.query.limit") == ["query"]
     assert _obs_values(db, project, "endpoint", endpoint_key,
-                       "param.path.limit") == ['{"in":"path","type":"string"}']
+                       "param.path.limit") == ["path"]
     assert _obs_values(db, project, "endpoint", endpoint_key,
-                       "param.header.X-Request-Id") == \
-        ['{"in":"header","type":"string"}']
+                       "param.header.X-Request-Id") == ["header"]
     # 请求体的字段名**不带** `body.` 前缀 —— 位置那一层已经在字段名的中段。
     assert _obs_values(db, project, "endpoint", endpoint_key,
-                       "param.body.address.street") == \
-        ['{"in":"body","type":"string"}']
-    # 必填只在为真时写出来（可选是默认值，不是一条零信息观测）。
+                       "param.body.address.street") == ["body"]
+    # 类型 / 必填各在自己的字段上，而且**只在知道时才写**（不知道 = 缺观测）。
     assert _obs_values(db, project, "endpoint", endpoint_key,
-                       "param.body.name") == \
-        ['{"in":"body","required":true,"type":"string"}']
+                       "param.query.limit.type") == ["integer"]
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.body.name.type") == ["string"]
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.body.name.required") == ["True"]
+    # 可选参数**没有** `.required` 字段 —— 缺观测就是"没声明必填"，不是 `false`。
+    assert not _obs_values(db, project, "endpoint", endpoint_key,
+                           "param.body.tag.required")
     # 契约上**一条参数都没有**：参数是接口的形状，不是契约的形状。
     assert not [r for r in db.execute(
         "SELECT o.semantic_field FROM observations o"
         " JOIN entities e ON e.id = o.entity_id"
         " WHERE o.project_id=? AND o.is_current=1 AND e.kind='apischema'"
         "   AND o.semantic_field LIKE 'param.%'", (project,))]
+
+
+def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path):
+    """**四份来源看同一个参数，不该开任何一条冲突** —— 这一条是被真数据逼出来的。
+
+    第一版的参数值是整个字典（`{"in": "body:json", "type": "string", ...}`），
+    于是一次四源导入开了 **11** 条 Inbox：六条来自参数 —— 契约说
+    `{"in":"query","type":"integer"}`、流量说 `{"in":"query"}`、HAR 说
+    `{"in":"body:application/x-www-form-urlencoded"}`、Postman 说
+    `{"in":"body:json"}` …… 它们一条都不在说"数据有矛盾"，说的是"同一个字段、
+    精度不同的两端"，而 `v_field_conflicts` 只有"多值即冲突"这一个判据。
+
+    修正后的判据很硬：**位置进字段名、细节进属性字段**，于是
+
+    * `param.query.limit` 四份来源**都**写 `"query"` → 一条观测、`source_count=4`；
+    * 类型与必填只有契约知道，写在 `param.query.limit.type` 上 —— 流量**不写**
+      这个字段，而不是"写一个更短的值"。
+
+    剩下的冲突必须**只有** 3.3 已经报过的那个既有缺口（观测型多值：`path` /
+    `method` / `status`）与 `declared_status` 的真实分歧。这条断言因此同时是
+    "参数树不制造噪声"与"噪声没有消失、只是被点名"两件事的证据。
+    """
+    for tool, filename in _FOUR_SOURCES:
+        path = tmp_path / f"{tool}-{filename}"
+        path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
+        ingest.ingest_file(db, options(db, project, tmp_path), path)
+
+    endpoint_key = "api.example.com/v2/pets"
+    # 四份来源都看见了这一个参数，而库里**只有一条**值 —— 而且是它们都同意的那个。
+    assert _obs_values(db, project, "endpoint", endpoint_key,
+                       "param.query.limit") == ["query"]
+    assert db.execute(
+        "SELECT o.source_count FROM observations o"
+        "  JOIN entities e ON e.id = o.entity_id"
+        "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
+        " WHERE o.project_id=? AND o.is_current=1 AND e.kind='endpoint'"
+        "   AND ek.entity_key=? AND o.semantic_field='param.query.limit'",
+        (project, endpoint_key)).fetchone()[0] == 4
+
+    rows = [dict(r) for r in db.execute(
+        "SELECT payload_json FROM inbox_items WHERE project_id=?"
+        "   AND state='open'", (project,))]
+    fields = sorted({json.loads(r["payload_json"])["field"] for r in rows})
+    assert not [f for f in fields if f.startswith("param.")], fields
+    assert fields == ["declared_status", "method", "path", "status"], fields
 
 
 def test_apischema_declared_path_does_not_yet_merge_with_traffic(db, project,
@@ -2245,9 +2297,9 @@ def test_curl_credentials_never_reach_the_database(db, project, tmp_path):
 
     # 正例：**参数名**照常落库 —— "这个接口收哪些字段"是形状，不是凭据。
     assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
-                       "param.body.password") == ['{"in":"body:json"}']
+                       "param.body.password") == ["body"]
     assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
-                       "param.body.name") == ['{"in":"body:json"}']
+                       "param.body.name") == ["body"]
 
 
 def _all_text_in_db(db) -> str:
@@ -2332,7 +2384,7 @@ def test_openapi_yaml_parses_when_the_extras_are_installed():
     assert ("endpoint", "api.example.com/v2/pets") in kinds, kinds
     params = [r.type for r in records if isinstance(r, base.RawObservation)
               and str(r.type).startswith("param.")]
-    assert params == ["param.query.limit"], params
+    assert params == ["param.query.limit", "param.query.limit.type"], params
 
 
 def test_openapi_yaml_without_the_extras_is_a_readable_error(monkeypatch):
