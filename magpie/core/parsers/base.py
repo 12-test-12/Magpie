@@ -147,6 +147,13 @@ class RawObservation:
     state: str | None = None
     confidence: float | None = None
     extra: dict[str, Any] | None = None
+    #: 逐条覆盖这条观测的**来源名**（4.3 的指纹引擎：`source` = 规则名）。
+    #: `None`（默认）= 用作业的 source（今天所有解析器都是这一档）。非空时
+    #: `ingest` 按它 `register_source(name=source, tool=<本解析器>)`，于是贡献
+    #: 的 `sources.name` 就是这个值 —— "哪条规则产出的这条观测"在数据层直接
+    #: 可答，不是展示时拼出来的（§4.3 的可解释）。它**不进事实键**
+    #: （`_fact_key` 不含 source）：同一事实换个来源仍是同一个事实。
+    source: str | None = None
 
     def __post_init__(self) -> None:
         _assert_ref(self.entity_ref, "RawObservation.entity_ref")
@@ -391,12 +398,17 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="cidr", fixture="fixtures/kinds/cidr.json", lens="assets",
              produced_by=("nmap@1",)),
     KindSpec(kind="host", fixture="fixtures/kinds/host.json", lens="assets"),
+    #: 4.3 起 `fingerprint` 也是产出者：离线指纹引擎对已落盘响应命中规则时，
+    #: 先声明这段响应属于哪个 `service`（`runs` 的主体），再挂 `runs`。
     KindSpec(kind="service", fixture="fixtures/kinds/service.json", lens="services",
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
-                          "curl@1", "har@1", "openapi@1", "postman@1")),
+                          "curl@1", "har@1", "openapi@1", "postman@1",
+                          "fingerprint@1")),
+    #: 4.3 起 `fingerprint` 也是产出者（`fingerprints/*.yaml` 的规则命中 →
+    #: `product` + `service --runs--> product`，迁移 013 用 `json_insert` 追加）。
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
-             produced_by=("httpx@1", "nmap@1")),
+             produced_by=("httpx@1", "nmap@1", "fingerprint@1")),
     #: 漏洞（3.2 起有产出者：nuclei 的 `-jsonl`）。**镜头归属是 003 里已冻结的
     #: `vuln`** —— 003 的 `CHECK` 是冻结的，而 R4 不许改 003，所以新增 lens id
     #: 事实上不可能；`vuln` 恰好在六个镜头之内。

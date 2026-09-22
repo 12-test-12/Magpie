@@ -1178,6 +1178,10 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         sent_bad_lines = 0
 
         try:
+            # 逐记录的 source 覆盖（4.3 的指纹引擎：观测的 source = 规则名）。
+            # 没有覆盖的记录照旧用作业 source —— 其余 13 个解析器一条都不会
+            # 设置 `rec.source`，这段对它们是零成本的直通。
+            extra_sources: dict[str, int] = {}
             for rec in parser_cls().parse(_tracked_lines(path, probe, ctx), ctx):
                 counters.records += 1
                 ctx.tick()
@@ -1186,8 +1190,18 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
                     counters.skipped += 1
                     continue
                 seen.add(key)
+                rec_source_id = source_id
+                rec_source = getattr(rec, "source", None)
+                if rec_source:
+                    name = str(rec_source)
+                    if name not in extra_sources:
+                        extra_sources[name] = store.register_source(
+                            conn, name=name,
+                            authority_level=opts.authority_level,
+                            tool=str(parser_cls.tool), actor=opts.actor)
+                    rec_source_id = extra_sources[name]
                 evidence_id = _evidence_for_line(conn, opts, raw_id, ctx, evidence_cache)
-                _write_record(conn, opts, job_id, source_id, evidence_id, rec,
+                _write_record(conn, opts, job_id, rec_source_id, evidence_id, rec,
                               _endpoint_kind(rec))
                 # **取 `key[1]`，不是 `key`**：`_fact_key` 返回的是 `(类别, 键)`
                 # 这样一个二元组，而 `_existing_facts` 给的两半分别是不带标签的
@@ -1422,11 +1436,27 @@ def _definition_hash(cls: Any) -> str:
 
     取**类源码**而不是模块文件：一个模块里可能有多个解析器。取不到源码时
     退化为类名，让报告里一眼看得出"这次没算成"。
+
+    可选的 `definition_extra()`（4.3 起）：类源码之外的**额外材料**，混进同一个
+    sha256。它存在的唯一理由是 `fingerprint@1` —— 那个解析器的行为由
+    `fingerprints/*.yaml` 这些**数据文件**决定，改一条规则不会动类源码一个字节，
+    于是"改规则必变 definition_hash"这条判据（规则可版本化的落点）在纯源码
+    hash 下走不通。没有该属性的 13 个解析器走原路径，hash 一个字节都不变。
+    `extra()` 抛异常时折成 `definition_extra error: <类型>` —— 降级要**稳定**
+    （同一种坏在两台机器上算出同一个 hash），绝不让一次规则读取失败把导入路径
+    自己炸掉。
     """
     try:
         src = inspect.getsource(cls)
     except (OSError, TypeError):
         return "unavailable:" + cls.__qualname__
+    extra = getattr(cls, "definition_extra", None)
+    if callable(extra):
+        try:
+            material = extra()
+        except Exception as exc:                      # noqa: BLE001 —— 降级要稳定
+            material = f"definition_extra error: {type(exc).__name__}: {exc}"
+        src = f"{src}\n# definition_extra\n{material}"
     return hashlib.sha256(src.encode("utf-8")).hexdigest()
 
 

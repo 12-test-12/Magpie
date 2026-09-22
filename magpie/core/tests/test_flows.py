@@ -695,7 +695,7 @@ def test_migration_011_rebuilds_the_inbox_table_without_losing_anything(tmp_path
         before = [tuple(row) for row in conn.execute(
             f"SELECT {', '.join(columns)} FROM inbox_items ORDER BY id")]
 
-        assert [a["version"] for a in migrate.migrate(conn)] == [11, 12]
+        assert [a["version"] for a in migrate.migrate(conn)] == [11, 12, 13]
         assert [r["name"] for r in conn.execute(
             "PRAGMA table_info(inbox_items)")] == columns
         after = [tuple(row) for row in conn.execute(

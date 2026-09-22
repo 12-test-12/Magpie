@@ -1,0 +1,51 @@
+# Web 服务器族的离线指纹规则（4.3）。
+#
+# 规则文件是**数据**：改这里的任何字节都会改变规则集 digest，从而改变
+# `fingerprint@1` 的 `definition_hash`（`ingest._definition_hash` 混入
+# `FingerprintParser.definition_extra()`），并让钉住 digest 的回归夹具先红一次
+# —— 这正是"规则改动必须让夹具失败一次"那条流程的机械形态。
+#
+# 字段（与计划书 §4.2 逐字对齐：`name` / `product` / `match` / `version_from`）：
+#
+#   name         规则名。全局唯一；同时是观测的 `source`（sources.name）与
+#                命中证据里的"哪条规则"。小写字母开头，只许 [a-z0-9_-]。
+#   product      产品名（过 normalize.product_name 别名表：Apache → httpd）。
+#   match.target header | body —— 在响应头还是响应体上找。
+#   match.name   target=header 时必填：匹配哪个头（大小写不敏感）。
+#   match.pattern  Python 正则。版本从捕获组里取时**必须**带捕获组。
+#   version_from 可选：版本取第几个捕获组（1 起）。缺省 = 不带版本的 product。
+#
+# 零出站（R7）：这些规则只作用在**已落盘**的响应上，引擎不发起任何请求。
+rules:
+  - name: nginx-server
+    product: nginx
+    match:
+      target: header
+      name: Server
+      pattern: 'nginx/(\d+(?:\.\d+)+)'
+    version_from: 1
+
+  - name: apache-server
+    product: Apache httpd
+    match:
+      target: header
+      name: Server
+      pattern: 'Apache/(\d+(?:\.\d+)+)'
+    version_from: 1
+
+  # IIS 的 Server 头不带版本（`Microsoft-IIS/10.0` 是头里自带的形态，照收）。
+  - name: iis-server
+    product: iis
+    match:
+      target: header
+      name: Server
+      pattern: 'Microsoft-IIS/(\d+(?:\.\d+)*)'
+    version_from: 1
+
+  - name: tomcat-server
+    product: tomcat
+    match:
+      target: header
+      name: Server
+      pattern: 'Apache Tomcat/(\d+(?:\.\d+)+)'
+    version_from: 1

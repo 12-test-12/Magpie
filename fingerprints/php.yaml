@@ -1,0 +1,12 @@
+# PHP 族（4.3）。X-Powered-By 是最稳的离线证据之一：响应头已经在盘上，
+# 命中即事实，不需要再向目标确认一次（R7 零出站）。
+#
+# 字段说明见 fingerprints/servers.yaml 的文件头。
+rules:
+  - name: php-x-powered-by
+    product: php
+    match:
+      target: header
+      name: X-Powered-By
+      pattern: 'PHP/(\d+(?:\.\d+)+)'
+    version_from: 1

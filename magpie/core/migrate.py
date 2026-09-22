@@ -90,6 +90,11 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 第三节。镜头归属 `traffic`（计划书 §3.5 的镜头表里那一行的主语就是
     # `flow / secret`）。同样**新增迁移、不改 001–011**（R4）。
     Migration(12, "kind_secret", SCHEMA_DIR / "012_kind_secret.sql"),
+    # 离线指纹引擎（4.3）：把 `fingerprint@1` 追加进 product / service 的
+    # produced_by（json_insert，004 的写法）+ `fingerprint` 观测字段的多值声明。
+    # 这一步**没有**新 kind —— 命中的落点是已登记的 product + runs，理由写在
+    # 013 的文件头第二节。同样**新增迁移、不改 001–012**（R4）。
+    Migration(13, "kind_fingerprint", SCHEMA_DIR / "013_kind_fingerprint.sql"),
 )
 
 

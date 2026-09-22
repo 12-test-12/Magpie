@@ -247,6 +247,8 @@ def test_the_declaration_is_narrow(db, project, tmp_path):
         ("observation_field", "final_url"),
         # 4.2 的 secret 扫描：同一份凭据在多个文件里被扫到 → 各自的行号。
         ("observation_field", "location"),
+        # 4.3 的离线指纹：同一 service 上多条规则各自命中 → 各自的证据 JSON。
+        ("observation_field", "fingerprint"),
     }, sorted(declared)
     # 声明表里每一行都必须带理由 —— 一条说不出理由的声明不该进得来。
     assert not [r for r in db.execute(

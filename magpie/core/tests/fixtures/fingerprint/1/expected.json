@@ -1,0 +1,128 @@
+{
+  "tool": "fingerprint",
+  "format_version": "1",
+  "input": "input.http",
+  "provenance": "按 HTTP/1.1 单次交换线格式现写的样本（不是真抓包）—— 本机零出站，引擎只读已落盘的文本。它证明的是引擎与规则自洽，不是与某个真实站点一致。",
+  "rules_digest": "sha256:5c427168c24a148302a0f03854a04cca2d737b9c658895793733ea55e09b9b9d",
+  "bad_lines": [],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "wordpress",
+      "display": "wordpress",
+      "attrs": {
+        "family": "wordpress",
+        "version": null
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:443"
+      ],
+      "dst": [
+        "product",
+        "wordpress"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "fingerprint",
+      "value": {
+        "product": "wordpress",
+        "rule": "wp-content-body",
+        "where": "body",
+        "evidence": "wp-content/"
+      }
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "php@8.2.12",
+      "display": "php",
+      "subtitle": "8.2.12",
+      "attrs": {
+        "family": "php",
+        "version": "8.2.12"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:443"
+      ],
+      "dst": [
+        "product",
+        "php@8.2.12"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "fingerprint",
+      "value": {
+        "product": "php@8.2.12",
+        "rule": "php-x-powered-by",
+        "where": "header:X-Powered-By",
+        "evidence": "X-Powered-By: PHP/8.2.12"
+      }
+    },
+    {
+      "type": "entity",
+      "kind": "product",
+      "key": "nginx@1.24.0",
+      "display": "nginx",
+      "subtitle": "1.24.0",
+      "attrs": {
+        "family": "nginx",
+        "version": "1.24.0"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "service",
+        "app.example.com:443"
+      ],
+      "dst": [
+        "product",
+        "nginx@1.24.0"
+      ],
+      "rel": "runs"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "service",
+        "app.example.com:443"
+      ],
+      "field": "fingerprint",
+      "value": {
+        "product": "nginx@1.24.0",
+        "rule": "nginx-server",
+        "where": "header:Server",
+        "evidence": "Server: nginx/1.24.0"
+      }
+    }
+  ]
+}

@@ -528,6 +528,11 @@ NEGATIVES = {
     # 世界里最容易出现的坏形状（`tshark` 写到一半被 Ctrl-C / 磁盘满了）。
     "tshark": ['[{"_index": "x", "_source": {"layers": {"ip_ip_src": "10.0.0.5"'],
     "curl": ["this is not a curl command\nnor is this\n"],
+    # fingerprint 这一条**形状完好、内容拒**：请求段与响应段都在，但 origin-form
+    # 请求行 + Host 不带端口 —— 80 还是 443 无从知道，引擎报可读坏行拒绝
+    # （与 flow 的"两端都未知直接拒绝"同一条纪律），而不是猜一个 service。
+    "fingerprint": ["GET /admin HTTP/1.1\nHost: app.example.com\n"
+                    "\nHTTP/1.1 200 OK\nServer: nginx/1.24.0\n\n<html></html>\n"],
 }
 
 
@@ -554,11 +559,12 @@ def section_a(parsers: dict) -> None:
 
     # 这两个数**每加一个来源就要改一次**，这是刻意的：它们的用途是"发现机制还
     # 活着吗、来源清单有没有多出没被看见的一个"。4.1 加了 `tshark`（12→13 /
-    # 10→11），改这一行是一次**显式的确认** —— 与 `test_load_parsers_finds_
+    # 10→11），4.3 加了 `fingerprint`（13→14 / 11→12），改这一行是一次
+    # **显式的确认** —— 与 `test_load_parsers_finds_
     # every_parser_and_retires_the_bridge` 里那份写死的清单同一条纪律。
     check(f"A1 发现机制给出 {len(parsers)} 个解析器，其中阶段 3 起新增 {len(stage3)} 个"
           f"（清单从代码算出来，不是手抄的）",
-          len(parsers) == 13 and len(stage3) == 11,
+          len(parsers) == 14 and len(stage3) == 12,
           f"全部={sorted(parsers)}；阶段 3={stage3}")
 
     problems = []

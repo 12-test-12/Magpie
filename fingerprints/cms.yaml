@@ -1,0 +1,15 @@
+# CMS / 应用框架族（4.3）。这一条走**响应体**：WordPress 没有稳定的响应头
+# 标识，`wp-content/` 路径是它在 HTML 里最持久的痕迹。
+#
+# 注意这条规则**不取版本**（没有 version_from）：wp-content 不含版本信息，
+# 编一个版本出来会让"这个资产跑着 wordpress@谁也没见过的版本"变成一条假事实。
+# 不带版本的 product 是另一个实体（product_key 的裁定），这正是"没证据就
+# 不带版本"的落点。
+#
+# 字段说明见 fingerprints/servers.yaml 的文件头。
+rules:
+  - name: wp-content-body
+    product: wordpress
+    match:
+      target: body
+      pattern: 'wp-content/'

@@ -37,8 +37,8 @@ from pathlib import Path
 import pytest
 
 from magpie.core import ingest, normalize, ops, scan, store
-from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, gau, \
-    har, httpx, katana, nmap, nuclei, openapi, postman, tshark
+from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, \
+    fingerprint, gau, har, httpx, katana, nmap, nuclei, openapi, postman, tshark
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KINDS = FIXTURES / "kinds"
@@ -138,7 +138,10 @@ GOLDEN = [("domainlist", domainlist.DomainListParser),
           # （`_flows.py`），但取的是另一种输入形状：一份包列表（顶层是数组），
           # 而 har 的顶层是对象。
           ("tshark", tshark.TsharkParser),
-          (CURL_TOOL, curl.CurlParser)]
+          (CURL_TOOL, curl.CurlParser),
+          # 4.3 的离线指纹引擎：认领的是已落盘的单次 HTTP 交换（请求段 +
+          # 响应段），规则是仓库根 `fingerprints/*.yaml` 的**数据**。
+          ("fingerprint", fingerprint.FingerprintParser)]
 
 #: **每个解析器的类** —— 好几条验收用的是它而不是工具名（流式、类属性、发现清单）。
 ALL_PARSERS = [cls for _, cls in GOLDEN]
@@ -722,8 +725,9 @@ def test_load_parsers_finds_every_parser_and_retires_the_bridge():
     parsers, source = ingest.load_parsers()
     assert source == "magpie.core.parsers"
     assert [p.tool for p in parsers] == [
-        CURL_TOOL, "dirsearch", "domainlist", "ffuf", "gau", "har", "httpx",
-        "katana", "nmap", "nuclei", "openapi", "postman", "tshark"]
+        CURL_TOOL, "dirsearch", "domainlist", "ffuf", "fingerprint", "gau",
+        "har", "httpx", "katana", "nmap", "nuclei", "openapi", "postman",
+        "tshark"]
 
 
 def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
@@ -762,6 +766,10 @@ def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
         # 对象（`_json.top_level_keys` 在 `[` 上直接返回空）。判据是形状而不是
         # 关键词，所以这一条与它们两两不相交 —— 而"不相交"正是这一条要证明的。
         "tshark": (FIXTURES / "tshark" / "1" / "input.json").read_text(encoding="utf-8"),
+        # 4.3 的 fingerprint：**线格式**（请求行 / 状态行打头），与上面所有
+        # JSON / 清单 / XML / curl 命令的判据都不相交。
+        "fingerprint": (FIXTURES / "fingerprint" / "1" / "input.http").read_text(
+            encoding="utf-8"),
     }
     for name, sample in samples.items():
         ranked = ingest.sniff_rank(sample[:ingest.SAMPLE_BYTES], f"{name}.txt",
