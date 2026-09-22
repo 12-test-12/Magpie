@@ -914,7 +914,7 @@ def doctor(project: str | None = None,
     if project_id is not None:
         data["project_id"] = project_id
         data["untested_entities"] = query.untested_count(conn, project_id)
-        # 体检页的五类（§7.4）。**与 `magpie doctor` 同一份实现** —— 两处都只是
+        # 体检页的六类（§7.4）。**与 `magpie doctor` 同一份实现** —— 两处都只是
         # `query.health_report` 的一次调用（`core/query.py` 是唯一实现），
         # 所以"GUI 说 3、CLI 说 2"这种分歧在结构上不可能出现。
         data["health"] = query.health_report(conn, project_id)

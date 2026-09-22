@@ -50,7 +50,7 @@
     哪些资产落在网段里     in_cidr=10.0.0.0/24        → assets_in_cidr
     镜头里的 kind 计数     （GET /lenses/{lens}）     → lens_view
     通用列表               kind= / q= / tag= …        → entities_page
-    体检页的五类           各一组 inbox kind           → health_report
+    体检页的六类           各一组 inbox kind           → health_report
 
 后四个都是 `entities_page` 的**定型调用**，不是另写一份 SQL。分开成具名函数有
 两个实际理由：`query` 这个名字要能写进输出（调用方据此知道刚才问的是哪一问），
@@ -68,6 +68,7 @@ from typing import Any, NamedTuple
 from . import normalize
 from . import scope as scope_module
 from .parsers.httpx import product_key
+from .store import manual_owned
 
 # ---------------------------------------------------------------------------
 # 契约常量 —— **唯一的声明处**
@@ -932,15 +933,21 @@ NAMED_QUERIES = {
     "endpoint": "某个接口的归属服务（endpoint --served_by--> service）",
     "assets_in_cidr": "落在网段里的资产（包含判断是算出来的）",
     "lens": "镜头页：这个镜头下每个 kind 的类型徽标与计数",
-    # 五类问题（§7.4 的体检页）。它们不是 `ls` 上的过滤条件，而是**体检页**
-    # 会问的五问 —— 一并列在这里，是因为 agent 同样该知道"这个库里现在有哪几类
+    # 六类问题（§7.4 的体检页）。它们不是 `ls` 上的过滤条件，而是**体检页**
+    # 会问的六问 —— 一并列在这里，是因为 agent 同样该知道"这个库里现在有哪几类
     # 待办"，而 `magpie schema --json` 是它的说明书。
-    "health": "体检页：五类问题各自的计数与未决项",
+    #
+    # ⚠️  这里每一行都对应 `HEALTH_CATEGORIES` 里的一类（第六行是 4.1 加的）
+    # —— 一处词表、两个落点，加一类时**两处都要动**。少写一行的症状是 agent
+    # 问不出那一类，而它不是"少一个便利入口"：`magpie schema --json` 是 agent
+    # 认识这个库的全部依据（5.2），漏掉的那一类在它眼里根本不存在。
+    "health": "体检页：六类问题各自的计数与未决项",
     "health.orphan": "孤儿：从未有过任何贡献的实体",
     "health.conflict": "冲突：同字段多值 / 合并后多值 / 身份归属不唯一",
     "health.low_confidence": "低置信度：嗅探仲裁拿不准这份输入该由谁解析",
     "health.unknown_field": "未知字段：输入里出现了解析器不认识的字段名",
     "health.out_of_scope": "越界资产：落在项目 scope 的 include / exclude 之外",
+    "health.unregistered": "未登记资产：流量里出现、而项目此前从未登记过的主机（4.1）",
 }
 
 
@@ -1127,8 +1134,19 @@ def jobs_by_state(conn: sqlite3.Connection) -> list[dict]:
 
 
 def raw_file_states(conn: sqlite3.Connection) -> list[dict]:
+    """`raw_files` 按 **(谁持有, 还在不在)** 分组 —— 4.1 起是**两列**，不是一列。
+
+    体检页那排 chip 的标题是「原文持有」，而那正是 `custody` 回答的问题
+    （`stored` = 本工具的归档里有副本；`external` = 只有一条指向工具之外某个文件
+    的路径）。只按 `storage_state` 分组会让外部文件显示成 `present` —— 一个读起来
+    像"副本在我手里"的词，而它恰恰**不在**（迁移 011 的文件头第一节）。
+
+    分组键取两列而不是把两列拼成一个字符串：拼出来的标签是**第三种写法**
+    （`present·external`），而 GUI / CLI / MCP 会各自发明一种拼法。
+    """
     return [dict(r) for r in conn.execute(
-        "SELECT storage_state, COUNT(*) AS n FROM raw_files GROUP BY storage_state")]
+        "SELECT storage_state, custody, COUNT(*) AS n FROM raw_files"
+        " GROUP BY storage_state, custody ORDER BY custody, storage_state")]
 
 
 # ---------------------------------------------------------------------------
@@ -1402,7 +1420,7 @@ def inbox_items(conn: sqlite3.Connection, project_id: int, state: str = "open",
     """Inbox 项。默认只看 `open`，并按 severity 排（high 在前）—— 一个需要人
     裁决的列表，把 high 埋在 50 条 low 后面等于没有排序。
 
-    `kinds` 是体检页要的过滤（五类各是一组 kind，见 `HEALTH_CATEGORIES`）。
+    `kinds` 是体检页要的过滤（六类各是一组 kind，见 `HEALTH_CATEGORIES`）。
     过滤放在**这一处**而不是让调用方拿到全表再自己挑：那样"排序"与"截断"就会
     在两侧各发生一次，而 `limit` 截断过的列表再过滤，得到的计数是错的。
     """
@@ -1427,22 +1445,22 @@ def inbox_items(conn: sqlite3.Connection, project_id: int, state: str = "open",
 
 
 # ---------------------------------------------------------------------------
-# 五类问题（§7.4 的体检页）—— 每类一条具名查询
+# 六类问题（§7.4 的体检页）—— 每类一条具名查询
 # ---------------------------------------------------------------------------
 #
-# 为什么五类**是** Inbox 项的分组，而不是五条独立的检测语句
+# 为什么六类**是** Inbox 项的分组，而不是六条独立的检测语句
 # ------------------------------------------------------------
-# 本步的验收判据是一句话：「清空 Inbox 后体检页五类全部归零」。
+# 本步的验收判据是一句话：「清空 Inbox 后体检页六类全部归零」。
 #
-# 这句话只有在五类**就是** Inbox 的归组时才是一条**结构上成立**的定理；换成
-# 五条独立的检测语句，它立刻变成一句多半为假的口号 —— 裁决掉一条待办并不会
+# 这句话只有在六类**就是** Inbox 的归组时才是一条**结构上成立**的定理；换成
+# 六条独立的检测语句，它立刻变成一句多半为假的口号 —— 裁决掉一条待办并不会
 # 让"这个字段有两个值"这件事从库里消失，下一次导入还会把它重新报出来。于是
 # 「清空即干净」就成了一句没人能兑现的承诺，而体检页上的数字会长期挂在非零，
 # 慢慢地没人再看它。
 #
 # 所以这里的分工是：**Inbox 是唯一的待办队列，体检页是它的按类视图。** 谁发现
 # 了问题，谁就在写事实的同一条路径上开一条 Inbox 项（`ops._open_inbox` 是唯一
-# 的写入口）；体检页只负责把已经开出来的项分成五类数一遍。这条分工让两个页面
+# 的写入口）；体检页只负责把已经开出来的项分成六类数一遍。这条分工让两个页面
 # 不可能给出不同的答案 —— 因为它们看的是同一张表。
 #
 # ⚠ 「越界资产」与「未知字段」这两类的生产者是 3.6 才接上的
@@ -1459,6 +1477,14 @@ def inbox_items(conn: sqlite3.Connection, project_id: int, state: str = "open",
 #   * `ops.refresh_scope_drift`    —— 资产落在 scope 之外时开 `scope_drift`。
 # 两者都只在**真的有东西要报**时才写，干净的夹具上一行不写（这也让它们对既有
 # 的黄金夹具完全惰性）。
+#
+# ⚠ 「未登记资产」（第六类）的生产者是 4.1 才接上的
+# ------------------------------------------------------------
+# 它的通道与上面两个一字不差：`ops.refresh_unregistered_assets` 读
+# `query.unregistered_assets` 的判据（哪台主机"此前从未登记过"），开的还是
+# `inbox_items` 那一张表。**没有第二套待办通道** —— 计划书 4.1 点名了这条，
+# 而它的判据同样是惰性的：没有 flow 的导入（也就是除 4.1 之外的所有来源）
+# 一行都不写。
 
 
 class HealthCategory(NamedTuple):
@@ -1470,10 +1496,10 @@ class HealthCategory(NamedTuple):
     why: str
 
 
-#: 五类的**唯一分类表**。schema 的七个 inbox kind 在这里被**划分**（partition）：
+#: 六类的**唯一分类表**。schema 的八个 inbox kind 在这里被**划分**（partition）：
 #: 每个 kind 恰好属于一类，没有漏、没有重。这两条都有用例钉着：
 #:   * 漏 → `unclaimed_inbox_kinds()` 会把它报出来（"开了一条谁都不认领的待办"）；
-#:   * 重 → 五类之和会大于 `open_inbox`，一个项目看起来比它自己还多待办。
+#:   * 重 → 六类之和会大于 `open_inbox`，一个项目看起来比它自己还多待办。
 #:
 #: 分类的**依据是"这件事要怎么裁决"**，不是 kind 的字面名字：
 #:   * `manual_required` 归「低置信度」而不是「未知字段」—— `_no_parser_report`
@@ -1494,6 +1520,13 @@ HEALTH_CATEGORIES: tuple[HealthCategory, ...] = (
                    "输入里出现了解析器不认识的字段名（§5.6 的格式漂移信号）"),
     HealthCategory("out_of_scope", "越界资产", ("scope_drift",),
                    "资产落在项目 scope 的 include / exclude 之外"),
+    # 4.1：`unregistered_asset` —— 它是**第六类**，而不是塞进上面六类里的某一类。
+    # 裁决是"这台主机纳不纳入我的资产"，与"某个字段有两个值"「这个字段我不认识」
+    # 都不是一件事；借一个近似通道会让那一类的数字开始说谎（迁移 011 的文件头
+    # 第二节把这条准入纪律写透了）。
+    HealthCategory("unregistered", "未登记资产", ("unregistered_asset",),
+                   "流量里出现、而项目此前从未登记过的主机（4.1：一份抓包看到的"
+                   "世界总比已登记的多）"),
 )
 
 #: kind → 类别的反查表。从 `HEALTH_CATEGORIES` 生成，**不是**第二份声明。
@@ -1514,7 +1547,7 @@ def category_spec(key: str) -> HealthCategory:
             return category
     raise QueryError(
         "E_UNKNOWN_CATEGORY", f"没有 {key!r} 这一类",
-        hint=f"体检页的五类是：{', '.join(c.key for c in HEALTH_CATEGORIES)}",
+        hint=f"体检页的六类是：{', '.join(c.key for c in HEALTH_CATEGORIES)}",
         categories=[c.key for c in HEALTH_CATEGORIES])
 
 
@@ -1544,11 +1577,11 @@ def health_category(conn: sqlite3.Connection, project_id: int, key: str,
 
 def health_report(conn: sqlite3.Connection, project_id: int,
                   limit: int = DEFAULT_HEALTH_LIMIT) -> dict:
-    """**体检页的全部**：五类 + 三个对账用的数。
+    """**体检页的全部**：六类 + 三个对账用的数。
 
     `open_inbox` / `claimed` / `unclaimed` 不是装饰，它们是"分类表还成立吗"的
     守卫：`claimed + unclaimed == open_inbox` 必须成立，而 `unclaimed` 非空就
-    意味着**有人开了一条五类里没有的待办**，那条待办在体检页上永远不会被看见。
+    意味着**有人开了一条六类里没有的待办**，那条待办在体检页上永远不会被看见。
     一个不被任何一页显示的待办和没有这条待办，对人来说是同一件事。
 
     口径：全部限定在这一个项目里（`metric_counts` 的 `open_inbox` 是**全库**的，
@@ -1578,19 +1611,19 @@ def _health_notes(categories: list[dict], unclaimed: list[dict],
     notes: list[str] = []
     if unclaimed:
         notes.append(
-            "有 " + str(sum(int(u["n"]) for u in unclaimed)) + " 条未决项不属于五类中的"
+            "有 " + str(sum(int(u["n"]) for u in unclaimed)) + " 条未决项不属于六类中的"
             "任何一类（kind：" + ", ".join(str(u["kind"]) for u in unclaimed) +
             "）—— 它们在体检页上不会被看见。分类表见 query.HEALTH_CATEGORIES。")
     if claimed != open_inbox:
         notes.append(
-            f"五类之和（{claimed}）与未决总数（{open_inbox}）不一致 —— 分类表出现"
+            f"六类之和（{claimed}）与未决总数（{open_inbox}）不一致 —— 分类表出现"
             f"了漏算，体检页上少掉的正是那 {open_inbox - claimed} 条。")
     return notes
 
 
 def unclaimed_inbox_kinds(conn: sqlite3.Connection,
                           project_id: int) -> list[dict]:
-    """未决项里不属于五类中任何一类的 kind（含数目）。**空列表才是对的。**
+    """未决项里不属于六类中任何一类的 kind（含数目）。**空列表才是对的。**
 
     只看 `open`：已裁决的项不属于任何一页要展示的东西，把它们算进来会让
     `claimed + unclaimed == open_inbox` 这条对账式**在历史一多时必然不成立**
@@ -1682,6 +1715,94 @@ def out_of_scope_entities(conn: sqlite3.Connection, project_id: int,
         if verdict is False:                     # None = 不问，不是越界
             out.append({"id": int(row["id"]), "kind": str(row["kind"]),
                         "entity_key": key})
+    return out
+
+
+def unregistered_assets(conn: sqlite3.Connection, *, project_id: int,
+                        job_id: int) -> list[dict]:
+    """这次作业**第一次**带进项目、且出现在它写下的**会话**里的主机（4.1）。
+
+    四条判据，一条都不能少 —— 每一条划掉的都是一类噪音：
+
+      1. **它的键是地址形状**（IP 或域名），而不是"它的 `kind` 是 domain / ip"。
+         这一条是被一次真实的导入逼出来的：`har` 的接口形状那一半会给
+         `api.example.com` 建一个 `apischema` 实体，而 `entity_keys` 的身份是
+         **键本身**（`PRIMARY KEY (project_id, entity_key)`）—— 于是同一份 HAR 里
+         随后产出的 `domain` 记录落到了**同一个实体**上，`entities.kind` 留下的是
+         先到的那个 `apischema`。按 kind 过滤会让"这台主机是这次抓包新发现的"
+         在整个 HAR 来源上**永远不成立**（`tshark` 那条 IP 的路径不受影响），
+         而那是静默的。判据落在键的形状上就没有这个问题 —— 而且它比 kind 更
+         准确："资产"说的是**它是不是一个地址**，不是"哪一类记录先写了它"；
+      2. 它出现在**这个作业**写下的会话里（`flow --involves--> 主机`）。不是
+         "这个作业碰过的每一台主机"：httpx / nmap / nuclei 本来就各自有报告
+         路径，把它们的资产也算进来，"发现未登记资产"会退化成"每次导入都刷
+         一屏"，而这一条判别只对**流量**才有意义（一份抓包看到的世界比你已经
+         登记的多得多，那正是要提醒你的事）；
+      3. 它**只**有这个作业的贡献 —— 也就是"此前项目里没有它"。判据是"除了
+         本作业，没有任何一条 active 贡献指向它"，而不是"实体是刚建的"：
+         后者答不出"上一次导入建了它、这一次又见到它"这种情况（那不该再报）；
+      4. 它没有被人工接管（`manual_owned`）—— 人已经认领过的资产不需要系统
+         再提醒一次"你有一条新资产"。
+
+    **它只回答"哪些"** —— 开待办、定 severity、写 payload 都是 `ops` 的事，
+    与 `out_of_scope_entities` / `refresh_scope_drift` 同样的分工。
+
+    ⚠️  它**不收** `entity_ids` 白名单（同族的 `refresh_scope_drift` 收）。那不是
+    疏漏：判据 3 已经蕴含了"这个作业把它带进来的"—— 一条实体只要还有别的作业的
+    贡献，就会被排除掉，而这个作业**没碰过**的实体也不可能出现在本作业写下的
+    `involves` 关系里。收下它会多付一笔真实的账：导入路径手上的 `entity_ids`
+    是一次 10 万观测导入里同一量级的长度，为它拼一条几万个占位符的 SQL，换来的
+    是一个已经成立的结论。
+    """
+    pid = int(project_id)
+    jid = int(job_id)
+    # **早退**：这个作业一条 `involves` 都没有 → 它没有产出任何会话，直接空手
+    # 返回。这一句是导入路径的**常态**（除 4.1 的两个来源之外，没有任何来源会
+    # 产出 `involves`），而它比下面那条带三个 NOT EXISTS 的查询便宜几个量级。
+    if not conn.execute(
+            "SELECT 1 FROM v_active_contributions c JOIN relations r"
+            "  ON r.id = c.subject_id"
+            " WHERE c.job_id=? AND c.subject_kind='relation'"
+            "   AND r.rel='involves' LIMIT 1", (jid,)).fetchone():
+        return []
+    params: list[Any] = [pid, jid, jid]
+
+    rows = conn.execute(
+        "SELECT DISTINCT e.id AS id, e.kind AS kind, k.entity_key AS entity_key"
+        "  FROM relations r"
+        "  JOIN v_active_contributions c"
+        "    ON c.subject_kind='relation' AND c.subject_id=r.id"
+        "  JOIN entities e ON e.id=r.dst_id AND e.project_id=r.project_id"
+        "  JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+        "   AND k.canonical=1"
+        " WHERE r.project_id=? AND r.rel='involves' AND c.job_id=?"
+        "   AND e.is_current=1 AND e.merged_into IS NULL"
+        # 判据 3：除本作业外没有任何一条 active 贡献指向这个实体。
+        # 两半都要查：`subject_id` 是实体自己的字段（display_name 那一类），
+        # `owner_entity_id` 是挂在它上面的观测（INV-16 提供的那条链）——
+        # 只看一半会让"另一个来源观测到过它"漏过去。
+        "   AND NOT EXISTS (SELECT 1 FROM v_active_contributions c2"
+        "                    WHERE c2.project_id=r.project_id"
+        "                      AND (c2.job_id IS NULL OR c2.job_id <> ?)"
+        "                      AND ((c2.subject_kind='entity' AND c2.subject_id=e.id)"
+        "                        OR c2.owner_entity_id=e.id))"
+        " ORDER BY k.entity_key", tuple(params)).fetchall()
+    out = []
+    for row in rows:
+        key = str(row["entity_key"])
+        # 判据 1（键的形状）+ 判据 4（人工接管）都在 Python 侧做：
+        #   * 键是不是地址 —— `normalize.try_ip` / `try_domain` 是这件事的**唯一**
+        #     实现（`scope.py` 的匹配、`_urls.py` 的 host_kind 都走它俩），
+        #     在 SQL 里重写一遍就是第二份真相；
+        #   * 人工接管 —— `store.manual_owned` 同理。
+        # `kind` 在这里只用来把地址分成 ip / domain 两档（给 payload 看）。
+        host_kind = "ip" if normalize.try_ip(key) is not None else "domain"
+        if host_kind == "domain" and normalize.try_domain(key) is None:
+            continue                       # 键不是地址（单标签主机 / 别的形状）
+        if manual_owned(conn, "entity", int(row["id"])):
+            continue
+        out.append({"id": int(row["id"]), "kind": str(row["kind"]),
+                    "host_kind": host_kind, "entity_key": key})
     return out
 
 

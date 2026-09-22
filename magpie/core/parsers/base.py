@@ -354,8 +354,8 @@ class RelationSpec:
 
 
 #: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`
-#: + 3.3 的 `endpoint` + 3.4 的 `apischema`）。刻意先窄后宽：每个登记的 kind
-#: 都要带三件套，而 `param` / `flow` 之流的三件套只有在阶段 3 / 4 各自的解析器里
+#: + 3.3 的 `endpoint` + 3.4 的 `apischema` + 4.1 的 `flow`）。刻意先窄后宽：
+#: 每个登记的 kind 都要带三件套，而 `param` 之流的三件套只有在它自己的解析器里
 #: 才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束（计划书 §3.3 的
 #: 教训）。
 #:
@@ -364,15 +364,25 @@ class RelationSpec:
 #: 是第一个真实产出者，三件套同期到位（迁移 `schema/004_kind_cidr.sql`）。
 #: 3.2 的 `vuln`（迁移 `schema/005_kind_vuln.sql`）与 3.3 的 `endpoint`
 #: （迁移 `schema/006_kind_endpoint.sql`）走的是同一条路。
+#:
+#: `flow` 是这条纪律的**反面记录**：它从 3.x 起就一直在测试里当"未登记的 kind"
+#: 那个反例（`test_unregistered_kind_gets_a_readable_python_error_too`），
+#: 而它被登记的这一天，那条用例得**换一个反例**而不是删掉断言 —— 反例只有在
+#: "仍然未登记"时才是一条约束（4.1 换成了 `param` / `secret`）。
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
              produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1")),
+    #: 4.1 起 `tshark` 也是一个产出者：一段会话的目的端会落成 `ip` 实体
+    #: （`flow --involves--> ip`）。**`domain` 不补** —— 本步不做 DNS 名字提取
+    #: （把 `dns.qry.name` 当成"这台 IP 叫什么"是一次需要人确认的**推断**，
+    #: 而 4.3 的指纹引擎才是做推断的地方）。
     KindSpec(kind="ip", fixture="fixtures/kinds/ip.json", lens="assets",
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
-                          "curl@1", "har@1", "openapi@1", "postman@1")),
+                          "curl@1", "har@1", "openapi@1", "postman@1",
+                          "tshark@1")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -422,6 +432,16 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 认出来的那件事。
     KindSpec(kind="apischema", fixture="fixtures/kinds/apischema.json", lens="api",
              produced_by=("curl@1", "har@1", "openapi@1", "postman@1")),
+    #: 会话摘要（4.1 起有产出者：har 与 tshark 两个流量来源）。**第一个用
+    #: `traffic` 镜头的 kind** —— 那个 id 从 001 的 CHECK 起就躺着，而 R4 不许
+    #: 改 001，所以"流量镜头"就是它，不是另起一个名字。
+    #:
+    #: 身份是**一段会话**：`协议|源|目的|会话起点`（`normalize.flow_key`）。
+    #: 完整正文在 `schema/011_flow_external.sql` 与 `fixtures/kinds/flow.json`
+    #: 里（三处**逐字**一致，两条测试分别守着），一句话版：一个 5 元组不是一个
+    #: 会话，时间窗必须进身份。
+    KindSpec(kind="flow", fixture="fixtures/kinds/flow.json", lens="traffic",
+             produced_by=("har@1", "tshark@1")),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。
@@ -456,6 +476,11 @@ RELATION_VOCABULARY: tuple[RelationSpec, ...] = (
         verb="declared_in",
         description="接口被某份 API 契约声明，或属于某个起源上已经见过的 API（app.example.com/user/{id} --declared_in--> api.example.com）。端点 kind 是 endpoint 与 apischema —— 3.4 的四个来源算出的接口身份与 dirsearch / gau 观测到的真实路径落的是**同一个** endpoint 实体，所以「契约声明了但没人访问过」与「访问过但没进契约」都能一眼看出，这正是把契约挂到接口而不是另建一套接口列表的理由。方向是 endpoint → apischema：逆动词 declares 让「这个起源的 API 有哪些接口」不必另立一列。",
         inverse="declares",
+    ),
+    RelationSpec(
+        verb="involves",
+        description="会话涉及某个主机（tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:12Z --involves--> 93.184.216.34）。端点 kind 是 flow 与 host（domain / ip）。只挂**目的**那一侧：源端在抓包里是自己的客户端（内网地址、临时端口），挂进图会让「这台主机出现在哪些会话里」被本机的临时端口淹没，而「这段会话碰了哪个资产」才是这张图要回答的；源端以 flow 上的 `client` 观测留下。这条边是 4.1 的「会话里出现的新 host 自动进 Inbox」找到待办主体的那条路 —— 待办主体的 `subject_id` 是实体 id，而不是让人再去拆一遍身份串。",
+        inverse="involved_in",
     ),
 )
 

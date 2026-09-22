@@ -384,14 +384,14 @@ def test_import_after_a_resolved_conflict_opens_a_new_item(db, project, tmp_path
 # ---------------------------------------------------------------------------
 
 def test_multivalue_import_leaves_the_health_report_at_zero(db, project, tmp_path):
-    """一次多值字段很密的导入之后，体检页五类**全为零**（判据 4 的加强版）。
+    """一次多值字段很密的导入之后，体检页六类**全为零**（判据 4 的加强版）。
 
     3.6 的 `test_clearing_the_inbox_zeroes_all_five` 证的是"**裁决完之后**归零"，
     它管不到"导入一开始就不该有"。这一步买的正是后者：多值字段不再造冲突，
     所以清空 Inbox 这件事在导入那一刻就成立了，而不是靠人一条条裁决。
 
     夹具三份文件各顶一种多值字段（`path` / `method` + `status` / `cname`），
-    全都是夹具自己写的行 —— 这样"五类为 0"里没有任何一类是被真夹具里**别的**
+    全都是夹具自己写的行 —— 这样"六类为 0"里没有任何一类是被真夹具里**别的**
     信号顶起来的（真 ffuf 夹具就带一个未知字段，见下一条用例）。
     """
     ingest.ingest_file(db, options(project, tmp_path), write(
@@ -417,7 +417,7 @@ def test_multivalue_import_leaves_the_health_report_at_zero(db, project, tmp_pat
     assert after["open_inbox"] == 0, after
     assert after["unclaimed"] == [], after["unclaimed"]
 
-    # 而且这三份文件确实各自落了多条观测 —— 否则"五类为 0"可能只是"什么都没导进去"。
+    # 而且这三份文件确实各自落了多条观测 —— 否则"六类为 0"可能只是"什么都没导进去"。
     multi = db.execute(
         "SELECT COUNT(*) FROM ("
         "  SELECT o.entity_id, o.semantic_field FROM observations o"
@@ -496,6 +496,41 @@ def test_real_ffuf_export_opens_no_conflict(db, project, tmp_path):
 # 判据 6 · 替换的是**视图**: 不丢数据、不动 001–009
 # ---------------------------------------------------------------------------
 
+def _seed_endpoint_with_two_paths(conn, project: int) -> int:
+    """往老库里种事实 —— **走 `ops` 的原语，不走管线**。返回 job_id。
+
+    为什么不是 `ingest.ingest_file`（这一段的原始写法）：4.1 的迁移 011 给
+    `raw_files` 加了 `custody`，而**写入方从此总是写它** —— 于是"建一个只应用
+    到 009 的库、再用今天的管线往里写、然后迁移"这条路不再成立。那不是缺陷：
+    管线只对**当前版本**的库负责（`migrate()` 是入口，`store.init_db` 会先把它
+    升到 head），而"先建老库再往里写"这种用法只存在于迁移测试里。
+
+    种子的形状与原来那次导入逐条对应：一个 endpoint 实体、两条**不同来源**的
+    `path` 观测（`/user/123` 与 `/user/456` —— 正是 010 那个缺陷的形状）、一条
+    `served_by` 关系（让 `relations` / `entity_keys` 也有行可数）。
+    """
+    job = ops.start_job(conn, project_id=project, kind="ingest", coverage="partial")
+    raw = ops.add_raw_file(conn, project_id=project, locator_uri="file:///seed.txt",
+                           content="/user/123\n/user/456\n")
+    evidence = ops.add_evidence(conn, project_id=project, raw_file_id=raw,
+                                locator={"line": 1}, snippet="/user/123")
+    key = "app.example.com/user/{id}"
+    for source_name, path in (("gau", "/user/123"), ("katana", "/user/456")):
+        source = store.register_source(conn, name=source_name, actor="test")
+        ops.add_entity_field(conn, project_id=project, job_id=job, evidence_id=evidence,
+                             source_id=source, entity_key=key, kind="endpoint",
+                             semantic_field="display_name", value=key)
+        ops.add_observation(conn, project_id=project, job_id=job, evidence_id=evidence,
+                            source_id=source, entity_key=key, kind="endpoint",
+                            semantic_field="path", value=path)
+        ops.add_relation(conn, project_id=project, job_id=job, evidence_id=evidence,
+                         source_id=source, src_key=key,
+                         dst_key="app.example.com:443", rel="served_by", kind="endpoint")
+    # 老视图是判据的唯一来源：**必须真的跑一遍**生产者的那条路才会开出待办。
+    ops.refresh_observation_conflicts(conn, project, job_id=job)
+    return int(job)
+
+
 def _database_at_version_9(tmp_path) -> sqlite3.Connection:
     """建一个**只应用到 009** 的库（升级路径本身要被测到，不能只测新库）。"""
     conn = store.connect(tmp_path / "old.db")
@@ -524,11 +559,7 @@ def test_migration_010_replaces_the_view_without_losing_data(tmp_path):
     conn = _database_at_version_9(tmp_path)
     try:
         project = ops.create_project(conn, "upgrade-test", {"include": [], "exclude": []})
-        job = ingest.ingest_file(conn, ingest.IngestOptions(
-            project_id=project, data_dir=tmp_path, actor="test"), write(
-            tmp_path, "gau.txt",
-            "https://app.example.com/user/123\n"
-            "https://app.example.com/user/456\n"))
+        job_id = _seed_endpoint_with_two_paths(conn, project)
 
         # 升级前：老视图把多值 `path` 记成一条冲突（这正是缺陷 A 的形状）。
         old = [dict(r) for r in conn.execute(
@@ -540,8 +571,14 @@ def test_migration_010_replaces_the_view_without_losing_data(tmp_path):
                             "entity_keys", "relations")}
         assert all(v > 0 for v in before.values()), before
 
-        applied = migrate.migrate(conn)
-        assert [a["version"] for a in applied] == [10], applied
+        applied = [a["version"] for a in migrate.migrate(conn)]
+        # 这一次升级从 009 走到 head：**010 必须在里面**（这条用例验的就是它），
+        # 后面跟着哪些迁移不归它管。原来那句 `== [10]` 是 010 时代写死的快照，
+        # 它每加一个迁移都会红一次 —— 而那种红不指向任何真实缺陷。
+        # 换成"连续且升序"之后，这条断言守的还是同一件事：升级是逐个 apply 的，
+        # 没有跳号、没有倒序。
+        assert 10 in applied, applied
+        assert applied == list(range(10, max(applied) + 1)), applied
 
         # 视图换了判据：`path` 不再算冲突。
         assert conn.execute(
@@ -563,7 +600,7 @@ def test_migration_010_replaces_the_view_without_losing_data(tmp_path):
         import re
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
                             str(rows[0]["resolved_at"])), rows[0]["resolved_at"]
-        assert job["job_id"] > 0
+        assert job_id > 0
     finally:
         conn.close()
 
@@ -572,16 +609,26 @@ def test_migration_010_extends_the_registry_without_editing_earlier_files():
     """010 是**新增**的一个迁移，001–009 的文件一字未动（R4）。
 
     老库的校验和由 `migrate()` 在升级时逐条比对（改了文件就 `MigrationError`），
-    这条用例把"清单本身"也钉住：版本连续、每条一个文件、`010` 在最后。
+    这条用例把"清单本身"也钉住。
+
+    ⚠️  4.1 的两处调整（都不是放宽判据）：
+      * `010` 不再是清单里的最后一条（011 接了上），所以"它在最后"改成"**它还在、
+        还带着它那句 DROP VIEW**" —— 那条才是 010 的本体；
+      * 补上一条**通例**：版本连续、名字不重、每个文件真在盘上。原来那句
+        `versions == list(range(1, 11))` 是 010 时代的快照，每加一个迁移都要手改
+        一次；换成"连续 + 唯一 + 文件存在"之后它守的还是同一件事（R4 的清单
+        完整性），而且不会在某次加迁移时被顺手改成 `range(1, 12)` 之后就再没人看。
     """
     versions = [m.version for m in migrate.MIGRATIONS]
-    assert versions == list(range(1, 11)), versions
+    assert versions == list(range(1, len(versions) + 1)), versions
     names = [m.name for m in migrate.MIGRATIONS]
     assert len(set(names)) == len(names), names
-    assert names[-1] == "multivalue_fields", names
-    last = migrate.MIGRATIONS[-1]
-    assert last.path.name == "010_multivalue_fields.sql", last.path
-    assert "DROP VIEW IF EXISTS v_field_conflicts" in last.path.read_text(
+    for migration in migrate.MIGRATIONS:
+        assert migration.path.is_file(), migration.path
+    ten = {m.version: m for m in migrate.MIGRATIONS}[10]
+    assert ten.name == "multivalue_fields", ten.name
+    assert ten.path.name == "010_multivalue_fields.sql", ten.path
+    assert "DROP VIEW IF EXISTS v_field_conflicts" in ten.path.read_text(
         encoding="utf-8")
 
 

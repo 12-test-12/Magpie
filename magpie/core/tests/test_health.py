@@ -1,9 +1,9 @@
-"""3.6 · 五类问题（§7.4 的体检页）的验收网。
+"""3.6 · 六类问题（§7.4 的体检页）的验收网（第六类是 4.1 加的）。
 
 这一页的验收判据只有一句话，而它的两半缺一不可：
 
-    **清空 Inbox 后体检页五类全部归零**
-    **五类各自都有能造出非零计数的夹具**
+    **清空 Inbox 后体检页六类全部归零**
+    **六类各自都有能造出非零计数的夹具**
 
 后半句是前半句的**牙齿**。一个"归零"的断言单独放在那里，可能是真的定理，
 也可能只是"从来没检测到任何东西"——两者在测试输出里长得一模一样（都是绿色的
@@ -14,9 +14,11 @@
     低置信度    → 一份一半是垃圾的清单，嗅探不采用任何解析器 → `manual_required`
     未知字段    → 解析器声明了 known_fields，输入里有别的名字 → `evidence_missing`
     越界资产    → 资产不在项目 scope 的 include 里 → `scope_drift`
+    未登记资产  → 一份**会话来源**的导入，带一台此前没登记过的主机（4.1）→
+                  `unregistered_asset`
 
-然后 `test_clearing_the_inbox_zeroes_all_five` 把这五个夹具**放进同一个项目**，
-先断言五类都非零，再把 Inbox 一条条裁决掉，断言五类全部归零 —— 这才是一条有
+然后 `test_clearing_the_inbox_zeroes_all_five` 把这六个夹具**放进同一个项目**，
+先断言六类都非零，再把 Inbox 一条条裁决掉，断言六类全部归零 —— 这才是一条有
 牙齿的"清空即干净"。
 
 为什么判据是"Inbox 的归组"而不是五条独立的检测语句：见
@@ -34,12 +36,13 @@ import pytest
 from magpie.core import ingest, ops, query, store
 from magpie.core.manual import ManualWriter
 
-#: `schema/001_init.sql` 的 `inbox_items.kind` CHECK 里的七个。
-#: 抄在测试里是刻意的：**这张表与分类表必须逐字相等** —— 迁移里加了一个 kind
-#: 而没人给它归类时，这条用例会红，而不是让那条待办在体检页上永远不被看见。
+#: `inbox_items.kind` CHECK 里的**八个**（001 的七个 + 4.1 在迁移 011 里加的
+#: `unregistered_asset`）。抄在测试里是刻意的：**这张表与分类表必须逐字相等**
+#: —— 迁移里加了一个 kind 而没人给它归类时，这条用例会红，而不是让那条待办在
+#: 体检页上永远不被看见。
 SCHEMA_INBOX_KINDS = (
     "value_conflict", "orphan_subject", "identity_ambiguous", "merge_conflict",
-    "evidence_missing", "scope_drift", "manual_required",
+    "evidence_missing", "scope_drift", "manual_required", "unregistered_asset",
 )
 
 SCOPE = {"include": ["*.example.com"], "exclude": []}
@@ -76,6 +79,10 @@ def httpx_row(host: str, *, webserver: str = "nginx/1.24.0", **extra) -> str:
     return json.dumps(row, ensure_ascii=False)
 
 
+#: 黄金夹具目录（4.1 起这段夹具要用到 har 的那一份）。
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
 def counts(conn, project_id: int) -> dict[str, int]:
     report = query.health_report(conn, project_id)
     return {c["key"]: c["count"] for c in report["categories"]}
@@ -95,11 +102,30 @@ def resolve_everything(conn, project_id: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def test_every_category_has_a_named_query():
+    """每一类都在 `NAMED_QUERIES` 里有一行 —— 否则 agent **问不出那一类**。
+
+    `magpie schema --json` 是 agent 认识这个库的全部依据（5.2），而它打出来的
+    具名查询清单来自 `query.NAMED_QUERIES`。分类表加一类、清单里漏一行，症状
+    不是"少一个便利入口"，而是那一类在 agent 眼里**根本不存在** —— 它不会去问
+    一个自己不知道名字的问题，也不会有任何页面因此变红。
+
+    这条断言把"两处词表要一起动"变成一条会响的约束（4.1 加第六类时补的：
+    两处**确实**是手写的，而它们之间此前没有任何东西拉着）。
+    """
+    assert {f"health.{c.key}" for c in query.HEALTH_CATEGORIES} <= set(
+        query.NAMED_QUERIES), sorted(set(query.NAMED_QUERIES))
+
+
 def test_the_five_categories_partition_every_inbox_kind():
-    """schema 的七个 kind 恰好被五类分完 —— 没有漏、没有重。
+    """schema 的八个 kind 恰好被六类分完 —— 没有漏、没有重。
 
     漏了：那类待办在体检页上永远不会出现（而它明明开着）。
-    重了：五类之和大于未决总数，一个项目看起来比它自己还多待办。
+    重了：六类之和大于未决总数，一个项目看起来比它自己还多待办。
+
+    （名字里的 "five" 是 3.6 的历史名字：4.1 加了第六类「未登记资产」之后它是
+    `test_the_categories_partition_every_inbox_kind` 更准确 —— 但改名会让
+    "哪条用例是 3.6 立的那条"这条线索断掉，而它守的判据一个字都没变。）
     """
     assert sorted(query.HEALTH_KIND_TO_CATEGORY) == sorted(SCHEMA_INBOX_KINDS)
     seen: list[str] = []
@@ -118,7 +144,7 @@ def test_a_category_is_not_a_second_declaration_of_the_table():
 
 
 def test_an_unclaimed_kind_is_reported_rather_than_hidden(conn, project):
-    """开一条五类都不认领的待办 → `unclaimed` 要**报出来**，而不是静默丢掉。
+    """开一条六类都不认领的待办 → `unclaimed` 要**报出来**，而不是静默丢掉。
 
     `schema` 的 CHECK 挡不住这条（那个 CHECK 是七个 kind 的白名单，而这里要防的
     是"分类表漏了一个"）。一条不被任何一页显示的待办，和没有这条待办，对人来说
@@ -147,7 +173,7 @@ def test_an_unclaimed_kind_is_reported_rather_than_hidden(conn, project):
 
 
 # ---------------------------------------------------------------------------
-# 五类各自的夹具 —— 每一类都要真的有东西能被检测到
+# 六类各自的夹具 —— 每一类都要真的有东西能被检测到
 # ---------------------------------------------------------------------------
 
 
@@ -262,19 +288,24 @@ def test_a_project_without_a_scope_reports_nothing(conn, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 验收判据：清空 Inbox → 五类全部归零
+# 验收判据：清空 Inbox → 六类全部归零
 # ---------------------------------------------------------------------------
 
 
 def test_clearing_the_inbox_zeroes_all_five(conn, project, tmp_path):
-    """**本步的验收判据。**五类先都有东西，再一条条裁决掉，然后必须全部归零。
+    """**本步的验收判据。**六类先都有东西，再一条条裁决掉，然后必须全部归零。
 
     先断言"都非零"再断言"都归零"是这条用例的全部价值：只做后一半的话，一个
     从来没检测到任何东西的实现同样能过 —— 那个绿是没有信息的。
 
     LARI-35 加强了前半句的对偶：**多值字段导入之后 Inbox 必须是干净的**（见下面
-    第一段）。没有那一半，"五类都非零 → 归零"完全可能在"假冲突把 Inbox 填满"的
+    第一段）。没有那一半，"六类都非零 → 归零"完全可能在"假冲突把 Inbox 填满"的
     实现上也成立 —— 裁决掉一堆本就不该存在的东西，归零同样是绿的。
+
+    ⚠️  4.1 加了**第六类**「未登记资产」，所以下面也多了一段夹具（一份会话来源
+    的导入）：少了它，那一类永远恒等于 0，而"六类都非零"这条断言会当场红 ——
+    那正是它该有的反应（`all(...)` 里混进一个恒零的类别，等于把一半判据悄悄
+    关掉）。
     """
     # ---- LARI-35: 多值字段不该进 Inbox（"清空即干净"能不能兑现的前提）----
     # 一份被折过的 endpoint（三条 `path`）+ 一个两条 CNAME 的域名。它们曾经各开
@@ -320,8 +351,18 @@ def test_clearing_the_inbox_zeroes_all_five(conn, project, tmp_path):
                            httpx_row("evil.other.net"),
                        ]) + "\n"))
 
+    # 未登记资产（4.1）：一份**会话来源**的导入 —— `har` 的黄金夹具里有
+    # `api.example.com` 与 `cdn.example.com` 两台主机，而这个项目此前从未登记过
+    # 它们。用**真夹具**而不是现造一份：这条路径（`flow --involves--> 主机`）的
+    # 判据挂在会话真实产生的关系上，现造一份最小样例很容易造出一个对得上、
+    # 而真实夹具对不上的形状。
+    ingest.ingest_file(conn, options(conn, project, tmp_path),
+                       write(tmp_path / "session.json",
+                             (FIXTURES / "har" / "1" / "input.json").read_text(
+                                 encoding="utf-8")))
+
     before = counts(conn, project)
-    assert all(n > 0 for n in before.values()), f"夹具没有把五类都顶起来：{before}"
+    assert all(n > 0 for n in before.values()), f"夹具没有把六类都顶起来：{before}"
 
     # ---- 清空 Inbox（走真裁决，不是直接 UPDATE 状态）----
     assert resolve_everything(conn, project) == sum(before.values())

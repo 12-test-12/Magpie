@@ -341,6 +341,16 @@ def test_domain_error_message_quotes_the_original_input():
     assert "example.com:٣٤" in str(exc.value)
 
 
+#: `normalize.py` 允许 import 的标准库。**白名单而不是黑名单**：这个模块是
+#: "同一件事只有一种写法"的唯一入口，它能碰什么应当是一份看得完的清单。
+#: `datetime` 是 4.1 加的 —— 会话（flow）的身份里有**时间窗**，而"时间戳怎么写
+#: 才唯一"（UTC、秒精度、ISO8601）正是归一化的活，落到解析器里就会变成
+#: `tshark` 与 `har` 各写一种时间格式（`normalize.flow_window` 的文件头）。
+NORMALIZE_ALLOWED_IMPORTS = frozenset({
+    "ipaddress", "re", "unicodedata", "datetime", "__future__",
+})
+
+
 def test_normalize_does_not_touch_the_database_or_the_write_entry():
     """归一化只回答"怎么写才唯一"，不回答"这是什么"—— 这条由 lint 静态守着，
     这里再断一次它的运行时副作用：模块里没有 sqlite3 / 写入口。"""
@@ -354,4 +364,4 @@ def test_normalize_does_not_touch_the_database_or_the_write_entry():
     imported |= {a.name.split(".")[0]
                  for n in ast.walk(ast.parse(source))
                  if isinstance(n, ast.Import) for a in n.names}
-    assert imported <= {"ipaddress", "re", "unicodedata", "__future__"}, imported
+    assert imported <= NORMALIZE_ALLOWED_IMPORTS, imported - NORMALIZE_ALLOWED_IMPORTS

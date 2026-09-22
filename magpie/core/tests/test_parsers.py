@@ -38,7 +38,7 @@ import pytest
 
 from magpie.core import ingest, normalize, ops, store
 from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, gau, \
-    har, httpx, katana, nmap, nuclei, openapi, postman
+    har, httpx, katana, nmap, nuclei, openapi, postman, tshark
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KINDS = FIXTURES / "kinds"
@@ -134,6 +134,10 @@ GOLDEN = [("domainlist", domainlist.DomainListParser),
           ("openapi", openapi.OpenapiParser),
           ("postman", postman.PostmanParser),
           ("har", har.HarParser),
+          # 4.1 的第二个流量来源。它与 har **共用**会话摘要那一半实现
+          # （`_flows.py`），但取的是另一种输入形状：一份包列表（顶层是数组），
+          # 而 har 的顶层是对象。
+          ("tshark", tshark.TsharkParser),
           (CURL_TOOL, curl.CurlParser)]
 
 #: **每个解析器的类** —— 好几条验收用的是它而不是工具名（流式、类属性、发现清单）。
@@ -522,12 +526,13 @@ def test_every_registered_kind_has_a_real_producer(db):
 def test_unregistered_kind_gets_a_readable_python_error_too():
     """Python 镜像也拒 —— 而且报错说的是"缺哪一件套"，不是一句约束失败。
 
-    反例用的是 `param` / `flow`：两者**至今没有产出者**，所以按 003 的准入纪律
-    不该被登记（`flow` 要等阶段 4 的流量，`param` 要等它自己的三件套）。
-    3.4 之前这里写的是 `apischema` —— 它在本步有了真产出者，于是从"反例"变成了
-    "正例"。**换反例而不是删断言**：反例只有"仍然未登记"时才是一条约束。
+    反例用的是 `param` / `secret`：两者**至今没有产出者**，所以按 003 的准入纪律
+    不该被登记（`secret` 要等 4.2 的敏感串扫描，`param` 要等它自己的三件套）。
+    3.4 之前这里写的是 `apischema`（本步有了真产出者），4.1 之前写的是 `flow`
+    （本步有了真产出者）—— **两次都是换反例而不是删断言**：反例只有在"仍然
+    未登记"时才是一条约束。
     """
-    for kind in ("param", "flow"):
+    for kind in ("param", "secret"):
         with pytest.raises(base.VocabularyError) as exc:
             base.require_kind(kind)
         assert "身份规则 + 样例夹具 + 镜头归属" in str(exc.value)
@@ -563,6 +568,8 @@ def _identity_rules() -> dict:
         # 3.4 的 apischema 身份规则（登记在 `kind_registry.identity_rule` 里）。
         # 与 endpoint 那条同一个形状：起源 = 主机[:非默认端口]，路径不进身份。
         "normalize.apischema_key": normalize.apischema_key,
+        # 4.1 的 flow 身份规则（登记在 `kind_registry.identity_rule` 里）。
+        "normalize.flow_key": normalize.flow_key,
         "normalize.param_name": normalize.param_name,
         "httpx.service_key": httpx.service_key,
         "httpx.product_key": httpx.product_key,
@@ -707,7 +714,7 @@ def test_load_parsers_finds_every_parser_and_retires_the_bridge():
     assert source == "magpie.core.parsers"
     assert [p.tool for p in parsers] == [
         CURL_TOOL, "dirsearch", "domainlist", "ffuf", "gau", "har", "httpx",
-        "katana", "nmap", "nuclei", "openapi", "postman"]
+        "katana", "nmap", "nuclei", "openapi", "postman", "tshark"]
 
 
 def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
@@ -742,6 +749,10 @@ def test_sniffing_separates_the_formats_cleanly(db, project, tmp_path):
         "har": (FIXTURES / "har" / "1" / "input.json").read_text(encoding="utf-8"),
         # curl 是行格式：判据是"过半的行以 curl 开头"。
         "curl": (FIXTURES / "curl" / "1" / "input.txt").read_text(encoding="utf-8"),
+        # 4.1 的 tshark：**顶层是数组**，而上面四个整份-JSON 来源的顶层都是
+        # 对象（`_json.top_level_keys` 在 `[` 上直接返回空）。判据是形状而不是
+        # 关键词，所以这一条与它们两两不相交 —— 而"不相交"正是这一条要证明的。
+        "tshark": (FIXTURES / "tshark" / "1" / "input.json").read_text(encoding="utf-8"),
     }
     for name, sample in samples.items():
         ranked = ingest.sniff_rank(sample[:ingest.SAMPLE_BYTES], f"{name}.txt",

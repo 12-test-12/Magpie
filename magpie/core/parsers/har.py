@@ -35,6 +35,33 @@ HAR 与 Postman 都是 JSON，靠**顶层键**区分
 | 关系 | `endpoint --declared_in--> apischema` |
 | 观测 | `path` / `path_template` / `scheme` / `port`（3.3 的）+ `method` / `status` |
 | 参数树 | `param.<名字>`：`queryString[].name` + `postData.params[].name` |
+| `flow` 实体 + `involves` | 4.1 起：同一主机的若干跳折成**一段会话**（`_flows.FlowSink`） |
+
+4.1 的那一半：HAR 也是**流量**的一条来源
+------------------------------------------
+一份 HAR 记的是"当时真的发生了"（文件头第一段），所以它同样能回答"这段会话有
+多大、什么时候、打到哪台主机"。会话的形状与切分规则由 `_flows.py` 定死（与
+`tshark` 共用同一份实现），这里只负责把每一跳翻译成一条观测。
+
+三处**只能这么定**的裁定，写在这里免得下游各自发现：
+
+* **`proto` 落的是 scheme（`http` / `https`），不是 `tcp`。** HAR 里没有传输层
+  —— 浏览器只告诉你"这是一次 HTTPS 事务"。写 `tcp` 是编，而编出来的协议会跟着
+  会话的身份走一辈子。代价写在明处：同一段会话在 HAR 与抓包两种来源下**不会**
+  折成同一个 flow（`https|…` vs `tcp|…`），它们是两个视角的两次观测，本步不合并
+  —— 合并需要 IP 与端口的对应关系，而 HAR 只在 `serverIPAddress` 偶尔给出的
+  时候才有它（下面那条）。
+* **`serverIPAddress` 既不进身份、也不落观测。** 它**经常缺失**（Chrome 就不写），
+  一个"有时有有时没有"的字段落成观测，会让同一段会话在两次抓包里长得不一样；
+  而进了身份则会给同一台主机造出**第二个**实体（域名一个、IP 一个）和一条幻影
+  `involves` 边。主机的身份取 URL 里的那个 —— 与 3.4 的 `endpoint` / `service`
+  落的是同一个实体。
+* **`packet_count` 这个名字在 HAR 里换成 `request_count`。** 一次 HTTP 事务不是
+  一个包，把两者记成同一个字段名，等于在库里写下一个**说不通**的数（`_flows`
+  的文件头把"计数口径"列为两个来源唯一的实质差别）。
+
+计数与字节数的口径见 `_flows.FlowSink`：`byte_count` 是**正文**字节（
+`request.bodySize + response.bodySize`，规范的 -1 按 0 记），不含头。
 
 `log.entries` 为空**是一条可读的坏行**，不是"零事实的成功"
 ----------------------------------------------------------
@@ -50,6 +77,7 @@ from typing import Any, Iterable, Iterator
 from .. import normalize
 from . import _json
 from ._apis import ApiSink
+from ._flows import FlowSink
 from .base import OfflineContext, Parser, ParseContext, Record
 
 __all__ = ["ENTRY_FIELDS", "KNOWN_FIELDS", "REQUEST_FIELDS", "RESPONSE_FIELDS",
@@ -151,13 +179,17 @@ class HarParser(Parser):
             return
 
         sink = ApiSink()
+        #: 4.1 的会话摘要在**同一次遍历**里累积，文件末尾一次落记录（`_flows`
+        #: 的文件头讲了为什么切分规则只能有一份实现）。
+        flows = FlowSink(count_field=REQUEST_COUNT_FIELD)
         for index, entry in enumerate(_json.walk(entries, "log.entries", ctx), start=1):
             if ctx.cancelled():
                 return
-            yield from self._entry(entry, index, sink, ctx)
+            yield from self._entry(entry, index, sink, flows, ctx)
         yield from sink.declared()
+        yield from flows.finish(ctx)
 
-    def _entry(self, entry: dict, index: int, sink: ApiSink,
+    def _entry(self, entry: dict, index: int, sink: ApiSink, flows: FlowSink,
                ctx: ParseContext) -> Iterator[Record]:
         _json.report_unknown(entry, ENTRY_FIELDS, ctx, "log.entries[].")
         request = entry.get("request")
@@ -186,6 +218,7 @@ class HarParser(Parser):
                 # 处理第七种 severity 同一条口径）。
                 ctx.on_unknown_field(f"request.method={request.get('method')!r}")
 
+        yield from self._flow(entry, index, url.strip(), request, response, flows, ctx)
         yield from sink.emit_operation(
             url.strip(), ctx, 1, method=method,
             status=response.get("status") if isinstance(response, dict) else None,
@@ -199,6 +232,57 @@ class HarParser(Parser):
                 *[(item.get("name"), {"in": "body"})
                   for item in _form_params(request.get("postData"))],
             ])
+
+    def _flow(self, entry: dict, index: int, url: str, request: dict,
+              response: Any, flows: FlowSink, ctx: ParseContext) -> Iterator[Record]:
+        """一跳 → 一条会话观测（4.1）。
+
+        与 `emit_operation` 分开两次调用 `endpoint_identity` 是**刻意的**：
+        这里的身份是**会话**（5 元组 + 时间窗），那里的身份是**接口**（主机 +
+        路径模板）。两者共用的是同一份 URL 归一化结果，但把它们塞进一次
+        `emit_operation` 会让"这一段代码在算哪种身份"变得不可读 —— 而接口那
+        一半有 3.4 的四个来源在共用（`_apis.py`）。
+
+        它**不产出记录**：会话是文件末尾一次落的（`FlowSink.finish`），所以
+        这里返回的永远是一个空列表，`yield from` 它只是为了让调用点与上面那次
+        `emit_operation` 长得一样。
+        """
+        try:
+            identity = normalize.endpoint_identity(url)
+        except normalize.NormalizeError:
+            return                      # 坏 URL 已经在 `emit_operation` 里报过一次
+        scheme = str(identity["scheme"])
+        if not scheme:
+            # 相对 URL（`base` 只有 dirsearch 有）。HAR 的规范要求绝对 URL，
+            # 而"半个 URL"算不出会话身份 —— 静默跳过，`emit_operation` 那边
+            # 会给出可读的那条报错。
+            return
+        size = 0
+        if isinstance(response, dict):
+            size += _body_size(response.get("bodySize"))
+        size += _body_size(request.get("bodySize"))
+        yield from flows.observe(
+            proto=scheme,
+            src_ip="", src_port=None,          # HAR 里没有源地址（文件头）
+            dst_ip=str(identity["host"]), dst_port=identity["port"],
+            at=entry.get("startedDateTime"),
+            size=size, ctx=ctx, lineno=index)
+
+
+#: 4.1 的计数口径：HAR 的一"条"是一次 **HTTP 事务**，不是一个包。
+#: 见文件头"三处只能这么定的裁定"第三条 —— 把两者记成同一个字段名，等于在库里
+#: 写下一个说不通的数。
+REQUEST_COUNT_FIELD = "request_count"
+
+
+def _body_size(raw: Any) -> int:
+    """HAR 的 `bodySize` → 非负的整数。**-1 按 0 记**（`_flows._size` 同一条口径：
+    规范用它表示"响应体没有回传"，而把负数字节累加进会话摘要会得到一个说不通的
+    负数）。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    return int(raw) if raw > 0 else 0
+
 
 def _form_params(post_data: Any) -> list[dict]:
     """`request.postData.params[]` —— **只取 `name`，`value` 一个字都不读**。

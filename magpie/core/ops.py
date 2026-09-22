@@ -1631,6 +1631,53 @@ def refresh_scope_drift(conn: sqlite3.Connection, project_id: int, *,
     return opened
 
 
+def refresh_unregistered_assets(conn: sqlite3.Connection, project_id: int, *,
+                                job_id: int) -> int:
+    """把"会话里出现的、此前从未登记过的主机"登记为 inbox 项（4.1）。
+
+    **这是「发现未登记资产」那条待办的唯一生产者**，而它用的是一条既有的通道：
+    `_open_inbox` + `inbox_items`。计划书 4.1 点名了这条纪律 —— 不新造第二套
+    待办（第二套的表现是"体检页说干净、而还有一屏事没人看"）。
+
+    **判据不在这里** —— 哪些主机算"新发现"由 `query.unregistered_assets` 说了
+    算（四条判据写在那个函数的 docstring 里）。读写两侧调同一个函数，所以
+    "待办里有、查询里没有"这种分歧不可能出现。
+
+    `subject` 是**主机实体本身**（不是 flow）：要人裁决的是"这台主机纳不纳入
+    我的资产"，而不是"这段会话是不是真的"。
+
+    `severity='low'`：它是"发现"，不是"问题"。一份真实抓包会带出十几台新的
+    对端主机（CDN / 分析域名 / 时间同步……），把它们报成 high 会让真正的高危项
+    淹在里面 —— 与 `refresh_unknown_fields` 同一条口径。
+
+    `values` 放**实体键**、`sources` 放 `flow@…` 的指纹那一路不需要：指纹的
+    输入里已经有 `subject_id`，而同一台主机在两次导入里被"第一次发现"只可能
+    发生一次（第二次它已经有贡献了，判据 3 直接把它挡掉）。
+
+    返回新开的条数。**干净的夹具上一行不写** —— 没有 flow 就没有候选
+    （`query.unregistered_assets` 里那句早退是这条惰性的实现，它同时是导入路径
+    的常态：除 4.1 的两个来源之外没有任何来源产出 `involves`）。
+    """
+    opened = 0
+    for entity in query.unregistered_assets(conn, project_id=project_id, job_id=job_id):
+        _, created = _open_inbox(
+            conn, project_id=project_id, kind="unregistered_asset",
+            subject_kind="entity", subject_id=int(entity["id"]),
+            values=[str(entity["entity_key"])], sources=[],
+            job_id=job_id, severity="low",
+            payload={"reason": "unregistered_asset",
+                     "entity_key": str(entity["entity_key"]),
+                     # 地址的形状（ip / domain）而不是 `entities.kind`：
+                     # 后者可能是**先写它的那一类记录**留下的 kind（一份 HAR 里
+                     # `api.example.com` 的 kind 是 `apischema`），拿它当"这是一台
+                     # 什么资产"的答案会误导人（见 `query.unregistered_assets`）。
+                     "host_kind": str(entity["host_kind"]),
+                     "entity_kind": str(entity["kind"]),
+                     "job_id": int(job_id)})
+        opened += 1 if created else 0
+    return opened
+
+
 # ---------------------------------------------------------------------------
 # rekey（T3）—— 审阅点 11：身份迁移事务，零外键迁移
 # ---------------------------------------------------------------------------
@@ -2156,6 +2203,13 @@ def _assert_conservation(before: dict[str, int], after: dict[str, int], *,
 RECOVERY_LEVELS = ("full", "locator", "hash_only")
 STORAGE_STATES = ("present", "archived", "purged", "missing")
 
+#: **原文由谁持有**（4.1 起，迁移 011 加的列）。它与 `storage_state` **正交**：
+#: 后者说"它还在不在"，这一列说"它从来就不在我手里"。v3.1 的
+#: `storage='external'` 想说的正是这件事，而 v3.2 把它塞进 `storage_state` 的
+#: 单调降级链里是塞不进去的 —— 它不在那条链的任何一级上（迁移 011 的文件头
+#: 第一节把这件事写透了）。
+CUSTODY_KINDS = ("stored", "external")
+
 RECOVERY_CAPABILITY = {
     ("present", "full"): "recoverable",
     ("present", "locator"): "recoverable",
@@ -2172,33 +2226,80 @@ RECOVERY_CAPABILITY = {
 }
 
 
-def evidence_capability(raw_storage_state: str, recovery_state: str) -> str:
-    """能力判定（3×4 = 12 种组合；未知组合按最保守处理）。
+def evidence_capability(raw_storage_state: str, recovery_state: str,
+                        custody: str = "stored") -> str:
+    """能力判定（4.1 起是**三个**因素的函数：谁持有 × 还在不在 × 还留下什么）。
 
-        raw_file present/archived + evidence full/locator → recoverable
-        raw_file present/archived + evidence hash_only    → verifiable_only
-            （原文还在，但 evidence 侧已丢弃 locator → 定位不到片段）
-        raw_file purged                                    → verifiable_only
-        raw_file missing                                   → hash_only
+        custody='stored'（本工具持有原文）—— 3×4 = 12 种组合，判据不变：
+            present/archived + full/locator → recoverable
+            present/archived + hash_only    → verifiable_only
+                （原文还在，但 evidence 侧已丢弃 locator → 定位不到片段）
+            purged                          → verifiable_only
+            missing                         → hash_only
+        custody='external'（原文在**工具之外**，我们只有一个路径指着它）:
+            full/locator → locator_only
+            hash_only    → hash_only
+
+    `external` 为什么**不能**沿用 `stored` 的结论（这是 4.1 点名的一条）
+    -----------------------------------------------------------------
+    "可恢复"在 `stored` 下的含义是"本工具手里有副本，凭 locator + hash 取回
+    片段"。外部文件没有这件事：副本从来不在本工具手里，能不能取到取决于**那个
+    路径今天还在不在** —— 而那是本工具之外的世界的状态。沿用 `recoverable`
+    等于把一句"我保证"写在一条给不了保证的行上；4.1 的原话是"可恢复等级要
+    **如实**标注，不许沿用 `stored` 的结论"。
+
+    所以外部文件的能力是**独立的一档** `locator_only`：靠 locator 去取，取不
+    取得到不由我们说了算。而它的 `hash_only` 与 `stored` 那一档**同义**——
+    locator 都丢了，两条路都只剩 hash。
+
+    `recovery_state` 对外部文件是**唯一**的定位依据（`original_available` 见
+    `evidence_capability_report`）：外部文件的"原文可取得"本身就是由 locator
+    定义的 —— 没有 locator，"它还在"这句话我们连说都说不出来。所以
+    `storage_state` 在这条分支上只在 `missing`（有人显式声明它不见了）时才
+    参与判定，且只会把结论**往保守的方向**推。
     """
+    if custody == "external":
+        if recovery_state == "hash_only" or raw_storage_state == "missing":
+            return "hash_only"
+        return "locator_only"
     return RECOVERY_CAPABILITY.get((raw_storage_state, recovery_state), "hash_only")
 
 
-def evidence_capability_report(raw_storage_state: str, recovery_state: str) -> dict[str, Any]:
-    """能力 + 两个决定因素（GUI 文案直接可用，避免再次误述）。"""
-    capability = evidence_capability(raw_storage_state, recovery_state)
+def evidence_capability_report(raw_storage_state: str, recovery_state: str,
+                               custody: str = "stored") -> dict[str, Any]:
+    """能力 + 三个决定因素（GUI 文案直接可用，避免再次误述）。
+
+    §5.3 的纪律没变：**GUI 必须用这里的字段，不得自行措辞**。4.1 之后多了一个
+    必须跟着走的字段 `custody` —— 一张只写"原文持有"的界面对外部文件会一直
+    说错话（那个文件不在工具的 data 目录里，工具也删不掉它）。
+    """
+    capability = evidence_capability(raw_storage_state, recovery_state, custody)
+    external = custody == "external"
     wording = {
         "recoverable": "可校验完整性，并可凭 locator + hash 恢复原文片段",
         "verifiable_only": "仅可校验完整性（hash 比对已有副本），不可恢复原文片段",
         "hash_only": "仅保留 hash：无原文、无归档，不可恢复也不可重定位",
+        "locator_only": "可凭 locator 指向的**外部**路径读取原文并比对 hash；"
+                        "副本不在本工具手里 —— 那个路径还在不在，由工具之外的世界决定",
     }[capability]
+    # 两个 `original_available` 不是同一个问题，所以它们必须给出不同的答案：
+    #   stored   → 原文在不在（= storage_state 那一级）
+    #   external → 我们**还知不知道它在哪**（= locator 还在不在）——
+    #              本工具从来就没有副本，把 storage_state 的 present 读成
+    #              "原文可取得"是在替别人的文件担保
+    original_available = (recovery_state in ("full", "locator") if external
+                          else raw_storage_state in ("present", "archived"))
     return {
         "capability": capability,
-        "original_available": raw_storage_state in ("present", "archived"),
+        "custody": custody,
+        "original_available": original_available,
         "locatable": recovery_state in ("full", "locator"),
         "fragment_recoverable": capability == "recoverable",
-        "verifiable": capability in ("recoverable", "verifiable_only"),
+        "verifiable": capability in ("recoverable", "verifiable_only", "locator_only"),
         "wording": wording,
+        # 外部文件删不掉 —— 这句话只在有外部文件要谈的时候出现，免得它变成
+        # 一条每张证据上都有的套话（套话不会被读）。
+        "external_not_deletable": external,
     }
 
 
@@ -2229,11 +2330,13 @@ def _downgrade_evidence_in_txn(conn: sqlite3.Connection, *, raw_file_id: int,
         )
         changed.append({"evidence_id": int(r["id"]), "from": current, "to": to_state,
                         "dropped_locator": dropped_locator})
-    rf = conn.execute("SELECT storage_state FROM raw_files WHERE id=?",
+    rf = conn.execute("SELECT storage_state, custody FROM raw_files WHERE id=?",
                       (raw_file_id,)).fetchone()
     storage_state = str(rf["storage_state"]) if rf else "missing"
+    custody = str(rf["custody"]) if rf else "stored"
     report = {"op": "evidence.degrade", "dry_run": dry_run, "raw_file_id": raw_file_id,
-              "recovery_state": to_state, **evidence_capability_report(storage_state, to_state),
+              "recovery_state": to_state,
+              **evidence_capability_report(storage_state, to_state, custody),
               "changed": changed}
     if changed:
         log_activity(conn, actor=actor, action="evidence.degrade", target_kind="raw_file",
@@ -2261,7 +2364,30 @@ def purge_raw_file(conn: sqlite3.Connection, *, raw_file_id: int, actor: str = "
 
     v3.2-r3 修正: 不再嵌套 `transaction()`（旧实现必然抛
     "cannot start a transaction within a transaction"），且 dry_run 正确下传。
+
+    ⚠️ 4.1：`custody='external'` 的行**拒绝**清除（`InvariantError`）
+    ------------------------------------------------------------------
+    一条外部 `raw_file` 指的是**工具之外**的一个文件：本工具只有一条路径指着它。
+    对这样的行说"已 purged"是一句假话 —— 文件还在原处，而这句话会让人以为
+    "retention 到期之后那份原文已经不可恢复了"（§5.3 要求 GUI 给出的告警是
+    "将永久失去原文"）。**"清除"这个词对外部文件没有对应的动作**，所以这里
+    拒绝，而不是把"放弃指针"伪装成"清除"。
+
+    拒绝的代价与它换来的东西：`gc --raw-older-than N` 之类的调用方**必须**先
+    按 `custody` 过滤（这一步没有任何生产调用方，它今天只从测试与 CLI 的将来
+    入口进来；拒绝会比静默地做错事早一步被看见）。真的要"停止跟踪这个外部
+    文件"要用的是 `degrade_evidence(..., to_state='hash_only')` —— 那一步**有**
+    对应动作（丢掉 locator），而它的报告会如实写出能力降到了哪一档。
     """
+    row = conn.execute("SELECT custody, locator_uri FROM raw_files WHERE id=?",
+                       (raw_file_id,)).fetchone()
+    if row is not None and str(row["custody"]) == "external":
+        raise InvariantError(
+            f"raw_file {raw_file_id} 的原文在工具之外（{row['locator_uri']}）——"
+            f"本工具删不掉它，所以「purge」在这里没有对应动作。"
+            f"要停止跟踪它请用 `ops.degrade_evidence(raw_file_id={raw_file_id},"
+            f" to_state='hash_only')`：那一步丢掉的是**本工具的指针**，"
+            f"而它会如实报告能力降到了哪一档。")
     with transaction(conn, dry_run=dry_run):
         conn.execute("UPDATE raw_files SET storage_state='purged', purged_at=? WHERE id=?",
                      (now(), raw_file_id))

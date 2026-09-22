@@ -76,6 +76,14 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 数据的，所以"不许动 001"（R4）并不禁止改判据: DROP VIEW + CREATE VIEW 即可，
     # 002 换 `v_integrity_violations` 就是先例。详见该文件头。
     Migration(10, "multivalue_fields", SCHEMA_DIR / "010_multivalue_fields.sql"),
+    # 登记 `flow`（第一个真实产出者是 4.1 的 har / tshark）与关系动词 `involves`，
+    # 外加**两件结构性的事**：`raw_files.custody`（谁持有原文 —— 正交于
+    # `storage_state` 的一条新列，v3.1 的 `storage='external'` 在 v3.2 里没有落点）
+    # 与 `inbox_items.kind` 的第八个取值 `unregistered_asset`（重建整张表）。
+    # 它与 004–007 不同（那些是往词表里加一行），与 008 / 009 也不同（那些是新的
+    # 持久化产物）—— 这一个既加词表行、又动既有列与既有 CHECK。同样**新增迁移、
+    # 不改 001–010**（R4）。
+    Migration(11, "flow_external", SCHEMA_DIR / "011_flow_external.sql"),
 )
 
 

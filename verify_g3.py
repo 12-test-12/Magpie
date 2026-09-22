@@ -124,6 +124,9 @@ _RULES = {
     "normalize.vuln_key": normalize.vuln_key,
     "normalize.endpoint_key": normalize.endpoint_key,
     "normalize.apischema_key": normalize.apischema_key,
+    # 4.1 的 flow 身份规则（登记在 `kind_registry.identity_rule` 里）。
+    # 与 `test_parsers.py::_identity_rules()` 的白名单同一份口径。
+    "normalize.flow_key": normalize.flow_key,
     "normalize.param_name": normalize.param_name,
     "httpx.service_key": httpx.service_key,
     "httpx.product_key": httpx.product_key,
@@ -518,6 +521,9 @@ NEGATIVES = {
                                      "https://schema.getpostman.com/json/collection"
                                      "/v1.0.0/collection.json"}, "item": []})],
     "har": ['{"entries": []}\n'],
+    # tshark 这一条是**截断的导出**（数组没闭合）：它是这份格式在真实
+    # 世界里最容易出现的坏形状（`tshark` 写到一半被 Ctrl-C / 磁盘满了）。
+    "tshark": ['[{"_index": "x", "_source": {"layers": {"ip_ip_src": "10.0.0.5"'],
     "curl": ["this is not a curl command\nnor is this\n"],
 }
 
@@ -543,9 +549,13 @@ def section_a(parsers: dict) -> None:
     facts_by_tool = gather_sources(parsers, NEGATIVES)
     stage3 = sorted(set(parsers) - _STAGE2_TOOLS)
 
-    check(f"A1 发现机制给出 {len(parsers)} 个解析器，其中阶段 3 新增 {len(stage3)} 个"
+    # 这两个数**每加一个来源就要改一次**，这是刻意的：它们的用途是"发现机制还
+    # 活着吗、来源清单有没有多出没被看见的一个"。4.1 加了 `tshark`（12→13 /
+    # 10→11），改这一行是一次**显式的确认** —— 与 `test_load_parsers_finds_
+    # every_parser_and_retires_the_bridge` 里那份写死的清单同一条纪律。
+    check(f"A1 发现机制给出 {len(parsers)} 个解析器，其中阶段 3 起新增 {len(stage3)} 个"
           f"（清单从代码算出来，不是手抄的）",
-          len(parsers) == 12 and len(stage3) == 10,
+          len(parsers) == 13 and len(stage3) == 11,
           f"全部={sorted(parsers)}；阶段 3={stage3}")
 
     problems = []
@@ -673,9 +683,10 @@ def section_b(parsers: dict, conn) -> None:
               f"produced_by {len(row['produced_by'])} 个"
               f"{'（严格判据）' if strict else ''}")
 
+    # 同 A1：这个数每加一个 kind 就要改一次（4.1 加了 `flow`，9 → 10）。
     check(f"B1 {len(rows)} 个 kind 逐行核：身份规则 / 镜头归属 / fixture_path 存在 / "
           f"样例算得出 key / 反例真的被拒 / golden 声明为真 / produced_by 指得到东西",
-          len(rows) == 9 and not problems, "；".join(problems))
+          len(rows) == 10 and not problems, "；".join(problems))
 
     for line in notes:
         note("produced_by 缺夹具证据（老 kind，只报告不判红）", line)
@@ -697,14 +708,17 @@ def section_b(parsers: dict, conn) -> None:
     for rel in sorted(emitted):
         if rel not in verbs:
             verbs_bad.append(f"{rel}: 被解析器产出，却没在 relation_vocabulary 里登记")
-    for verb in ("found_on", "served_by", "declared_in"):
+    # ⚠️ 这里列的是**每一个**必须有真实产出者的关系动词（不是"阶段 3 那三个"）：
+    # 4.1 的 `involves` 也进来 —— 一条登记了却没有任何来源产出它的动词，与
+    # "没有这条动词"在库里无法区分。
+    for verb in ("found_on", "served_by", "declared_in", "involves"):
         if verb not in verbs:
             verbs_bad.append(f"{verb}: 阶段 3 登记的关系动词不见了")
         elif not emitted.get(verb):
             verbs_bad.append(f"{verb}: 登记了，但没有任何来源的黄金夹具产出它")
         elif not verbs[verb].get("inverse"):
             verbs_bad.append(f"{verb}: 没有 inverse —— 反向问题要另立一列才答得出")
-    check(f"B2 关系动词：阶段 3 新增的三个都登记了、有逆动词、且真的有来源产出它"
+    check(f"B2 关系动词：这四个都登记了、有逆动词、且真的有来源产出它"
           f"（实测产出 {len(emitted)} 个动词）", not verbs_bad, "；".join(verbs_bad))
     print("     产出关系动词的来源：" + "，".join(
         f"{rel}←{'/'.join(sorted(srcs))}" for rel, srcs in sorted(emitted.items())))

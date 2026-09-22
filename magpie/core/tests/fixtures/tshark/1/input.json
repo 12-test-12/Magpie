@@ -1,0 +1,127 @@
+[
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:arp",
+        "frame_frame_time_epoch": "1767225600.050000",
+        "frame_frame_len": "42",
+        "arp_arp_opcode": "1",
+        "arp_arp_src_proto_ipv4": "10.0.0.5",
+        "arp_arp_dst_proto_ipv4": "10.0.0.1"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:tcp:tls",
+        "frame_frame_time_epoch": "1767225600.100000",
+        "frame_frame_len": "120",
+        "ip_ip_src": "10.0.0.5",
+        "ip_ip_dst": "93.184.216.34",
+        "ip_ip_proto": "6",
+        "tcp_tcp_srcport": "51234",
+        "tcp_tcp_dstport": "443",
+        "tcp_tcp_stream": "0",
+        "tls_tls_record_content_type": "22"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:tcp:tls",
+        "frame_frame_time_epoch": "1767225603.300000",
+        "frame_frame_len": "1400",
+        "ip_ip_src": "93.184.216.34",
+        "ip_ip_dst": "10.0.0.5",
+        "ip_ip_proto": "6",
+        "tcp_tcp_srcport": "443",
+        "tcp_tcp_dstport": "51234",
+        "tcp_tcp_stream": "0"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:tcp:tls:http",
+        "frame_frame_time_epoch": "1767225605.500000",
+        "frame_frame_len": "300",
+        "ip_ip_src": "10.0.0.5",
+        "ip_ip_dst": "93.184.216.34",
+        "ip_ip_proto": "6",
+        "tcp_tcp_srcport": "51234",
+        "tcp_tcp_dstport": "443",
+        "tcp_tcp_stream": "0",
+        "http_http_request_method": "GET",
+        "http_http_request_uri": "/v2/pets"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:tcp:tls",
+        "frame_frame_time_epoch": "1767225900.000000",
+        "frame_frame_len": "90",
+        "ip_ip_src": "10.0.0.5",
+        "ip_ip_dst": "93.184.216.34",
+        "ip_ip_proto": "6",
+        "tcp_tcp_srcport": "51235",
+        "tcp_tcp_dstport": "443",
+        "tcp_tcp_stream": "1"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:udp:dns",
+        "frame_frame_time_epoch": "1767225600.200000",
+        "frame_frame_len": "74",
+        "ip_ip_src": "10.0.0.5",
+        "ip_ip_dst": "8.8.8.8",
+        "ip_ip_proto": "17",
+        "udp_udp_srcport": "40000",
+        "udp_udp_dstport": "53",
+        "dns_dns_qry_name": "api.example.com"
+      }
+    }
+  },
+  {
+    "_index": "packets-2026-01-01",
+    "_type": "pcap_file",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame_frame_protocols": "eth:ethertype:ip:udp",
+        "frame_frame_time_epoch": "1767225600.400000",
+        "frame_frame_len": "118",
+        "ip_ip_src": "10.0.0.7",
+        "ip_ip_dst": "10.0.0.8",
+        "ip_ip_proto": "17",
+        "udp_udp_srcport": "5000",
+        "udp_udp_dstport": "4500"
+      }
+    }
+  }
+]

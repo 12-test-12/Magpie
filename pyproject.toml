@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.8.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.9.0"        # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -49,6 +49,13 @@ api = ["fastapi", "uvicorn"]
 api-yaml = ["pyyaml"]
 # 阶段 4.5 的收口点（流量 / 接口文件解析）。目前那块解析走标准库，故为空；
 # 真需要第三方时加在这里，core 仍然不得 import 它。
+#
+# ⚠️  4.1 的 `tshark` **不进这里**，而且这不是"暂时还没有"：它是一个**外部可
+# 执行**（Wireshark 的命令行），不是 Python 包。`pip install -e ".[traffic]"`
+# 装不出它来，把名字写进来只会把人引到一个装不出东西的地方去。缺它时的正确
+# 反应是抛可读错误（说清装 Wireshark 与"本步其实不需要它"），见
+# `magpie/core/parsers/tshark.py` 的 `ensure_available`。
+# （这一列是空的这件事本身也是对的：4.1 的解析走的是标准库的 `json`。）
 traffic = []
 dev = ["pytest"]
 

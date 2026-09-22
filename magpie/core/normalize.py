@@ -31,8 +31,13 @@ from __future__ import annotations
 import ipaddress
 import re
 import unicodedata
+from datetime import datetime, timezone
 
 __all__ = [
+    "FLOW_IDLE_SECONDS",
+    "FLOW_SEPARATOR",
+    "FLOW_UNKNOWN",
+    "FLOW_UNKNOWN_PORT",
     "NormalizeError",
     "SEGMENT_TEMPLATES",
     "WEB_DEFAULT_PORTS",
@@ -42,6 +47,10 @@ __all__ = [
     "endpoint_base",
     "endpoint_identity",
     "endpoint_key",
+    "flow_identity",
+    "flow_key",
+    "flow_protocol_name",
+    "flow_window",
     "http_method",
     "is_absolute_url",
     "param_name",
@@ -1080,3 +1089,247 @@ def _port_or_none(raw_port: str) -> int | None:
     if not 0 < port <= 65535:
         raise NormalizeError(f"endpoint 的端口越界：{port}")
     return port
+
+
+# ---------------------------------------------------------------------------
+# 会话（flow）· 4.1 har / tshark
+# ---------------------------------------------------------------------------
+#
+# 这一节是 `flow` 这个 kind 的**身份规则本身**（登记在
+# `kind_registry.identity_rule` 里），所以它必须住在 `normalize.py` ——
+# 解析器只调用这里，不得内联自己的一套（`check.py` 的 PARSE-NORM 守着这条）。
+#
+#     flow 身份 = 5 元组 + 时间窗
+#               = 协议 | 源 | 目的 | 会话起点（UTC, 秒）
+#
+# 为什么要"5 元组 + 时间窗"，而不是只要 5 元组
+# ---------------------------------------------
+# 一个 5 元组**不是一个会话**：`10.0.0.5:51234 → 93.184.216.34:443` 这条连线
+# 今天上午用过一次、下午还会再用一次，两次是**两件事**。只用 5 元组当身份，
+# 一周的抓包会折成一条"会话"，而它的 `packet_count` 是七天里所有连线的和 ——
+# 那个数字不描述任何一次真实的会话。时间窗（会话起点）就是把它拆开的那一半。
+#
+# 为什么是**会话起点**，而不是"把起点取整到一个固定桶"
+# ----------------------------------------------------
+# 取整（比如按小时）看起来更"稳"，代价却是把一个小时里的两段独立会话折成一个
+# 实体，而它们的摘要（包数 / 字节数 / 起止时间）会互相打架 —— 那正是 010 那次
+# 花了一整个迁移去修的那类**假冲突**。会话起点是解析器按空闲阈值真实切出来的
+# 边界：同一份文件重导一次算出同一个 key（幂等），两段真实会话算出两个 key
+# （不折），而两个抓包工具抓到**同一段**会话时也算出同一个 key（起点相同）。
+#
+# 代价写在明处（这是一条真实的代价，不是"还不够完善"）：
+#   * 一个抓包**从中途开始**（`tshark` 是会话开始之后才启动的）会算出与完整
+#     抓包不同的起点 —— 它会落成**另一个** flow 实体。这是诚实的：我们只报
+#     我们看到的那一段，而"我看到的这一段起点在哪"正是身份里写着的那个数；
+#   * 空闲阈值（`FLOW_IDLE_SECONDS`）是切分规则的一部分，改它就换一套身份 ——
+#     所以它进了解析器的 `definition_hash` 与这份身份规则，不是藏在代码里的
+#     一个魔数。
+#
+# 未知的一端写成 `-`，未知的端口写成 `*`
+# --------------------------------------
+# HAR 里没有源地址（浏览器不在抓包路径上），只有 `serverIPAddress` 那一侧。
+# 把缺失写成空串会让 `https||0|a.example.com|443|…` 与 `https||0|b.example.com|443|…`
+# 看起来像同一个形状，而一旦真正缺的是**目的**端，两个不同会话就会撞到同一个
+# key 上（`-` 与 `-` 相等）—— 那是静默的实体合并。所以这里：
+#   * 端点整段未知 → `-`（字面量，不是空串）；
+#   * 地址已知、端口未知 → `1.2.3.4:*`（端口是"未知"，不是"没有端口"）；
+#   * 两端都未知 → **拒绝**：那样的"会话"没有任何身份可言。
+# `-` 与 `*` 都不可能是合法的 IP / 域名 / 端口，所以它们不会与真实值撞车。
+
+#: 会话的空闲阈值（秒）：同一 5 元组上间隔超过它的两条记录算两段会话。
+#: 120s 是抓包工具里常见的量级（Zeek 的默认 `tcp_inactivity_timeout` 是 5 分钟，
+#: Wireshark 的会话着色用的是秒级）。这个数**不是**从哪个工具抄来的，是本步
+#: 的裁定 —— 它的地位见上面"代价"那一段：它进身份，所以它必须写在明处。
+FLOW_IDLE_SECONDS = 120
+
+#: 身份串里"未知"的两个写法。`-` 整段未知，`*` 端口未知。
+FLOW_UNKNOWN = "-"
+FLOW_UNKNOWN_PORT = "*"
+
+#: 身份串的分隔符。**刻意选 `|`** —— 它在 IP / 域名 / 协议名里都不可能出现，
+#: 而 `:` 不行（IPv6 地址里全是它）。
+FLOW_SEPARATOR = "|"
+
+
+def flow_window(raw: object) -> str:
+    """会话起点 → `YYYY-MM-DDTHH:MM:SSZ`（UTC，秒精度，与 `store.now()` 同形）。
+
+    认两种形状，因为两个来源给的就是这两种：
+
+        `2026-09-21T10:00:00.100Z`（HAR 的 `startedDateTime`，带毫秒）
+        `1758448800.123`（tshark 的 `frame.time_epoch`，Unix 秒）
+
+    没有时区的 ISO 串**按 UTC 处理**并在这里安静地折掉 —— 这是**唯一**一处
+    "不知道就假设"，因为另一条路（拒绝）会让一份缺时区的真实 HAR 整份不可用。
+    HAR 规范要求 `startedDateTime` 带时区，所以走到这条路的情况本身就是少数；
+    代价是它可能整体偏几个小时，而**偏移对身份是致命的**：同一个会话在两次
+    导入里必须算出同一个窗口。所以这条假设写在这里，不藏在解析器里。
+    """
+    if isinstance(raw, bool):
+        raise NormalizeError(f"会话起点不是时间：{raw!r}")
+    if isinstance(raw, (int, float)):
+        moment = _from_epoch(float(raw))
+    else:
+        text = str(raw).strip()
+        if not text:
+            raise NormalizeError("会话起点是空的（时间窗是身份的一半）")
+        try:
+            moment = _from_epoch(float(text))
+        except ValueError:
+            moment = _from_iso(text, raw)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _from_epoch(seconds: float) -> "datetime":
+    if not (seconds == seconds) or seconds in (float("inf"), float("-inf")):
+        raise NormalizeError(f"会话起点的毫秒数不是有限数：{seconds!r}")
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise NormalizeError(f"会话起点超出可表示的范围：{seconds!r}（{exc}）") from exc
+
+
+def _from_iso(text: str, raw: object) -> "datetime":
+    candidate = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        moment = datetime.fromisoformat(candidate)
+    except ValueError as exc:
+        raise NormalizeError(
+            f"会话起点既不是 Unix 秒也不是 ISO8601 时间：{raw!r}（{exc}）") from exc
+    if moment.tzinfo is None:                # 无时区 → 按 UTC（见 `flow_window`）
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def flow_protocol_name(raw: object) -> str:
+    """应用层协议名（`dns` / `tls` / `http` / `http2`）→ 规范写法。
+
+    折小写是**必须**的：同一种协议在 `frame.protocols` 里的写法跟着工具版本走
+    （`TLS` / `tls`），而它会落成 `app_protocols` 这个观测值 —— 不折的话同一段
+    会话换个 tshark 版本就落出两个值，那是一条凭空出现的假冲突（010 那次正是
+    为了这类事存在的）。
+
+    长度与字符集的上限是给**畸形包**准备的：一份坏文件里可能有一个几百层的
+    协议栈，逐层记下来会把观测值撑爆。认不出的**抛错**，由调用方决定是跳过
+    还是报坏行 —— 这里不替它选。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"协议名必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip().lower()
+    if not text:
+        raise NormalizeError("协议名是空的")
+    if len(text) > 32:
+        raise NormalizeError(f"协议名超过 32 个字符：{text[:16]!r}…")
+    if any(ch.isspace() or ch in ":|," for ch in text):
+        raise NormalizeError(f"协议名含分隔符或空白：{raw!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise NormalizeError(f"协议名含控制字符：{raw!r}")
+    return text
+
+
+def _flow_component(raw: object, what: str) -> str:
+    """身份串里的一个自由段（目前只有协议名）→ 清洗过的写法。
+
+    分隔符 `|` 与空白一律拒绝：它们要么让两个不同的值算出同一个 key（静默
+    合并），要么让身份串变得不可读。`_clear` 那一类"清洗成别的"在这里是错的
+    —— 身份是被**写下来**的东西，写下来就必须是它本来的样子。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"会话的{what}必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip().lower()
+    if not text:
+        raise NormalizeError(f"会话的{what}是空的（5 元组少了它就没有身份）")
+    if FLOW_SEPARATOR in text:
+        raise NormalizeError(f"会话的{what}含分隔符 {FLOW_SEPARATOR!r}：{raw!r}")
+    if any(ch.isspace() for ch in text):
+        raise NormalizeError(f"会话的{what}含空白字符：{raw!r}")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise NormalizeError(f"会话的{what}含控制字符：{raw!r}")
+    _require_no_homoglyphs(text, f"会话的{what}")
+    return text
+
+
+def _flow_port(raw: object, what: str) -> str:
+    """端口 → 身份串里那一段。空 / `None` / `0` → `*`（未知）。"""
+    if raw is None or raw == "":
+        return FLOW_UNKNOWN_PORT
+    if isinstance(raw, bool):
+        raise NormalizeError(f"会话的{what}端口不是数字：{raw!r}")
+    text = str(raw).strip()
+    if text in (FLOW_UNKNOWN_PORT, "0"):
+        return FLOW_UNKNOWN_PORT
+    if not text.isascii() or not text.isdigit():
+        raise NormalizeError(f"会话的{what}端口不是数字：{raw!r}")
+    port = int(text)
+    if not 0 < port <= 65535:
+        raise NormalizeError(f"会话的{what}端口越界：{port}")
+    return str(port)
+
+
+def _flow_address(raw: object, what: str) -> str:
+    """地址 → 规范写法。IP 走 `normalize_ip`，其余走 `normalize_domain`。
+
+    两条都认是**必须的**：tshark 给的是 IP（`ip.src`），HAR 给的是域名
+    （`entry.request.url` 的主机）。两头都折成同一种写法（小写、去尾点、
+    IPv4-mapped IPv6 折成 IPv4），同一个主机在两种来源下才落成同一个 key。
+    """
+    if raw is None or raw == "" or raw == FLOW_UNKNOWN:
+        return FLOW_UNKNOWN
+    if not isinstance(raw, str):
+        raise NormalizeError(f"会话的{what}地址必须是字符串，收到 {type(raw).__name__}")
+    text = raw.strip()
+    if text.startswith("[") and text.endswith("]"):    # URL 里的 IPv6 写法
+        text = text[1:-1]
+    ip = try_ip(text)
+    if ip is not None:
+        return ip
+    try:
+        return normalize_domain(text)
+    except NormalizeError as exc:
+        raise NormalizeError(
+            f"会话的{what}地址既不是 IP 也不是域名：{raw!r}（{exc}）") from exc
+
+
+def _flow_side(address: object, port: object, what: str) -> str:
+    """5 元组里的一端 → `地址:端口` / `-`（整段未知）。"""
+    host = _flow_address(address, what)
+    if host == FLOW_UNKNOWN:
+        return FLOW_UNKNOWN
+    return f"{_bracket(host)}:{_flow_port(port, what)}"
+
+
+def flow_identity(proto: object, src_ip: object, src_port: object, dst_ip: object,
+                  dst_port: object, window: object) -> dict[str, object]:
+    """身份与部件一起算：`{"key": …, "parts": …}`。
+
+    与 `vuln_identity` 同一条理由：解析器**既**要 key（挂实体）**又**要部件
+    （把主机挂成 `domain` / `ip` 实体、把观测写在正确的地方），分两次调会把同一
+    段身份串拼两遍。10 万包的一份抓包就是 20 万次归一化，而解析是整条管线里
+    唯一按包计费的环节。
+
+    协议**折小写**：`TCP` / `tcp` 是同一种协议（`frame.protocols` 的大小写取决于
+    工具版本）。地址折成规范写法但**不折端口** —— 端口本来就是数字。
+    """
+    name = _flow_component(proto, "协议")
+    src = _flow_side(src_ip, src_port, "源")
+    dst = _flow_side(dst_ip, dst_port, "目的")
+    if src == FLOW_UNKNOWN and dst == FLOW_UNKNOWN:
+        raise NormalizeError(
+            "会话的两端都不知道地址 —— 这样的「会话」指向不了任何主机，"
+            "它没有任何身份可言")
+    moment = flow_window(window)
+    key = FLOW_SEPARATOR.join((name, src, dst, moment))
+    return {"key": key,
+            "parts": {"proto": name, "src": src, "dst": dst, "window": moment,
+                      "src_ip": _flow_address(src_ip, "源"),
+                      "dst_ip": _flow_address(dst_ip, "目的")}}
+
+
+def flow_key(proto: object, src_ip: object, src_port: object, dst_ip: object,
+             dst_port: object, window: object) -> str:
+    """`flow_identity` 的字符串面 —— **身份规则本身**，夹具执行的就是它。
+
+    公开函数而不是内联表达式，理由与 `vuln_key` / `apischema_key` 相同：
+    `fixtures/kinds/flow.json` 要能**执行**它来证明身份规则不是一句空话。
+    """
+    return str(flow_identity(proto, src_ip, src_port, dst_ip, dst_port, window)["key"])

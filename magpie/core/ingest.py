@@ -310,27 +310,36 @@ def sha256_file(path: Path) -> tuple[str, int]:
 
 
 def _add_raw_file(conn: sqlite3.Connection, *, project_id: int, locator_uri: str,
-                  sha256: str, byte_count: int, storage_state: str) -> int:
+                  sha256: str, byte_count: int, storage_state: str,
+                  custody: str = "stored") -> int:
     """写 `raw_files`。
 
     **为什么不用 `ops.add_raw_file`**：它的签名是 `content: str`，要求调用方先把
     整个文件读成字符串 —— 与"大文件不 read() 全量"直接冲突。这里写同一张表、
     同一组列，语义等价。`ops` / `store` 的任何既有签名保持原样不动。
+
+    `custody`（4.1 起，迁移 011）：原文由谁持有。它与 `storage_state` **正交**
+    —— 后者说"它还在不在"，这一列说"它从来就不在我手里"。`--archive external`
+    的两次落点（真跑与干跑）都必须带上它，否则外部文件会被当成归档文件，
+    而 `ops.evidence_capability` 那条链会给出 `stored` 的结论（"可恢复"）——
+    4.1 点名不许这么干。
     """
     cur = conn.execute(
         "INSERT INTO raw_files(project_id, locator_uri, sha256, byte_count,"
-        " storage_state, created_at) VALUES (?,?,?,?,?,?)",
-        (project_id, locator_uri, sha256, byte_count, storage_state, store.now()),
+        " storage_state, custody, created_at) VALUES (?,?,?,?,?,?,?)",
+        (project_id, locator_uri, sha256, byte_count, storage_state, custody,
+         store.now()),
     )
     return int(cur.lastrowid)
 
 
 def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
-                 sha256: str, size: int) -> tuple[int, str, str]:
-    """归档：返回 (raw_file_id, locator_uri, storage_state)。
+                 sha256: str, size: int) -> tuple[int, str, str, str]:
+    """归档：返回 (raw_file_id, locator_uri, storage_state, custody)。
 
     archived —— 复制进 `<data-dir>/raw/<前两位>/<sha256>`（按内容寻址，天然去重），
-    源文件此后可删；external —— 只记原路径，不动文件。
+    源文件此后可删；external —— **只记原路径（+ sha256 + 大小），正文一个字节
+    都不入库**，文件原地不动。
 
     ⚠ **干跑不复制**（2.6）。这一条以前是漏的：`_JobTxn` 的 ROLLBACK 只回滚
     **数据库**，而复制发生在事务之外 —— 于是 `--dry-run` 会在磁盘上留下一份
@@ -342,10 +351,14 @@ def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
     全部价值在于"什么都没发生"这句话可以被无条件相信。
     """
     if opts.archive == "external":
+        # 「正文不入库」在这里是**结构上**成立的，不是一句约定：本函数只往
+        # `raw_files` 写四件东西（路径 / sha256 / 大小 / 状态），文件内容从头到
+        # 尾没有被读进来过（上面算 sha256 时是流式的，见 `ingest_file`）。
         locator_uri = path.resolve().as_uri()
         raw_id = _add_raw_file(conn, project_id=opts.project_id, locator_uri=locator_uri,
-                               sha256=sha256, byte_count=size, storage_state="present")
-        return raw_id, locator_uri, "present"
+                               sha256=sha256, byte_count=size, storage_state="present",
+                               custody="external")
+        return raw_id, locator_uri, "present", "external"
 
     dest_dir = opts.data_dir / "raw" / sha256[:2]
     dest = dest_dir / sha256
@@ -353,7 +366,7 @@ def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
         return (_add_raw_file(conn, project_id=opts.project_id,
                               locator_uri=dest.as_uri(), sha256=sha256,
                               byte_count=size, storage_state="archived"),
-                dest.as_uri(), "archived")
+                dest.as_uri(), "archived", "stored")
     if not dest.exists():
         dest_dir.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_name(dest.name + ".part")
@@ -366,7 +379,7 @@ def archive_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
         os.replace(tmp, dest)             # 原子落位，避免半截文件被当成已归档
     raw_id = _add_raw_file(conn, project_id=opts.project_id, locator_uri=dest.as_uri(),
                            sha256=sha256, byte_count=size, storage_state="archived")
-    return raw_id, dest.as_uri(), "archived"
+    return raw_id, dest.as_uri(), "archived", "stored"
 
 
 # ---------------------------------------------------------------------------
@@ -1128,7 +1141,8 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
 
     with _JobTxn(conn, dry_run=opts.dry_run, batch=opts.batch_size,
                  shared=_shared_txn) as txn:
-        raw_id, locator_uri, storage_state = archive_file(conn, opts, path, digest, size)
+        raw_id, locator_uri, storage_state, custody = archive_file(
+            conn, opts, path, digest, size)
         source_id = store.register_source(conn, name=source_name,
                                           authority_level=opts.authority_level,
                                           tool=str(parser_cls.tool), actor=opts.actor)
@@ -1219,7 +1233,7 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
 
         # --- 阶段 9/10：冲突 / 格式漂移 / 越界 → 进 Inbox ---
         # 三件事都走 `ops` 的 `refresh_*`，全部只**开待办**、不改事实：
-        # 体检页的五类正是这张表的归组（见 query.HEALTH_CATEGORIES），所以
+        # 体检页的六类正是这张表的归组（见 query.HEALTH_CATEGORIES），所以
         # "谁发现了问题"与"体检页显示什么"是同一件事的两个说法。
         # 冲突这一条是**对账**、不是"再开一遍"：冲突项是派生状态，视图是它的
         # 真值 —— 新出现的要开，已经不作数的（值集变了、上游被撤了）要关。
@@ -1237,6 +1251,17 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         ops.refresh_scope_drift(
             conn, opts.project_id, job_id=job_id,
             entity_ids=[sid for kind, sid in touched if kind == "entity"])
+        # 「发现未登记资产」（4.1）：**这个作业写下的一段会话里**出现了此前从未
+        # 登记过的主机 → 开一条待办。与上面两条同一条纪律（只开待办、不改事实），
+        # 也同一条惰性要求 —— 没有 flow 的导入（也就是除 4.1 之外的所有来源）
+        # 一行都不写。
+        #
+        # 它**不收** `entity_ids`（上面那一条收）：判据 3（"除了本作业之外没有
+        # 任何贡献指向它"）已经蕴含了"这个作业把它带进来的"，而一次 10 万观测的
+        # 导入手上那份 id 清单是同一量级的长度 —— 为它拼一条几万个占位符的 SQL，
+        # 换来的是一个已经成立的结论。`query.unregistered_assets` 开头还有一句
+        # 早退（这个作业一条 `involves` 都没有就直接返回）。
+        ops.refresh_unregistered_assets(conn, opts.project_id, job_id=job_id)
         counters.conflicts = max(0, _open_value_conflicts(conn, opts.project_id)
                                  - conflicts_before)
 
@@ -1267,6 +1292,10 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         "state": "cancelled" if cancelled else state,
         "job_id": job_id, "raw_file_id": raw_id, "locator_uri": locator_uri,
         "storage_state": storage_state,
+        # 原文由谁持有（4.1）。它与 storage_state 正交：`--archive external`
+        # 的导入在这一行说 `external`，而 `storage_state` 仍然是 `present`
+        # （原文可取得 —— 只是不在本工具手里）。
+        "custody": custody,
         "encoding": probe.as_dict(),
         "parser": fingerprint, "definition_hash": definition_hash, "source": source_name,
         "arbitration": arbitration,

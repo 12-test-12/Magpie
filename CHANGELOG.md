@@ -12,6 +12,88 @@
 
 ---
 
+## 0.9.0 — 4.1 流量：`flow` 会话摘要 + `storage='external'` 归档路径
+
+**一个新 kind（`flow`）+ 一条新关系动词（`involves`）+ 两条新归档语义 +
+迁移 011。** 新增两个来源（`tshark`，以及 `har` 的**第二半**——它从 3.4 起就在
+产接口形状，这一步起它同时产会话），外加一张既有表的重建。
+
+本步动到既有契约的地方有四类，逐条登记（按本节开头的规矩）：
+
+### 对外契约（改动需升 minor 并在此登记）
+
+**1 · `magpie import --json` 的报告多一个键 `custody`**（`"stored"` /
+`"external"`）。
+
+它不是装饰：`--archive external` 的导入以前在报告里与归档导入**长得一样**
+（都是 `storage_state: "present"`），而两者的可恢复能力**不是一件事**（下面第
+4 条）。这一个键是把那件事说出来的地方。`storage_state` 的取值域没有变。
+
+**2 · `GET /api/v1/doctor` 的 `raw_files` 每一项多一个键 `custody`**
+（并因此**可能多出几行**：分组键从 `storage_state` 变成了
+`(storage_state, custody)`）。
+
+体检页那排 chip 的标题是「原文持有」，而"谁持有"是 `custody` 回答的问题 ——
+只按 `storage_state` 分组会让外部文件显示成 `present`，一个读起来像"副本在我
+手里"的词，而它恰恰不在。GUI 的模板这一轮**没有跟着改**（前端产物没有重新
+构建），所以今天看到的是"两种 `present` 各一行、标签相同"；`custody` 已经在
+JSON 里，前端下一次构建时带上它即可。
+
+（`magpie doctor --json` **不受影响**：它的信封里本来就没有 `raw_files` 这一项
+—— 那一项是 `/doctor` 独有的。CLI 那一侧这一步改的是 human 输出里的措辞
+"五类问题" → "六类问题"，数字与分类都跟着 `HEALTH_CATEGORIES` 走。）
+
+**3 · `magpie schema --json` / `/api/v1/schema` 的两个清单各多一项**：类型
+（kind）里多了 `flow`（镜头 `traffic`），关系动词里多了 `involves`（逆
+`involved_in`）。`inbox` 的 kind 多了一个取值 `unregistered_asset`，体检报告
+（`/api/v1/health`、`magpie doctor --json`）因此多出**第六类**
+`unregistered`（"未登记资产"）。
+
+这一条是**加法**里的"看得见的那一半"：`flow` 会出现在类型清单里、`involves`
+会出现在关系动词清单里、体检页多一张卡片。清单本身是数据驱动的
+（`query.HEALTH_CATEGORIES` / `kind_registry`），所以三个消费者（GUI / CLI /
+MCP）看到的是同一份。
+
+**4 · 能力判定的取值域多一档 `locator_only`**，且
+`evidence_capability_report()` 多两个字段（`custody` / `external_not_deletable`）。
+
+`locator_only` 只出现在 `custody='external'` 的行上：
+
+> 可凭 locator 指向的**外部**路径读取原文并比对 hash；副本不在本工具手里 ——
+> 那个路径还在不在，由工具之外的世界决定。
+
+`external` 的行**不沿用** `stored` 的结论（`recoverable`）—— 那是 4.1 点名的
+一条：本工具手里没有副本，就不能替那个文件担保。`stored` 那一侧的 3×4 矩阵
+**一个字没动**（`verify_v32r3.py` 的 ①b 仍是原来那 12 条）。
+
+### 行为变更（不是新增，是"以前会做错"）
+
+**5 · `ops.purge_raw_file()` 对 `custody='external'` 的行**抛
+`InvariantError`，不再更新任何一行。
+
+以前它会照常把 `storage_state` 置成 `purged` —— 而"purged"在这里是一句假话：
+本工具从不删除任何文件，而外部文件连"本工具归档的副本"都不是，它还在原处。
+**"清除"这个词对外部文件没有对应的动作**，所以现在拒绝，并在报错里说清真要
+放弃跟踪该走 `ops.degrade_evidence(..., to_state='hash_only')`（那一步有真正的
+对应动作：丢掉本工具的指针）。
+
+这一条没有 CLI / API 调用方（`gc` 走的是另一条路：`purge_eligible` 判的是
+缓存层对象），所以它今天影响的是程序化调用与测试；写进 CHANGELOG 是因为它是
+**既有函数的行为变更**。
+
+### 数据库
+
+**6 · 迁移 011**（`schema/011_flow_external.sql`）：登记 `flow` / `involves`、
+给 `raw_files` 加一列 `custody`、给 `inbox_items.kind` 加第八个取值
+（**重建整张表** —— SQLite 改不了 CHECK，配方与实测踩到的两个坑写在文件头）。
+
+`custody` 的默认值是 `stored`，**升级前的行一律留在默认值上**：那是
+`--archive external` 被记成 `present` 的那个年代留下的信息缺口，库里没有记过
+"这份原文在谁手里"，能拿来判的只有 locator 的形状，而那是猜。这句话写在迁移
+的文件头里，比一个猜出来的回填诚实。
+
+---
+
 ## 0.8.0 — 3.8 标签 / 批量改状态 / 合并实体 / 布局持久化
 
 **四件写操作 + 迁移 009 + 前端探索模式补齐。** 对 `magpie/core` 的改动是

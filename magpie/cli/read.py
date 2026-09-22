@@ -585,7 +585,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
     counts = query.metric_counts(conn)
     imports = _import_health(ctx)
 
-    # 体检页的五类（§7.4）。**与 `/doctor` 逐字同义的选择**：项目解析不了时
+    # 体检页的六类（§7.4）。**与 `/doctor` 逐字同义的选择**：项目解析不了时
     # 不报错，而是**少算这一项**，且那一项在输出里不出现（不是 0）——
     # "这个库有 2 个项目而你一个都没指定"与"这个项目一类问题都没有"是两件事，
     # 让后者去冒充前者，正是体检页最不该犯的错。
@@ -627,9 +627,9 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
                      else j["scope"].get("interpret_with"))] for j in jobs])
     human += [""]
     if health is not None:
-        # 五类问题（§7.4 的体检页）。数字与 GUI **同一份实现**：两处都只是
+        # 六类问题（§7.4 的体检页）。数字与 GUI **同一份实现**：两处都只是
         # `query.health_report` 的一次调用，"两边给出不同的数"因此不可能。
-        human.append(f"五类问题（项目 {health['project_id']}，未决 " +
+        human.append(f"六类问题（项目 {health['project_id']}，未决 " +
                      f"{health['open_inbox']} 条）：")
         for category in health["categories"]:
             human.append(f"  {category['label']}：{category['count']} 条"
@@ -637,7 +637,7 @@ def cmd_doctor(args, ctx) -> tuple[dict, list[str]]:
         for note in health["notes"]:
             human.append(f"  ⚠ {note}")
     else:
-        human.append(f"五类问题：未计算（{health_skipped}）")
+        human.append(f"六类问题：未计算（{health_skipped}）")
     human += ["", "导入体检（2.6）：",
               f"  解析器漂移：{len(imports['parser_drift'])} 项"
               + (f"  {[d['drift'] for d in imports['parser_drift']]}" if imports["parser_drift"] else ""),
