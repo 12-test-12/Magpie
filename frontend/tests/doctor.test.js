@@ -107,4 +107,25 @@ describe('数据体检页', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('五类问题'))
     expect(wrapper.text()).toContain('identity_ambiguous')
   })
+
+  it('原文持有 chip 按 (storage_state, custody) 分开显示，不再同名', async () => {
+    // 4.1（CHANGELOG 0.9.0 第 2 条）：raw_files 两列分组后，stored/present 与
+    // external/present 是两行 —— 旧模板只显示 storage_state，两个 chip 长得一模
+    // 一样、key 还撞车。这条用例钉住"两列都要显示"。
+    const payload = healthResponse(CATEGORIES)
+    const original = payload.json
+    payload.json = async () => {
+      const body = await original()
+      body.data.raw_files = [
+        { storage_state: 'present', custody: 'stored', n: 5 },
+        { storage_state: 'present', custody: 'external', n: 2 },
+      ]
+      return body
+    }
+    const wrapper = mountDoctor(payload)
+    await vi.waitFor(() => expect(wrapper.text()).toContain('五类问题'))
+    const text = wrapper.text()
+    expect(text).toContain('stored · present')
+    expect(text).toContain('external · present')
+  })
 })

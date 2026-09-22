@@ -254,6 +254,29 @@ def build_parser() -> argparse.ArgumentParser:
         description="agent 的说明书。查询语法**从真的那个 parser 生成** —— "
                     "手写的语法文档会在第三次改命令时过期。")
 
+    # -- 4.4：时间线 / 导出（打包） --------------------------------------------
+    timeline = sub.add_parser(
+        "timeline", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="项目时间线（§8.1 时间语义：exact/approximate 排序，unknown 只作下界）",
+        description="时间语义**逐字沿用 §8.1**（observed_at 四元组），不新造一套。"
+                    "accuracy ∈ {exact, approximate} 的事件按 observed_at 排进"
+                    " events；accuracy=unknown 的只作下界，不参与排序。")
+    timeline.add_argument("--limit", type=int, default=core_query.DEFAULT_PAGE,
+                          help=f"时间线最多返回多少条（默认 {core_query.DEFAULT_PAGE}，"
+                               f"上限 {core_query.MAX_PAGE}）")
+
+    exportp = sub.add_parser(
+        "export", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="导出一个自洽的包（默认脱敏；--full 才带 stored 归档原文）",
+        description="拼一份拿谁都能看懂的包：manifest + README + 实体/时间线/原文索引。"
+                    "**默认不含原文正文**（headers/cookie/凭据结构上进不来）；"
+                    "`--full` 才额外带 stored 归档正文并在 stderr 给一条显眼告警；"
+                    "external 正文两种模式都不带（4.1 红线）。")
+    exportp.add_argument("--full", action="store_true",
+                         help="包含 stored 归档原文正文（默认剔除；命令行上有可见告警）")
+    exportp.add_argument("-o", "--output", default="magpie-export",
+                         metavar="<目录>", help="包的输出目录（默认 magpie-export）")
+
     # -- 2.6：写路径 ----------------------------------------------------------
     project = sub.add_parser(
         "project", parents=[_LOCATION, _FORMAT],
@@ -323,9 +346,10 @@ def build_parser() -> argparse.ArgumentParser:
                            f"上限 {write.MAX_JOB_LIMIT}）")
 
     parser.epilog = (
-        "只读：init、ls、lens、show、diff、doctor、schema。"
+        "只读：init、ls、lens、show、diff、doctor、schema、timeline、export。"
         "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
         "放在一起便于对照）。本地服务：app。"
+        "export 默认脱敏（不带原文正文），--full 才带 stored 归档原文并给可见告警。"
         "search 尚未实现 —— 它以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
         "契约与退出码表见 `magpie schema --json`；具名查询的清单也在那里。")
     return parser

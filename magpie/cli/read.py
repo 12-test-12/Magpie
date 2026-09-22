@@ -40,9 +40,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
-from ..core import ingest, ops, query, store
+from ..core import export, ingest, ops, query, store
 from . import write
 from .db import Database, resolve_project
 from .envelope import (
@@ -911,6 +913,112 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
     return data, human
 
 
+# ---------------------------------------------------------------------------
+# timeline（4.4）—— §8.1 时间语义的读侧出口
+# ---------------------------------------------------------------------------
+
+
+def cmd_timeline(args, ctx) -> tuple[dict, list[str]]:
+    """项目时间线。时间语义**逐字沿用 §8.1**（`query.timeline` 是唯一实现）。
+
+    输出两桶：`events`（accuracy ∈ {exact, approximate}，按 observed_at 升序）
+    与 `lower_bounds`（accuracy=unknown，只作下界）。分桶而不是给每行打标记 ——
+    一个混排的列表，**行序本身**就已经把 unknown 当成了排序依据（§8.1 要防的
+    正是这个），消费者看的是行序，不是标记。
+    """
+    conn = ctx.conn()
+    pid = resolve_project(conn, getattr(args, "project", None))
+    limit = getattr(args, "limit", query.DEFAULT_PAGE)
+    data = query.timeline(conn, pid, limit=limit)
+
+    human = [f"时间线（项目 {pid}）："
+             f"有序 {data['counts']['ranked']} 条（exact/approximate）、"
+             f"下界 {data['counts']['lower_bounds']} 条（unknown）"]
+    if data["truncated"]:
+        human.append(f"  ⚠ 已截断到 {limit} 条（--limit 调大可看全）")
+    human.append("")
+    human.append("有序事件 events（§8.1：exact/approximate 才能当排序依据）：")
+    human += _tbl(
+        ["OBSERVED_AT", "ACCURACY", "KIND", "ENTITY", "FIELD", "VALUE"],
+        [[e["observed_at"], e["observed_at_accuracy"], e["kind"],
+          e["entity_key"] or "—", e["field"],
+          str(e["value"])[:40]] for e in data["events"]],
+        empty="（无 —— 本库尚无 exact/approximate 观测）")
+    human.append("")
+    human.append("下界 lower_bounds（§8.1：unknown 只作「不早于」下界，不参与排序）：")
+    human += _tbl(
+        ["NOT_BEFORE", "KIND", "ENTITY", "FIELD", "VALUE"],
+        [[e["lower_bound"], e["kind"], e["entity_key"] or "—", e["field"],
+          str(e["value"])[:40]] for e in data["lower_bounds"]],
+        empty="（无）")
+    human.append(f"  语义：{data['semantics']}")
+    return data, human
+
+
+# ---------------------------------------------------------------------------
+# export（4.4）—— 默认脱敏的自洽包，--full 才带归档原文
+# ---------------------------------------------------------------------------
+
+#: `--full` 时打到 **stderr** 的告警。放 stderr 而不是塞进 `--json` 信封：
+#: 信封在 stdout、是给机器读的，混一行警告进去会把 `json.load` 弄炸；而 stderr
+#: 在终端上**就在眼前** —— 判据要的是"命令行上一眼能看见，不是日志里一行"。
+_FULL_WARNING = (
+    "⚠ " + "=" * 68 + "\n"
+    "⚠  magpie export --full：包里含归档原文 —— 可能带 headers / cookie / 凭据明文！\n"
+    "⚠  默认导出（不带 --full）已剔除原文正文；--full 是你的显式选择。\n"
+    "⚠ " + "=" * 68
+)
+
+
+def cmd_export(args, ctx) -> tuple[dict, list[str]]:
+    """导出一个自洽的包（`core.export.build_package` 拼装，这里只落盘 + 告警）。
+
+    默认 `redaction=default`：不含原文正文（headers/cookie/凭据结构上进不来），
+    观测值再过一道值级掩码。`--full`：额外带 `stored` 归档正文 + stderr 告警。
+    `external` 正文两种模式都不带（4.1 红线）。
+    """
+    conn = ctx.conn()
+    pid = resolve_project(conn, getattr(args, "project", None))
+    full = bool(getattr(args, "full", False))
+    out = Path(getattr(args, "output", None) or "magpie-export")
+
+    if full:
+        print(_FULL_WARNING, file=sys.stderr)      # 一眼可见，且不污染 stdout 信封
+
+    files = export.build_package(
+        conn, pid, full=full,
+        tool_version=_tool_version(),
+        project_name=query.project_name(conn, pid))
+    root = export.write_package(files, out)
+
+    manifest = json.loads(files[export.MANIFEST_NAME])
+    warning = None
+    if full:
+        warning = ("--full：包含 stored 归档原文（可能含 headers/cookie/凭据明文）；"
+                   "external 正文仍未包含。")
+    data = {
+        "output": str(root),
+        "redaction": manifest["redaction"],
+        "full": full,
+        "files": sorted(files),
+        "counts": manifest["counts"],
+        "warning": warning,
+    }
+    human = [f"导出 → {root}（模式 {manifest['redaction']}）",
+             f"  文件：{', '.join(sorted(files))}",
+             f"  计数：{manifest['counts']}"]
+    if full:
+        human.append("  ⚠ " + warning)
+    human.append("  （格式与说明随包走：README.md + manifest.json）")
+    return data, human
+
+
+def _tool_version() -> str:
+    """取包版本号（core 不 import 包根，这里补上）。"""
+    from .. import __version__
+    return __version__
+
+
 #: 命令名 → 实现。`__init__.py` 按它分发；**没有登记的命令不会被执行**。
 #:
 #: 写命令从 `write.py` 并进来（而不是各留一张表）：分发只该有一处，否则
@@ -925,6 +1033,9 @@ RUNNERS = {
     "diff": cmd_diff,
     "doctor": cmd_doctor,
     "schema": cmd_schema,
+    # -- 4.4：时间线 / 导出（打包）----------------------------------------------
+    "timeline": cmd_timeline,
+    "export": cmd_export,
     # -- 2.6 的写路径（实现在 `write.py`）--------------------------------------
     "project create": write.cmd_project_create,
     "import": write.cmd_import,

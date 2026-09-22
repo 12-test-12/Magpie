@@ -1862,6 +1862,122 @@ def export_entities(conn: sqlite3.Connection, project_id: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# 时间线（4.4）—— 时间语义**逐字沿用 §8.1**，不新造一套
+# ---------------------------------------------------------------------------
+#
+# §8.1 的三条既有口径，这里是它们唯一的读侧落点：
+#
+#   * 时间四元组 `observed_at` / `observed_at_source` / `observed_at_accuracy`
+#     / `observed_at_precision` —— 直接把观测缓存行上的这几列搬出来，**不新增
+#     字段、不改取值域**（`accuracy ∈ {exact, approximate, unknown}` 是 001 的
+#     CHECK 冻结的）；
+#   * 用法约束：**只有 `accuracy ∈ {exact, approximate}` 才能当排序依据**；
+#     `unknown` 只能作为"不早于 ingest_time"的下界 —— 所以它被分进 `lower_bounds`
+#     单独一桶，**不与 exact/approximate 交错排序**。把 `unknown` 悄悄当成
+#     `exact` 混排，正是 §8.1 点名要防的那件事（v3.1 的隐患）；
+#   * 读的是观测**缓存**行（`observations.is_current=1`），与 `export_entities`
+#     同一处投影 —— 缓存由 `store.recompute` 从活贡献刷下来，所以真导入之后
+#     一定是新的（`ingest` 收尾无条件 recompute）。
+#
+# 为什么要两桶而不是一个 `sortable` 标记：一个混排的列表即使每行都标了
+# `rankable=false`，**它的次序本身**就已经把 unknown 当成了排序依据 —— 消费者
+# 看的是行序，不是标记。分成两个数组，"谁参与了排序"就不可能被误读。
+
+
+def timeline(conn: sqlite3.Connection, project_id: int, *,
+             limit: int = DEFAULT_PAGE) -> dict:
+    """项目时间线：当前观测按 §8.1 时间语义分两桶返回。
+
+    `events` 是 `accuracy ∈ {exact, approximate}` 的观测，按 `observed_at` 升序
+    —— 它们是**能当排序依据**的时间点。`lower_bounds` 是 `accuracy = unknown`
+    的观测：每条带上自己的 `observed_at`（= 观测时刻，此处即 ingest 时刻）当
+    下界，但**不参与上面那个有序列表**。
+
+    `limit` 只截断总数（两桶合计），`truncated` 如实标记 —— 静默截断会让
+    "时间线上没有这件事"与"这件事被截掉了"变得无法区分。
+    """
+    pid = int(project_id)
+    rows = conn.execute(
+        "SELECT o.id, o.semantic_field, o.value, o.confidence,"
+        "       o.observed_at, o.observed_at_min,"
+        "       o.observed_at_source, o.observed_at_accuracy,"
+        "       o.observed_at_precision,"
+        "       e.kind, k.entity_key"
+        " FROM observations o"
+        " JOIN entities e ON e.id=o.entity_id AND e.project_id=o.project_id"
+        " LEFT JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=o.project_id"
+        "   AND k.canonical=1"
+        " WHERE o.project_id=? AND o.is_current=1 AND e.is_current=1"
+        "   AND o.observed_at IS NOT NULL"
+        " ORDER BY o.observed_at, o.id",
+        (pid,)).fetchall()
+
+    ranked: list[dict] = []
+    lower: list[dict] = []
+    for row in rows:
+        if len(ranked) + len(lower) >= limit:
+            break
+        acc = row["observed_at_accuracy"]
+        event = {
+            "observation_id": int(row["id"]),
+            "entity_key": row["entity_key"],
+            "kind": row["kind"],
+            "field": str(row["semantic_field"]),
+            "value": str(row["value"]),
+            "confidence": row["confidence"],
+            # §8.1 的时间四元组，原样搬出（不改名、不改取值域）
+            "observed_at": row["observed_at"],
+            "observed_at_min": row["observed_at_min"],
+            "observed_at_source": row["observed_at_source"],
+            "observed_at_accuracy": acc,
+            "observed_at_precision": row["observed_at_precision"],
+        }
+        if acc in ("exact", "approximate"):
+            event["rankable"] = True
+            ranked.append(event)
+        else:
+            # unknown：observed_at 只作下界，不当排序依据（§8.1）
+            event["rankable"] = False
+            event["lower_bound"] = row["observed_at"]
+            lower.append(event)
+
+    truncated = len(rows) > len(ranked) + len(lower)
+    return {
+        "project_id": pid,
+        "events": ranked,
+        "lower_bounds": lower,
+        "counts": {"ranked": len(ranked), "lower_bounds": len(lower)},
+        "truncated": truncated,
+        "semantics": (
+            "§8.1 时间可信度：时间四元组 observed_at / observed_at_source /"
+            " observed_at_accuracy / observed_at_precision 直接取自观测缓存；"
+            "只有 accuracy ∈ {exact, approximate} 的事件进入有序 events，"
+            "accuracy=unknown 的事件只作下界（lower_bounds，不早于 observed_at"
+            "= ingest 时刻），不与前者交错排序。"),
+    }
+
+
+def raw_file_index(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """`raw_files` 的逐行索引（导出/打包用）—— 与 `raw_file_states` 的分组
+    计数刻意分开：那里回答"各状态有几行"，这里回答"每一行是什么"。
+
+    只出 `sha256` / `byte_count` / `storage_state` / `custody` / `locator_uri`
+    五列，**不出正文** —— 正文由 `pack` 按 `custody` 与 `--full` 决定要不要从
+    `<data-dir>/raw/` 读进来（external 一律不读，见 4.1 的红线）。
+    """
+    return [dict(r) for r in conn.execute(
+        "SELECT id, sha256, byte_count, storage_state, custody, locator_uri"
+        " FROM raw_files WHERE project_id=? ORDER BY id", (int(project_id),))]
+
+
+def project_name(conn: sqlite3.Connection, project_id: int) -> str:
+    """项目名（导出的 manifest 要它）。找不到 → 空串，不让包因为一个名字缺席。"""
+    row = conn.execute("SELECT name FROM projects WHERE id=?",
+                       (int(project_id),)).fetchone()
+    return str(row["name"]) if row else ""
+
+
+# ---------------------------------------------------------------------------
 # schema（登记表 / 词表 / 观测字段）
 # ---------------------------------------------------------------------------
 

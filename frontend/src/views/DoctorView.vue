@@ -8,7 +8,8 @@
  *                              越界资产（§7.4 的验收判据）
  *   `store.integrity_check`  → `violations` / `foreign_key_check` / `sqlite_integrity`
  *   `jobs_by_state`          → 每个执行状态有多少作业
- *   `open_inbox` / `raw_files.storage_state` → 待裁决数与原文持有状态
+ *   `open_inbox` / `raw_files.(storage_state, custody)` → 待裁决数与原文持有
+ *                              状态（4.1 起两列分组，chip 上两列都要显示）
  *   `untested_entities`      → **一条观测都没有的实体**
  *
  * 五类不是这一页自己判的，是 `core/query.py` 的具名查询给出来的 ——
@@ -170,8 +171,17 @@ watch(() => store.view, (value) => {
         </div>
         <div class="sub">
           <span class="faint">原文持有</span>
-          <span v-for="row in report.raw_files" :key="row.storage_state" class="chip">
-            {{ row.storage_state }} <b>{{ row.n }}</b>
+          <!--
+            4.1 起 raw_files 按 (storage_state, custody) 两列分组（CHANGELOG 0.9.0
+            第 2 条）：只显示 storage_state 会让 stored/present 与 external/present
+            两个 chip **同名** —— 而"副本在我手里"与"只有一个外部路径"是两件不同的
+            事（custody 才是「原文持有」那一栏要回答的问题）。key 也必须带 custody，
+            否则两行同 storage_state 的 key 撞车，Vue 会复用 DOM 节点。
+          -->
+          <span v-for="row in report.raw_files"
+                :key="`${row.storage_state}-${row.custody}`" class="chip"
+                :class="row.custody === 'external' ? 'warn' : ''">
+            {{ row.custody }} · {{ row.storage_state }} <b>{{ row.n }}</b>
           </span>
           <span v-if="!report.raw_files.length" class="faint">（无原文）</span>
         </div>

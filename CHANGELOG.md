@@ -12,6 +12,84 @@
 
 ---
 
+## 0.10.0 — 4.4 时间线 / 导出打包：默认脱敏，`--full` 才含原文
+
+**两条纯新增 CLI 命令（`magpie timeline` / `magpie export`）+ 一个新 core 模块
+（`core/export.py`）+ 前端体检页的 custody 标签修复（兑现 0.9.0 第 2 条的欠账）。**
+`/api/v1` **一行未改** —— 没有增删路由、没有改任何既有响应形状，openapi 快照
+只差 `info.version`（0.9.0 → 0.10.0，已重新生成）。没有新增迁移（读的全是
+001–013 里已有的表，R4 未动）。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · `magpie schema --json` 的 `query_syntax.commands` 多两条：`timeline`、
+`export`。** 语法照旧从真 argparse 生成（`test_schema_query_syntax_matches_
+the_real_parser` 两边逐项对齐），退出码走既有表（0/1/2… ↔ 2xx/400/404），
+没有新档位。
+
+**2 · `magpie timeline --json` 的 `data`**：
+
+```json
+{"project_id": 1, "events": [...], "lower_bounds": [...],
+ "counts": {"ranked": 2, "lower_bounds": 1}, "truncated": false,
+ "semantics": "§8.1 时间可信度：…"}
+```
+
+时间语义**逐字沿用 §8.1**（不新造）：每个事件原样带 `observed_at` /
+`observed_at_source` / `observed_at_accuracy` / `observed_at_precision` 四元组
+（取值域是 001 的 CHECK 冻结的那套）。§8.1 的用法约束做成**结构**而不是标记：
+`accuracy ∈ {exact, approximate}` 的事件进**有序** `events`；`accuracy=unknown`
+的进 `lower_bounds`（每个带 `rankable:false` 与 `lower_bound` 下界），**不与前
+者交错排序** —— 一个混排列表的**行序本身**就已经把 unknown 当成了排序依据，
+消费者看的是行序，所以分桶，不给每行打个标了事。
+
+**3 · `magpie export --json` 的 `data`**：
+
+```json
+{"output": "magpie-export", "redaction": "default", "full": false,
+ "files": ["README.md", "…"], "counts": {…}, "warning": null}
+```
+
+* **默认（`redaction=default`）**：包 = `manifest.json` + `README.md` +
+  `entities.json/csv` + `timeline.json` + `secrets.json` + `raw_files.json`。
+  **不含任何原文正文** —— headers / cookie / 凭据明文只活在原文里，不带原文
+  结构上就进不来；观测值另过一道**值级掩码**（`detect_secrets` → `mask_secret`，
+  干净数据上恒等、不破坏往返）。`warning` 为 `null`。
+* **`--full`（`redaction=full`）**：额外带 `stored` 归档正文 `raw/<sha256>`
+  （逐字节），`data.warning` 非空，且**命令行上一眼可见**：一条 ⚠ 横幅打到
+  **stderr**（`--json` 信封在 stdout，混进去会弄炸 `json.load`；stderr 在终端
+  上就在眼前）。
+* **`external` 原文两种模式都只带路径 + sha256**，正文永不进包（4.1 红线 ——
+  复制了就把"绝不逐包入库"绕过去了）。
+* **`secret` 实体两种模式都只有 SHA-256 + 规则名 + 位置 + 掩码前缀**（4.2 的
+  "明文永不落库" 延伸为 "明文永不出包"）。`--full` 出的是**归档里的原文**（一份
+  原始抓包），**不是**被扫出来的凭据值 —— 这条边界写在包内 README 与
+  `manifest.notes` 里。
+* **包自洽**：manifest 列每个文件的 sha256 + 字节数；README 与 manifest
+  **零外部资源引用、零 `file://` 链接**（R7 的教训搬到包上：查看者不被动发起
+  请求）；包内不放指向本机绝对路径的活链接（external 的路径是 JSON 里的**数据**
+  字段，不是渲染出来的链接）。
+* **往返（判据 3）**：`entities.json` 读回（`export.read_package`）与写入逐项
+  相等；**刻意不往返**的三部分写进 README + `manifest.notes`：external 正文
+  （永不进包）、默认模式的 stored 正文（`--full` 才带）、凭据明文（掩码是刻意
+  的）。
+
+**4 · 前端：体检页「原文持有」chip 改为 `custody · storage_state`**（构建产物
+已随包入库，`magpie app` 不需要 node）。这是 0.9.0 第 2 条明说的欠账：
+`raw_files` 按 `(storage_state, custody)` 两列分组后，旧模板只显示
+`storage_state` —— `stored/present` 与 `external/present` 两个 chip **同名同
+key**，"副本在我手里"与"只有一个外部路径"在界面上分不出来。key 也改成两列
+拼接（同 `storage_state` 的两行 key 撞车会让 Vue 复用 DOM 节点）。
+
+### 判据的实测落点
+
+判据 1–4 各有一条专门用例（`core/tests/test_export.py`，14 条 + CLI 契约 3 条）：
+默认包全文件扫描无 headers/cookie/凭据明文；`--full` 原文可找到 + stderr 有
+告警；`build → write → read` 往返相等 + 不往返部分有书面说明；时间线分桶与
+四元组断言（unknown 时间点夹在两条 ranked 之间也不许插进 `events`）。
+
+---
+
 ## 0.9.0 — 4.1 流量：`flow` 会话摘要 + `storage='external'` 归档路径
 
 **一个新 kind（`flow`）+ 一条新关系动词（`involves`）+ 两条新归档语义 +

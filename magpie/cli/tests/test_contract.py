@@ -412,6 +412,60 @@ def test_doctor_zero_exit_when_data_is_unhealthy(loaded_db):
     assert data["healthy"] is True          # 未决 Inbox 不是"不健康"，它是待办
 
 
+# ---------------------------------------------------------------------------
+# timeline / export（4.4）
+# ---------------------------------------------------------------------------
+
+
+def test_timeline_success_and_carries_8_1_semantics(loaded_db):
+    """`magpie timeline`：信封三件套齐、退出码 0、事件带 §8.1 时间四元组。"""
+    code, payload = envelope("timeline", "--db", str(loaded_db), "--json")
+    data = assert_ok(payload)
+    assert code == 0
+    for key in ("events", "lower_bounds", "counts", "semantics"):
+        assert key in data
+    assert "§8.1" in data["semantics"], "timeline 没带 §8.1 语义（时间语义没沿用）"
+    for event in data["events"] + data["lower_bounds"]:
+        for col in ("observed_at", "observed_at_accuracy",
+                    "observed_at_source", "observed_at_precision"):
+            assert col in event, f"事件缺 §8.1 字段 {col}"
+    assert data["counts"]["ranked"] == len(data["events"])
+    assert data["counts"]["lower_bounds"] == len(data["lower_bounds"])
+
+
+def test_export_writes_self_contained_package_and_leaves_db_untouched(
+        loaded_db, tmp_path):
+    """`magpie export`：写出自洽包、退出码 0、**库一个字节都不动**（只读连接）。"""
+    from magpie.cli.tests.test_readonly import _fingerprint
+    before = _fingerprint(loaded_db)
+    out = tmp_path / "pkg"
+    code, payload = envelope("export", "--db", str(loaded_db), "--json",
+                             "-o", str(out))
+    data = assert_ok(payload)
+    assert code == 0
+    assert data["redaction"] == "default" and data["full"] is False
+    assert data["warning"] is None          # 默认不告警
+    # 包是自洽的：manifest + README + 实体/时间线/原文索引都在
+    for name in ("manifest.json", "README.md", "entities.json",
+                 "timeline.json", "raw_files.json", "secrets.json"):
+        assert (out / name).is_file(), f"包里缺 {name}"
+    # 只读：导出只读库、只写包目录，库逐表指纹不变
+    assert _fingerprint(loaded_db) == before, "export 动了库 —— 它该是只读的"
+
+
+def test_export_full_sets_warning_field_and_includes_raw(loaded_db, tmp_path):
+    """`--full`：`data.warning` 非空、包里多 `raw/` 正文（告警本身见 4.4 核心用例）。"""
+    out = tmp_path / "fullpkg"
+    code, payload = envelope("export", "--db", str(loaded_db), "--json",
+                             "--full", "-o", str(out))
+    data = assert_ok(payload)
+    assert code == 0
+    assert data["full"] is True and data["redaction"] == "full"
+    assert data["warning"], "--full 没有把 warning 放进信封"
+    assert any(name.startswith("raw/") for name in data["files"]), \
+        "--full 的文件清单里没有 raw/ 正文"
+
+
 def test_doctor_flags_a_real_integrity_violation(loaded_db):
     """反例：制造一条真的违例，`healthy` 必须变红。
 
@@ -578,6 +632,10 @@ def test_every_registered_command_is_dispatchable(empty_db):
         "diff": ("diff", "--since", "last"),
         "doctor": ("doctor",),
         "schema": ("schema",),
+        # 4.4：两条都在 resolve_project 处先要项目，空库上以 E_PROJECT_REQUIRED
+        # 收场（不是 E_NOT_IMPLEMENTED / 用法错）—— "被分发了"这件事已成立。
+        "timeline": ("timeline",),
+        "export": ("export", "-o", "unused-pkg"),
         "project create": ("project", "create", "p"),
         "import": ("import", "x.txt"),
         "undo": ("undo", "1"),

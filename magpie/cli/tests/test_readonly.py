@@ -57,6 +57,8 @@ READ_INVOCATIONS = (
     ("doctor", "--json"),
     ("doctor", "--human"),
     ("schema", "--json"),
+    ("timeline", "--json"),              # 4.4：纯读，不许碰库
+    ("timeline", "--human"),
     ("init", "--dry-run", "--json"),
     ("search", "x", "--json"),          # 未实现，但同样不许碰库
 )
