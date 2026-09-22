@@ -70,6 +70,12 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 补上"工作层那一半"的账本：`entities.lifecycle` 不是事实层，没有贡献可撤，
     # 撤销它需要的恰恰是"改之前的值"。同样**新增迁移、不改 001–008**（R4）。
     Migration(9, "work_journal", SCHEMA_DIR / "009_work_journal.sql"),
+    # 多值字段的**声明表** + 重建 `v_field_conflicts`（3.3 / 3.4 报出的缺陷 A）。
+    # 它与 004–007 不同（那些是往词表里加行），与 008 / 009 也不同（那些是新的
+    # 持久化产物）—— 这一次换的是 001 建的一条**视图**。视图是纯派生、不承载
+    # 数据的，所以"不许动 001"（R4）并不禁止改判据: DROP VIEW + CREATE VIEW 即可，
+    # 002 换 `v_integrity_violations` 就是先例。详见该文件头。
+    Migration(10, "multivalue_fields", SCHEMA_DIR / "010_multivalue_fields.sql"),
 )
 
 

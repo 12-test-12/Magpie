@@ -271,7 +271,26 @@ def test_clearing_the_inbox_zeroes_all_five(conn, project, tmp_path):
 
     先断言"都非零"再断言"都归零"是这条用例的全部价值：只做后一半的话，一个
     从来没检测到任何东西的实现同样能过 —— 那个绿是没有信息的。
+
+    LARI-35 加强了前半句的对偶：**多值字段导入之后 Inbox 必须是干净的**（见下面
+    第一段）。没有那一半，"五类都非零 → 归零"完全可能在"假冲突把 Inbox 填满"的
+    实现上也成立 —— 裁决掉一堆本就不该存在的东西，归零同样是绿的。
     """
+    # ---- LARI-35: 多值字段不该进 Inbox（"清空即干净"能不能兑现的前提）----
+    # 一份被折过的 endpoint（三条 `path`）+ 一个两条 CNAME 的域名。它们曾经各开
+    # 一条 `value_conflict`，于是"清空 Inbox 即干净"这条承诺在导入那一刻就已经
+    # 兑不了现了 —— 要靠人一条条裁决掉一堆**本就不该存在**的待办。
+    ingest.ingest_file(conn, options(conn, project, tmp_path),
+                       write(tmp_path / "folded.txt",
+                             "https://app.example.com/user/123\n"
+                             "https://app.example.com/user/456\n"))
+    ingest.ingest_file(conn, options(conn, project, tmp_path),
+                       write(tmp_path / "multi-cname.jsonl",
+                             httpx_row("b.example.com",
+                                       cname=["x.cdn.net", "y.cdn.net"]) + "\n"))
+    assert counts(conn, project) == {c.key: 0 for c in query.HEALTH_CATEGORIES}, \
+        "多值字段导入之后 Inbox 就该是干净的（这一步买的正是这个）"
+
     # 孤儿：一条从未有过贡献的残件 → 一次导入 + 撤销（GC 评估那一步开待办）
     store.new_entity(conn, project_id=project, kind="domain",
                      entity_key="leftover.example.com")

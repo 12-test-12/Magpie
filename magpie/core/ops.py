@@ -750,12 +750,25 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
                 (now(), job_id, ev))
 
         # ---- 4. 工作层: J 自动生成的 inbox 项 ----
+        # 这一条是**按作业**的便宜路径: 撤销一个作业，先把它自己开出来的待办
+        # 关掉。它对 `value_conflict` 之外的每一类都是完备的（那些项的主体就是
+        # 那个作业），对冲突项只是**近似** —— 一条冲突完全可能是更早的作业开的，
+        # 而这次撤销把它弄没了。精确的收口在下一步的对账。
         inbox_closed = conn.execute(
             "UPDATE inbox_items SET state='closed', resolved_at=?, close_reason='undo',"
             " closed_by_job_id=? WHERE created_by_job_id=? AND state='open'"
             " AND auto_generated=1 AND closed_by_job_id IS NULL",
             (now(), job_id, job_id),
         ).rowcount
+
+        # ---- 4b. 工作层: 冲突项跟**视图**对齐（不是跟 job）----
+        # 放在这里而不是 recompute 之后: 视图读的是 contributions（事实层），
+        # 不读缓存投影，而第 2 步的 retract 边已经写完了 —— 所以此刻视图就是
+        # "撤销之后"的视图。放在这一组里也让工作层的三步（4 关、4b 对账、
+        # 5 回放 work_journal）读起来是同一条流水线。
+        conflict_report = reconcile_conflicts(conn, project_id=int(job["project_id"]),
+                                              job_id=job_id)
+        inbox_closed += conflict_report["closed"]
 
         # ---- 5. 工作层: J 写下的 work_journal 逐行放回 before（3.8）----
         # 放在 recompute **之前**：lifecycle 不参与缓存投影，两者互不影响，
@@ -806,6 +819,8 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
                 "alias_revoked": alias_revoked,
                 "merge_members_revoked": members_revoked,
                 "merge_events_reverted": len(merge_events),
+                # `inbox_closed` **含**第 4b 步对账关掉的那些: 它们同样是"这次
+                # 撤销关掉的待办"，刨掉它们会让这个数停在真话与假话之间。
                 "inbox_closed": inbox_closed,
                 # 一个数，不是一列 id：`impact` 的每一个键都是计数，而**这条响应
                 # 是既有形状**（加键要按 CHANGELOG 的规矩升 minor 登记）。逐行的
@@ -814,7 +829,8 @@ def undo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
                 "work_reverted": len(work_reverted),
                 "purge_eligible": purge_report["purge"],
                 "purge_retained": purge_report["retained"],
-                "inbox_opened": len(purge_report["orphan_subjects"]),
+                "inbox_opened": len(purge_report["orphan_subjects"])
+                                + conflict_report["opened"],
             },
             "integrity": {"ok": True},
         }
@@ -938,6 +954,16 @@ def redo(conn: sqlite3.Connection, job_id: int, *, actor: str = "cli",
             "UPDATE inbox_items SET state='closed', resolved_at=?, close_reason='redo',"
             " opened_by_undo_job_id=NULL WHERE opened_by_undo_job_id=?",
             (now(), job_id)).rowcount
+
+        # ---- 3c. 工作层: 冲突项跟**视图**对齐（undo 的 4b 的镜像）----
+        # 上面那一步重开的是 `closed_by_job_id=J` 的项 —— 它覆盖了"J 的 undo 关掉
+        # 的"那一批，而 J 的 redo 恰恰会让那些冲突回来。这里再对一次账，是为了
+        # 覆盖两种它够不到的情况: 撤销期间别的路径（例如先 undo、再单独 undo 了
+        # 另一个作业）在 J 的边上留下的空隙，以及"重开之后值又变了"（指纹不同，
+        # 上面那条按原件重开的项已经不是当前的值集）。对账以视图为准，所以它
+        # 无论走哪条路径进来，最终状态都一致。
+        conflict_report = reconcile_conflicts(conn, project_id=project_id, job_id=job_id)
+        inbox_reopened += conflict_report["opened"]
 
         # ---- 3b. 工作层: J 的 work_journal 按 after 再写一遍（3.8）----
         work_replayed = _replay_work_journal(conn, job_id, direction="redo", actor=actor)
@@ -1357,9 +1383,20 @@ def _open_inbox(conn: sqlite3.Connection, *, project_id: int, kind: str,
     return item_id, True
 
 
-def refresh_observation_conflicts(conn: sqlite3.Connection, project_id: int) -> int:
-    """把"同 entity 同字段多值"登记为 inbox 冲突（主体是 entity，见 §9 视图注释）。"""
-    opened = 0
+def _live_conflicts(conn: sqlite3.Connection,
+                    project_id: int) -> list[dict[str, Any]]:
+    """`v_field_conflicts` 的当前内容 + **与 `_open_inbox` 逐字一致的指纹**。
+
+    为什么指纹要在这里算，而不是在 reconcile 里另写一份判据
+    ------------------------------------------------------
+    "这条待办还成不成立"必须和"当初为什么开它"用**同一个**判据。分开写两份的
+    结局是它们会漂移，而漂移的症状是"视图里有、Inbox 里没有"（漏报）或反过来
+    （残骸）—— 两种都不会有任何东西变红。所以生产（`_open_inbox` 里的
+    `fingerprint(...)`）与对账（本函数）共用 `store.fingerprint` 这一个入口，
+    参数也按同一个顺序、同一份清洗规则（`_open_inbox` 内部对 values / sources
+    排序去重）给。
+    """
+    out: list[dict[str, Any]] = []
     for row in conn.execute(
         "SELECT subject_kind, subject_id, field_namespace, semantic_field, values_csv"
         "  FROM v_field_conflicts WHERE project_id=?", (project_id,)
@@ -1370,15 +1407,144 @@ def refresh_observation_conflicts(conn: sqlite3.Connection, project_id: int) -> 
             " WHERE subject_kind=? AND subject_id=? AND semantic_field=?",
             (str(row["subject_kind"]), int(row["subject_id"]), str(row["semantic_field"])),
         )]
-        _, created = _open_inbox(
-            conn, project_id=project_id, kind="value_conflict",
-            subject_kind=str(row["subject_kind"]), subject_id=int(row["subject_id"]),
-            values=values, sources=sources,
-            conflict_field=str(row["semantic_field"]),
-            payload={"field": str(row["semantic_field"]), "values": values},
-        )
+        out.append({
+            "subject_kind": str(row["subject_kind"]),
+            "subject_id": int(row["subject_id"]),
+            "field_namespace": str(row["field_namespace"]),
+            "semantic_field": str(row["semantic_field"]),
+            "values": values,
+            "sources": sources,
+            "fingerprint": fingerprint(
+                "value_conflict", str(row["subject_kind"]), int(row["subject_id"]),
+                str(row["semantic_field"]), values, sources),
+        })
+    return out
+
+
+def refresh_observation_conflicts(conn: sqlite3.Connection, project_id: int, *,
+                                  job_id: int | None = None) -> int:
+    """把"同 entity 同字段多值"登记为 inbox 冲突（主体是 entity，见 §9 视图注释）。
+
+    `job_id` 是**生命周期锚点**（缺陷 B 的前一半）: 传了它，开出来的项就带
+    `created_by_job_id`，于是 `undo` 那条"按 job 关待办"的边能够到它。
+    **但它不是全部** —— 锚点只解决"这个 job 自己开的那条"，而一条冲突完全可能
+    是**更早的作业**开的、被**这次撤销**弄没的（见 `reconcile_conflicts`）。
+
+    哪些字段算"多值"由 `multivalue_fields` 声明表说了算（迁移 010），不在
+    这里判断 —— 视图已经把它们排掉了，所以本函数的输入天然只剩真冲突。
+
+    它**只开不关**。生命周期那一半在 `reconcile_conflicts` 里 —— 生产代码走
+    那一个（导入 / 撤销 / 重做都走它）。本函数留着是因为它是"打开一条冲突项"
+    这件事的**唯一写法**，对账复用它的下半段（`_open_one_conflict`）；单测也会
+    直接调它来构造"视图里有、Inbox 里没有"的前提。
+    """
+    opened = 0
+    for live in _live_conflicts(conn, project_id):
+        _, created = _open_one_conflict(conn, project_id=project_id, live=live,
+                                        job_id=job_id)
         opened += 1 if created else 0
     return opened
+
+
+def _open_one_conflict(conn: sqlite3.Connection, *, project_id: int,
+                       live: dict[str, Any], job_id: int | None) -> tuple[int, bool]:
+    """开一条冲突项。**这是"冲突项长什么样"的唯一落点**。
+
+    生产（`refresh_observation_conflicts`）与对账（`reconcile_conflicts`）都
+    必须从这里走: 两处各写一份 `_open_inbox(...)` 的话，它们在 fingerprint
+    参数、payload 形状、job_id 锚点上的任何一处改动都可能只落在一半上 ——
+    而分叉的症状（重开出来的项与对账算的指纹对不上）不会让任何东西变红。
+    """
+    return _open_inbox(
+        conn, project_id=project_id, kind="value_conflict",
+        subject_kind=live["subject_kind"], subject_id=live["subject_id"],
+        values=live["values"], sources=live["sources"],
+        conflict_field=live["semantic_field"], job_id=job_id,
+        payload={"field": live["semantic_field"], "values": live["values"]},
+    )
+
+
+def reconcile_conflicts(conn: sqlite3.Connection, *, project_id: int,
+                        job_id: int | None = None) -> dict[str, int]:
+    """把 `value_conflict` 待办与**视图当前的内容**对齐（缺陷 B 的后一半）。
+
+    冲突项是**派生状态**: 它的真值永远是"`v_field_conflicts` 现在有没有这一条"，
+    而不是"哪个作业开过它"。所以生命周期必须跟着视图走，两条都要成立:
+
+    * 库里有冲突 → **必须看得见**。若某条冲突在视图里而 Inbox 里没有 open 项
+      （撤销之后又被 redo 带回来、或先前的对账漏掉），这里**开/重开**它；
+    * 库里没有冲突了 → **不许**留着一条 open 项。视图里没有的 open 项，这里
+      按 `close_reason='reconcile'` 关掉。
+
+    为什么"锚 job"与"对账"两件都要做（而不是只做一件）
+    --------------------------------------------------
+    只锚 job: 能关掉"这个作业自己开的"那条，但一条**更早的作业**开的冲突项
+    （`created_by_job_id` 是别人）在它的贡献被撤掉之后会**留在那里** ——
+    库里已经没有冲突了，Inbox 说还有。反向的"只按 job 关掉"则更糟: 它会在
+    冲突**仍然存在**时把项关掉，于是"报告干净"变成假话。
+
+    只做对账（不锚 job）: 语义上够，但每一次对账都要重算整个视图，而撤销是
+    按 job 逐个走的 —— N 个作业的批量撤销就是 N 次全表聚合。锚 job 之后，
+    `undo` 那条既有边（`created_by_job_id=J AND state='open'`）先把最典型的那
+    一批便宜地关掉，对账只处理剩下的。两者是"便宜的近似 + 精确的收口"。
+
+    为什么在这里关的项仍然带 `closed_by_job_id=job_id`
+    --------------------------------------------------
+    这是给 `redo` 留的边: `redo` 重开的是 `closed_by_job_id=J` 的项。一条因为
+    J 的撤销而消失的冲突，正是"J 的 redo 会让它回来"的那一条 —— 由 redo 自己
+    重开比依赖对账再开更省一次全表聚合。**并且这条边不会说谎**: 库里的状态确实
+    是"J 撤销之前有、之后没有"。对账在 `redo` 末尾仍然会跑一次，所以这条边即便
+    因为别的原因失效（例如 redo 之后另一个作业又把值改回去了），对账也会把最终
+    状态校正回来 —— 两半各自都不足以单独保证正确，合起来才同时满足上面两条。
+
+    幂等: 反复调用不改变结果集（已关的项不再是 open，不会被再关一次；已 open
+    的项指纹相同，`_open_inbox` 退化为累加 `occurrence_count`）。
+    """
+    live = _live_conflicts(conn, project_id)
+    live_fingerprints = {c["fingerprint"] for c in live}
+
+    closed = 0
+    for row in conn.execute(
+        "SELECT id, fingerprint FROM inbox_items"
+        " WHERE project_id=? AND kind='value_conflict' AND state='open'"
+        "   AND auto_generated=1", (project_id,)
+    ):
+        if str(row["fingerprint"]) in live_fingerprints:
+            continue
+        conn.execute(
+            "UPDATE inbox_items SET state='closed', resolved_at=?,"
+            " close_reason='reconcile', closed_by_job_id=?"
+            " WHERE id=? AND state='open'",
+            (now(), job_id, int(row["id"])),
+        )
+        closed += 1
+
+    opened = 0
+    for item in live:
+        # 复用一条**同指纹的已关项**（undo → redo → undo → … 会反复开关同一条
+        # 冲突）: 不这么做的话每一轮都插一行新的，`inbox_items` 会随撤销次数
+        # 单调增长，而"清空即干净"读的是 open 项 —— 残骸不会红，只会变大。
+        revived = conn.execute(
+            "SELECT id FROM inbox_items"
+            " WHERE project_id=? AND kind='value_conflict' AND subject_kind=?"
+            "   AND subject_id=? AND fingerprint=? AND state<>'open'"
+            " ORDER BY id DESC LIMIT 1",
+            (project_id, item["subject_kind"], item["subject_id"],
+             item["fingerprint"]),
+        ).fetchone()
+        if revived is not None:
+            conn.execute(
+                "UPDATE inbox_items SET state='open', resolved_at=NULL,"
+                " resolved_by=NULL, close_reason=NULL, closed_by_job_id=NULL,"
+                " opened_by_undo_job_id=NULL, occurrence_count=occurrence_count+1,"
+                " last_seen_at=? WHERE id=?", (now(), int(revived["id"])),
+            )
+            opened += 1
+            continue
+        _, created = _open_one_conflict(conn, project_id=project_id, live=item,
+                                        job_id=job_id)
+        opened += 1 if created else 0
+    return {"opened": opened, "closed": closed}
 
 
 def refresh_unknown_fields(conn: sqlite3.Connection, project_id: int, *,

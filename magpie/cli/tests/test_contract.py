@@ -41,10 +41,13 @@ from magpie.core import ops, store                                   # noqa: E40
 # "接口描述"来源的指纹追加进既有 kind 的 `produced_by`）；3.7b 加了
 # `008_pipeline_definitions.sql`（管线定义 / 管线运行两张表 + `jobs.pipeline_run_id`
 # + 跨项目触发器）；3.8 加了 `009_work_journal.sql`（工作层写入的撤销日志 ——
-# `entities.lifecycle` 不是事实层，没有贡献可撤，撤销它需要"改之前的值"）。
+# `entities.lifecycle` 不是事实层，没有贡献可撤，撤销它需要"改之前的值"）；
+# LARI-35 加了 `010_multivalue_fields.sql`（多值字段的**声明表** + 重建
+# `v_field_conflicts` —— 视图是纯派生、不承载数据，所以"不许动 001"（R4）并不
+# 禁止改判据；002 换 `v_integrity_violations` 是先例）。
 # 新增迁移必须同步改这一行，否则 `schema --json` 的契约数字会与真实库对不上，
 # 而那条断言正是为"迁移与描述分叉"准备的。
-MIGRATIONS = 9
+MIGRATIONS = 10
 
 #: 子进程的公共环境（定义在 `conftest.py`，两个测试文件共用一份）。
 ENV = ENV

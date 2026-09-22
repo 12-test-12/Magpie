@@ -1785,56 +1785,56 @@ def test_endpoint_undo_removes_every_endpoint_fact(db, project, tmp_path):
         "SELECT COUNT(*) FROM observations WHERE project_id=? AND is_current=1"
         " AND semantic_field='path'", (project,)).fetchone()[0] == 0
 
-    # ⚠️ 唯一一条 undo **撤不掉**的残渣，而且它有名字：折叠出来的 endpoint 在
-    # `path` 字段上有多个值，而模型的冲突检测把"同实体同字段多值"一律记成
-    # `value_conflict`（`v_field_conflicts` 没有"多值字段"这个概念）。
-    # 这条 Inbox 项的主体是 project 而不是 job（`created_by_job_id` 为 NULL），
-    # 所以 undo 碰不到它 —— 已单独报给发起人，见本节的
-    # `test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap`。
+    # 一条残渣都不该有 —— 包括 Inbox。
+    #
+    # 这条断言在 LARI-35 之前是 `residue == ["inbox_items"]`：折叠出来的
+    # endpoint 在 `path` 上有三个值，被"同实体同字段多值即冲突"记成了
+    # `value_conflict`，而那条项**没有** `created_by_job_id`（生产者没传），
+    # 于是 `undo` 按 job 关待办那条边够不到它。现在两半都修了：`path` 是声明过的
+    # 多值字段（根本不进冲突域），而冲突项的生命周期跟着**视图**走
+    # （`ops.reconcile_conflicts`），所以撤销之后它必须消失。
     after = _fingerprint(db)
     residue = sorted(t for t in after if after[t]["rows"] and after[t] != baseline[t])
-    assert residue == ["inbox_items"], f"undo 之后还有别的残留行：{residue}"
+    assert residue == [], f"undo 之后还有残留行：{residue}"
     items = [{"kind": str(r["kind"]), "state": str(r["state"])} for r in db.execute(
         "SELECT kind, state FROM inbox_items WHERE project_id=?", (project,))]
-    assert items == [{"kind": "value_conflict", "state": "open"}], items
+    assert items == [], items
 
 
-def test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap(
+def test_endpoint_multi_path_opens_no_conflict_and_undo_leaves_no_residue(
         db, project, tmp_path):
-    """折叠出来的 endpoint 会撞上「一个字段只有一个真值」这条模型假设。
+    """多值 `path` / `cname` **不进 Inbox**，而多值字段本身一条不少（判据 1 + 5）。
 
-    这条用例**不是**在描述一个正确行为，而是把一处**既有**的模型缺口钉在测试里，
-    让它是可见的、可以被人拍板的：
+    这一条在 LARI-35 之前叫
+    `test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap`，
+    它当时**不是**在描述正确行为，而是把 3.3 报上来的一处模型缺口钉住（"折叠出来
+    的 endpoint 会开一条假冲突，而且 undo 撤不掉"）。缺口修掉之后，用例翻面：
 
-    * `/user/123`、`/user/456`、`/user/789` 折成一个 endpoint，三条原始路径落在
-      **同一个** `path` 字段的**三个不同值**上 —— 而 `v_field_conflicts` 把
-      "同实体同字段多值"一律记成冲突（它没有"多值字段"这个概念），于是导入一个
-      折叠过的 endpoint 就会开一条 `value_conflict` Inbox 项；
-    * 那条 Inbox 项的主体是 project、不是 job，所以 **undo 撤不掉它**；
-    * 数据量一大，接口镜头里每一个被折过的 endpoint 都会开一条这样的项，
-      而 3.6 的体检页口径是"清空 Inbox 即干净"。
-
-    ⚠️ 这**不是** 3.3 引入的形状 —— httpx 对多值字段 `cname` 早就是同一个行为
-    （两条 CNAME → 一条 `cname` 冲突），本用例的两条断言把它一起证明了。
-    修它要动 `v_field_conflicts` 或 observations 的建模，属 001 的地界（R4 不改），
-    所以 3.3 的选择是：**如实按验收标准落三条观测**，把缺口原样报出来。
+    * 三个值不再开冲突 —— 因为"多值"是**声明**（`multivalue_fields` 表），而声明
+      只对**天生是集合**的字段生效；
+    * 但三条 `path` 观测**一条都不少** —— 修的是冲突检测的判据，不是把证据删掉。
+      这一半是"没有把体温计摔了"的直接证据：同一个用例里既证明不开假冲突、
+      又证明真事实还在。
     """
     report = ingest.ingest_file(db, options(db, project, tmp_path),
                                 _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
-    assert report["counts"]["conflicts"] == 1, report["counts"]
-    items = [json.loads(str(r["payload_json"])) for r in db.execute(
-        "SELECT payload_json FROM inbox_items WHERE project_id=? AND state='open'",
-        (project,))]
-    assert items == [{"field": "path",
-                      "values": ["/user/123", "/user/456", "/user/789"]}], items
+    assert report["counts"]["conflicts"] == 0, report["counts"]
+    assert db.execute(
+        "SELECT COUNT(*) FROM inbox_items WHERE project_id=?", (project,)
+    ).fetchone()[0] == 0
 
-    # 既有先例：httpx 的多值 `cname` 走的是**同一条**路（所以缺口是模型的，
-    # 不是 3.3 的）。
+    # 证据一条不少：折叠出来的 endpoint 上仍然是三条 `path` 观测。
+    assert _obs_values(db, project, "endpoint", "app.example.com/user/{id}",
+                       "path") == ["/user/123", "/user/456", "/user/789"]
+
+    # httpx 的多值 `cname` 走的是**同一条**路：曾经也是假冲突，现在不是。
     other = _write(tmp_path, "httpx.jsonl", json.dumps(
         {"host": "b.example.com", "port": "443", "scheme": "https",
          "status_code": 200, "cname": ["x.cdn.net", "y.cdn.net"]}))
     httpx_report = ingest.ingest_file(db, options(db, project, tmp_path), other)
-    assert httpx_report["counts"]["conflicts"] == 1, httpx_report["counts"]
+    assert httpx_report["counts"]["conflicts"] == 0, httpx_report["counts"]
+    assert _obs_values(db, project, "domain", "b.example.com",
+                       "cname") == ["x.cdn.net", "y.cdn.net"]
 
 
 # ---------------------------------------------------------------------------
@@ -2099,18 +2099,18 @@ def test_apischema_multi_method_and_multi_status_open_no_conflict(db, project,
                       (project,)).fetchone()[0] == 0
 
 
-def test_apischema_multi_status_from_traffic_is_the_pre_existing_gap(db, project,
-                                                                     tmp_path):
-    """**反面**：观测型的多值仍然会开一条冲突 —— 那是 3.3 报过的既有缺口。
+def test_apischema_multi_status_from_traffic_opens_no_conflict(db, project,
+                                                               tmp_path):
+    """观测型的多值**也不进 Inbox** —— 它曾经是 3.3 报过的那个缺口（判据 1 + 5）。
 
-    同一个接口被抓到 200 与 404 各一次，会落两条 `status` 观测，于是
-    `v_field_conflicts` 记一条 `value_conflict`。**这与 3.3 的多条 `path` 是同一个
-    缺口**：视图的口径是"同实体同字段多值即冲突"，它没有"多值字段"这个概念。
+    同一个接口被抓到 200 与 404 各一次，会落两条 `status` 观测。LARI-35 之前
+    这两条会被记成一条 `value_conflict`（视图的口径是"同实体同字段多值即冲突"，
+    它没有"多值字段"这个概念）；现在 `status` 在 `multivalue_fields` 里声明过，
+    整个退出冲突域。
 
-    本步**不修它**（修它要动 001 的视图，红线 R4 不改），也不为绕开它改口径
-    （把两个状态码拼成一个字符串正是 `_apis.py` 否掉的那种"需要再解析的值"）。
-    用例钉住它，是为了让这个缺口**可见**：改天有人动了 `v_field_conflicts`，
-    这里会红，而那一次红正是应该被看见的。
+    **两条状态码观测必须都还在** —— 修的是"多值是否等于冲突"这个判据，不是把
+    观测删掉。把两个状态码拼成一个字符串（`_apis.py` 否掉的那种"需要再解析的
+    值"）同样不改：字段的口径一个字都没动，动的是冲突视图。
     """
     path = _write(tmp_path, "har.json", json.dumps({"log": {"version": "1.2",
         "entries": [
@@ -2125,13 +2125,9 @@ def test_apischema_multi_status_from_traffic_is_the_pre_existing_gap(db, project
     assert report["parser"] == "har@1", report
     assert _obs_values(db, project, "endpoint", "api.example.com/p",
                        "status") == ["200", "404"]
-    assert report["counts"]["conflicts"] == 1, report["counts"]
-    # 落的是一条 `value_conflict`，字段是 `status` —— 与 3.3 的 `path` 同形同源。
-    rows = [dict(r) for r in db.execute(
-        "SELECT kind, state, payload_json FROM inbox_items WHERE project_id=?",
-        (project,))]
-    assert [r["kind"] for r in rows] == ["value_conflict"], rows
-    assert "status" in rows[0]["payload_json"], rows[0]
+    assert report["counts"]["conflicts"] == 0, report["counts"]
+    assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=?",
+                      (project,)).fetchone()[0] == 0
 
 
 def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
@@ -2198,9 +2194,14 @@ def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path)
     * 类型与必填只有契约知道，写在 `param.query.limit.type` 上 —— 流量**不写**
       这个字段，而不是"写一个更短的值"。
 
-    剩下的冲突必须**只有** 3.3 已经报过的那个既有缺口（观测型多值：`path` /
-    `method` / `status`）与 `declared_status` 的真实分歧。这条断言因此同时是
-    "参数树不制造噪声"与"噪声没有消失、只是被点名"两件事的证据。
+    剩下的冲突必须**只有一条**：`declared_status`。这条断言因此同时是
+    "参数树不制造噪声"与"噪声没有消失、只是被收窄到该报的那一条"两件事的证据。
+
+    LARI-35 之后这里从四条收到一条：`path` / `method` / `status` 三条是**多值
+    字段**（该在 `multivalue_fields` 里声明，不是冲突），而 `declared_status`
+    留着 —— 它是两份**契约各自声明**了不同的响应码集合（`["200","201","404",
+    "default"]` vs `["200","404"]`），是"对同一个问题的两个回答"，属于真分歧。
+    声明表必须窄到区分得开这两类，这条用例就是那条界线。
     """
     for tool, filename in _FOUR_SOURCES:
         path = tmp_path / f"{tool}-{filename}"
@@ -2230,7 +2231,7 @@ def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path)
         "   AND kind IN ('value_conflict','merge_conflict')", (project,))]
     fields = sorted({json.loads(r["payload_json"])["field"] for r in rows})
     assert not [f for f in fields if f.startswith("param.")], fields
-    assert fields == ["declared_status", "method", "path", "status"], fields
+    assert fields == ["declared_status"], fields
 
 
 def test_apischema_declared_path_does_not_yet_merge_with_traffic(db, project,

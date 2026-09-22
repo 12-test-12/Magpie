@@ -1221,7 +1221,12 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         # 三件事都走 `ops` 的 `refresh_*`，全部只**开待办**、不改事实：
         # 体检页的五类正是这张表的归组（见 query.HEALTH_CATEGORIES），所以
         # "谁发现了问题"与"体检页显示什么"是同一件事的两个说法。
-        ops.refresh_observation_conflicts(conn, opts.project_id)
+        # 冲突这一条是**对账**、不是"再开一遍"：冲突项是派生状态，视图是它的
+        # 真值 —— 新出现的要开，已经不作数的（值集变了、上游被撤了）要关。
+        # 只开不关的结果是每导入一次就多一条残骸，而 3.6 的"清空即干净"正是
+        # 靠这个函数守住的。`job_id` 是生命周期锚点：这次导入开的项能被这个
+        # 作业的 undo 关掉（见 `ops.reconcile_conflicts` 的 docstring）。
+        ops.reconcile_conflicts(conn, project_id=opts.project_id, job_id=job_id)
         # 未知字段（§5.6）：`ctx.unknown_fields` 在这次解析里已经数好了，
         # 不在这里落成待办，它就只活在报告文件里（事后无迹可查）。
         ops.refresh_unknown_fields(conn, opts.project_id, job_id=job_id,
