@@ -84,6 +84,12 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 持久化产物）—— 这一个既加词表行、又动既有列与既有 CHECK。同样**新增迁移、
     # 不改 001–010**（R4）。
     Migration(11, "flow_external", SCHEMA_DIR / "011_flow_external.sql"),
+    # 登记 `secret`（敏感串扫描，4.2）。它与 004–007 / 011 同形（往词表里加一行
+    # + 三件套），但有一处不同：**`produced_by` 是空的** —— 产出者是一条独立的
+    # 管线阶段（`magpie/core/scan.py`）而不是某个解析器，理由写在 012 的文件头
+    # 第三节。镜头归属 `traffic`（计划书 §3.5 的镜头表里那一行的主语就是
+    # `flow / secret`）。同样**新增迁移、不改 001–011**（R4）。
+    Migration(12, "kind_secret", SCHEMA_DIR / "012_kind_secret.sql"),
 )
 
 

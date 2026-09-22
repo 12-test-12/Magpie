@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from . import ops, store
+from . import ops, scan, store
 
 # ---------------------------------------------------------------------------
 # 常量（嗅探阈值来自计划书 §5.4，不是可调参数）
@@ -230,7 +230,15 @@ class ParseContext:
 
 @dataclass
 class Counters:
-    """6 个计数。恒等式：added + updated + skipped == records。"""
+    """7 个计数。恒等式：added + updated + skipped == records。
+
+    `secrets`（4.2）与那六个不是同一类东西，所以单独说明：前六个数的是**这份
+    文件写出了什么事实**，而 `secrets` 数的是**扫描器在原文里认出了几个凭据**
+    —— 它随后会被写成 `secret` 实体（进 `records`），但那个数回答的是另一个
+    问题（"这份文件里有没有凭据、有几个"）。两个都留着是因为它们都要被看见：
+    `records` 里的那几条与别的记录混在一起，单看它答不出"这次导入有没有扫到
+    凭据"。
+    """
 
     added: int = 0
     updated: int = 0
@@ -239,11 +247,13 @@ class Counters:
     bad_lines: int = 0
     unknown_fields: int = 0
     records: int = 0
+    secrets: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {"added": self.added, "updated": self.updated, "skipped": self.skipped,
                 "conflicts": self.conflicts, "bad_lines": self.bad_lines,
-                "unknown_fields": self.unknown_fields, "records": self.records}
+                "unknown_fields": self.unknown_fields, "records": self.records,
+                "secrets": self.secrets}
 
 
 # ---------------------------------------------------------------------------
@@ -1223,6 +1233,17 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         counters.bad_lines = ctx.bad_line_total      # 计数不随明细上限截断
         counters.unknown_fields = sum(ctx.unknown_fields.values())
 
+        # --- 阶段 7b：敏感串扫描（4.2）---
+        # 读的是**源文件**（不是解析器的输出），所以 `stored` 与 `external` 两条
+        # 归档路径覆盖一致 —— 不存在"外部文件扫不到"这回事。中断或解析器崩了时
+        # 跳过：那意味着文件可能没读完，而"扫了一半"不是一个有意义的报告。
+        # 扫描器不选解析器 —— 同一份 HAR 无论被 har 还是被 curl 认领，扫出来
+        # 的结果必须一样，所以它挂在"解析之后"而不是"解析器 X 的路径里"。
+        scan_result = None
+        if not cancelled and not parse_error:
+            scan_result = _scan_and_write(conn, opts, job_id, raw_id, path,
+                                          probe, counters)
+
         # --- 阶段 8 收口：缓存重算（增量）---
         # 贡献流是事实，缓存行是投影 —— 不重算，事实就"写进去了但看不见"，
         # 而且 v_integrity_violations 会当场判 cache_understated。撤销同样是
@@ -1317,6 +1338,10 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         report["definition_drift"] = definition_drift
     if not opts.dry_run:
         report["db"] = _job_facts(conn, job_id)
+    if counters.secrets:
+        report["secrets"] = {"secrets": counters.secrets,
+                             "lines": scan_result.lines,
+                             "by_rule": scan_result.by_rule}
     return report
 
 
@@ -1330,6 +1355,37 @@ def _evidence_for_line(conn: sqlite3.Connection, opts: IngestOptions, raw_id: in
             locator={"line": lineno, "file": Path(ctx.source_name).name},
             snippet=ctx.current_line_text[:512], quality_class="high")
     return cache[lineno]
+
+
+def _scan_and_write(conn: sqlite3.Connection, opts: IngestOptions, job_id: int,
+                    raw_id: int, path: Path, probe: Probe,
+                    counters: Counters) -> scan.ScanResult:
+    """敏感串扫描 → 写入。**独立函数是为了让 _run_job 里那一行是一句调用**。
+
+    读的是**源文件**（经 `iter_lines`），不是解析器的输出 —— 所以它覆盖
+    `stored` 与 `external` 两条归档路径，与选中的解析器正交。
+
+    一个证据、一个来源：扫描器的 `location` 观测已经带了精确行号，把每一处
+    命中各挂一条 evidence 会让同一个 raw_file 上多出几十条 locator 不同的证据
+    —— 而那条信息已经在观测里了，再挂一遍是冗余。
+    """
+    result = scan.scan_lines(iter_lines(path, probe), file_name=path.name)
+    counters.secrets = result.secrets
+    if result.secrets == 0:
+        return result
+    scan_evidence = ops.add_evidence(
+        conn, project_id=opts.project_id, raw_file_id=raw_id,
+        locator={"scan": "secrets", "file": path.name},
+        snippet="", quality_class="medium")
+    scan_source = store.register_source(
+        conn, name="scanner", authority_level=opts.authority_level,
+        tool="scanner", actor=opts.actor)
+    for rec in result.records:
+        _write_record(conn, opts, job_id, scan_source, scan_evidence, rec,
+                      _endpoint_kind(rec))
+        counters.records += 1
+        counters.added += 1
+    return result
 
 
 def _sample_text(path: Path, probe: Probe, limit: int = SAMPLE_BYTES) -> str:

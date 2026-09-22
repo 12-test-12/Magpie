@@ -39,11 +39,17 @@ __all__ = [
     "FLOW_UNKNOWN",
     "FLOW_UNKNOWN_PORT",
     "NormalizeError",
+    "SECRET_MASK_FULL",
+    "SECRET_MASK_MIN_LENGTH",
+    "SECRET_MASK_PREFIX",
+    "SECRET_RULE_NAMES",
+    "SECRET_RULES",
     "SEGMENT_TEMPLATES",
     "WEB_DEFAULT_PORTS",
     "apischema_identity",
     "apischema_key",
     "compare_version",
+    "detect_secrets",
     "endpoint_base",
     "endpoint_identity",
     "endpoint_key",
@@ -53,6 +59,7 @@ __all__ = [
     "flow_window",
     "http_method",
     "is_absolute_url",
+    "mask_secret",
     "param_name",
     "normalize_cidr",
     "normalize_domain",
@@ -62,6 +69,8 @@ __all__ = [
     "path_template",
     "prerelease_tuple",
     "product_name",
+    "secret_rule_name",
+    "secret_value",
     "try_cidr",
     "try_domain",
     "try_ip",
@@ -1333,3 +1342,324 @@ def flow_key(proto: object, src_ip: object, src_port: object, dst_ip: object,
     `fixtures/kinds/flow.json` 要能**执行**它来证明身份规则不是一句空话。
     """
     return str(flow_identity(proto, src_ip, src_port, dst_ip, dst_port, window)["key"])
+
+
+# ===========================================================================
+# 敏感串（secret）· 4.2 —— 只计数、绝不回显原文
+# ===========================================================================
+#
+# 这一节的每一个函数都只在**内存里**见过明文，而它们的返回值里没有一分明文：
+#
+#     detect()      明文 → (规则名, 位置, 长度)          ← 长度，不是值
+#     mask_secret() 明文 → `前 4 位****`                  ← 见下"掩码"那一节
+#     secret_key()  规则名 + 明文 → `规则名:sha256(明文)`
+#
+# `secret` 这个 kind **只存**这三样（加上位置）。没有原文这一栏，任何地方都没有
+# —— 计划书 §10.2 的"私密数据只存哈希"在 4.2 之前是一句承诺，从这一步起它是一
+# 条可被用例检验的性质（`test_secrets.py` 里那条扫全表 + 报告文件的用例）。
+#
+# 为什么在 `normalize.py` 而不是 `scan.py`
+# ----------------------------------------
+# 与 `endpoint_key` / `flow_key` 同一条理由：**身份只能有一个实现**。扫描器
+# 一边拼 key 一边给观测值做清洗，两处各写一遍就会漂移，而漂移的症状是"同一个
+# token 在库里落成两个 `secret` 实体"—— 没有任何测试会自然发现它。
+#
+# 掩码：为什么是"前 4 位 + 长度"，以及它为什么**不构成泄露**
+# ---------------------------------------------------------
+# 掩码的用途只有一个：让人**认得出**"这是我刚换的那个 token"，而不是把它当成
+# 另一条凭据。低于这个用途的写法（比如只留长度）等于没留；高于它的写法（比如
+# GitHub 自家的 `ghp_****abcd`，前后各留 4 位）会把秘密空间砍掉 128 位。
+#
+# 定死为 **值的长度 ≥ 8 时留前 4 位、其余一律 `****`；否则全掩**。三条理由：
+#
+#   1. **前 4 位不是值的一部分，是格式的一部分。** 真实凭据的长前缀几乎全是
+#      结构化常量：AWS 的 `AKIA` / `ASIA`、GitHub 的 `ghp_` / `github_pat_`、
+#      Slack 的 `xox`。这些常量**本来就在规则里**（`_SECRET_RULES` 的正文能把
+#      它们一个个列出来），留它等于没留。而凭据的**随机段**一个字节都不进掩码
+#      —— 那一段才是有 2^n 个候选的那一段。
+#   2. **它不足以便在候选空间里定位。** 4 个字符 ≈ 33 位**上限**（88^4，按可见
+#      ASCII 算），而常见凭据的随机段是 32–128 位、或干脆是高熵的 base64/hex。
+#      即便挑一个熵最低的、恰好前 4 位也随机的 token，"猜出前 4 位"离"猜出
+#      32 位随机段"还差 28 位 —— 那不是"泄露了一点点"，那是泄露了一个**位数
+#      不对的**东西。
+#   3. **长度 ≤ 7 的秘密连 4 位都不给。** 一个 6 位的口令在删掉 4 位之后只剩
+#      2 位空间（<100 个候选），那才是真的泄露。所以掩码对短值退化为全掩：
+#      "值的长度"与"值的熵"在短值上差得太远，这条分界线画在 8 上。
+#
+# **长度本身不算秘密**：一条规则的正文（正则）已经限定了值的长度区间，所以
+# "这个 token 有 40 个字符"是任何人拿规则都能推出来的。把长度读成泄露，等于
+# 要求我们连"命中了哪条规则"也不许记 —— 而那正是判据 3 要报告的东西。
+#
+# 一句话：**含糊的掩码等于把明文换了个写法留着**，所以这里的掩码规则是一个
+# 3 行的、可以被逐条复算的函数，而不是一句"截断一下"。
+
+#: 掩码策略的两条常量。放在模块级是为了让"改了它"这件事显式 —— 掩码是
+#: `secret` 这个 kind 的**安全边界**，不是一个展示细节。
+SECRET_MASK_PREFIX = 4
+SECRET_MASK_MIN_LENGTH = 8
+
+#: 全掩的写法。空串也落成它 —— `masked` 这一栏**永远非空**，于是"这条秘密的
+#: 掩码是什么"这个问题在任何一行上都有答案（一个空值会被读成"没有掩码"）。
+SECRET_MASK_FULL = "****"
+
+#: 一条敏感串规则。
+#:
+#: `pattern` 在**一行文本**上找；判据取 `_capture` 组（1 起）。
+#: `_capture` 是刻意的：`Authorization: Bearer <token>` 里要被记下来的是
+#: `<token>`，不是整行 —— 前缀（`Bearer ` / `password=` / `-u `）是**格式**，
+#: 每一条命中都带着同一段常量；把前缀折进值里会让两个不同的 token 因为前缀相同
+#: 而在掩码上看起来一样（掩码只留前 4 位，而那 4 位会是 `Bear`）。
+#:
+#: ⚠️ **规则的取舍不是"宁缺毋滥"，是"宁多勿漏"**，这与项目别处（`sniff` 宁可
+#: 给低分也不猜、`parse` 宁可丢一条坏行也不猜）的方向**相反**，所以写明白：
+#: 嗅探猜错的代价是"整批文件推给人工"，而敏感串漏掉的代价是**凭据留在原文里
+#: 而没有任何信号**。所以这里的假阴/假阳权重是反的。而假阳的实际代价很小：
+#: 本步只**计数**，一条误报多出来的是一条 `secret` 实体 + 一个计数，不是一屏
+#: 要人裁决的待办（4.2 不开 Inbox 生产者，见 CHANGELOG）。
+#:
+#: `why` 是写给下一个读这张表的人看的（也直接进夹具的说明）。
+class SecretRule(tuple):
+    """(name, pattern, capture, why) 四元组。用类只是为了给出具名字段。
+
+    `capture` 是 `int` **或** `tuple[int, …]`（一条正则的多个分支各有各的取值
+    组时）。取值的规则是「第一个非空的候选组」，但那**不是**一条隐式约定：
+    每一条多分支规则的每个分支都必须在 `capture` 里列出来，所以"这条规则能从
+    哪里取值"永远是可数的。构造时校验组号真的存在 —— 一个指向不存在组的规则
+    会在**扫描时**才炸（一份 10 万行的文件跑到第 5 万行），那太晚了。
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, name: str, pattern: str, capture: "int | tuple[int, ...]",
+                why: str):
+        compiled = re.compile(pattern)
+        groups = (capture,) if isinstance(capture, int) else tuple(capture)
+        for index in groups:
+            if index < 0 or index > compiled.groups:
+                raise ValueError(
+                    f"敏感串规则 {name!r} 声明了不存在的捕获组 {index}"
+                    f"（这条正则有 {compiled.groups} 个组）—— 它在扫描到第一条"
+                    f"命中时才会炸，而不是在这里")
+        return super().__new__(cls, (name, compiled, groups, why))
+
+    name = property(lambda self: str(self[0]))
+    pattern = property(lambda self: self[1])
+    #: 取值组的候选（元组的元素按尝试顺序）。单分支规则只有一个元素。
+    captures = property(lambda self: tuple(self[2]))
+    why = property(lambda self: str(self[3]))
+
+
+SECRET_RULES: tuple[SecretRule, ...] = (
+    SecretRule(
+        "authorization_header",
+        #  两个分支，同一条规则：
+        #    a) 名字与值挨着       `Authorization: Bearer <token>` / `"Authorization":
+        #       "Bearer <token>"`；
+        #    b) 名字与值被 JSON 的语法隔开（HAR 的 `headers` 数组就是这种形状）
+        #       `{"name": "Authorization", "value": "Bearer <token>"}`。
+        #  为什么 b 不能并进 a：`[^\n]{0,200}` 这种"中间随便来点什么"的写法会把
+        #  一行里**另一个**字段的值当成 Authorization 的值 —— 而凭据错了人是
+        #  查不出来的（掩码只留 4 位）。所以 b 的分隔符是**写死的两种 JSON 形状**，
+        #  不是一条通配。
+        r"""(?i)\bauthorization\s*[:=]\s*["']?(?:bearer|token)\s+([A-Za-z0-9\-._~+/]{8,})"""
+        r"""|"name"\s*:\s*"[^"]*authorization[^"]*"\s*,\s*"value"\s*:\s*"""
+        r"""["']?(?:bearer|token)\s+([A-Za-z0-9\-._~+/]{8,})""",
+        (1, 2),
+        "`Authorization: Bearer <token>` / `authorization=token <token>` —— 一份 HAR 或 "
+        "openapi 的 securitySchemes 里最常见的一种。取的是 <token> 而不是整行："
+        "前缀是格式，不是值。两个分支（名字挨着值 / HAR 的 name-value 数组）因为"
+        "取值组不同而各自列在 `capture` 里 —— 一条正则两个分支就必然有两个组，"
+        "而「取哪一组」必须写死：候选组按顺序尝试，不是「哪个非空就算哪个」"
+        "（那会在一条同时命中两个分支的行上给出不稳定的答案）。"),
+    SecretRule(
+        "basic_auth",
+        r"(?i)(?:\bbasic\s+|(?:^|[\s'\"])-u\s*[^\s:/]+:)([A-Za-z0-9\-._~+/=]{8,})",
+        1,
+        "Base64 的 `Basic <b64>` 与 curl 的 `-u 用户:口令`。**两者是同一条规则**："
+        "它们在文件里是同一个东西的两种写法，分成两条会让同一份凭据在同一个文件里"
+        "数出两个数。"),
+    SecretRule(
+        "password_param",
+        #  名字与值之间那一段是**两种语法的并就**：查询串是 `password=x`，
+        #  JSON 是 `"password":"x"`（键后面多一个引号），YAML 是 `password: x`。
+        #  `[\"']?\\s*[:=]\\s*[\"']?` 把三者收进一条：引号只在它真的在那里时吃掉。
+        #  值一律在第一个分隔符处停（`"` `}` `)` `&` `,` `;` `\\` `空白` ` . `）——
+        #  贪到 JSON 的 `}` 或 URL 的 `&` 上，会把"值的尾巴"当成值的一部分，
+        #  而两个不同的口令可能因此算出同一个 hash（当它们后面跟着同一段尾巴）。
+        #  ` . ` 也在停表里：JWT 的点分三段是**另一条规则**（`jwt`）的形状，
+        #  在这里让它停住，同一条 token 才会落成
+        #  「`password_param` 看到一段 8+ 的串」+「`jwt` 看到整串」两条各说各话
+        #  的发现，而不是一条被截断的、谁也不认识的半截值。
+        "(?i)\\b(?:password|passwd|pwd|secret|token|"
+        "api[_-]?key|access[_-]?key|client[_-]?secret)"
+        "[\"']?\\s*[:=]\\s*[\"']?([^\\s\"'&,;}\\\\)\\].]{8,})",
+        1,
+        "查询串 / 表单 / JSON 里的 `password=` / `api_key=` / `client_secret=`。"
+        "名字清单**是**这条规则的全部 —— 它靠名字找到值，所以它同时也是一条"
+        "错误率最高的规则（一个叫 `secret` 的文本框里写着 `changeme` 也会命中）。"
+        "值里的引号在 `detect_secrets` 里剥掉：JSON 的引号是语法，不是口令的一部分。"
+        "这个代价是刻意接受的，见上面那段「宁多勿漏」。"),
+    SecretRule(
+        "github_token",
+        r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+        0,
+        "GitHub 的 PAT / OAuth / user / server / refresh token，以及细粒度 PAT。"
+        "`gh[pousr]_` 这一段是**格式常量**（它标出这是 GitHub 的哪一类 token），"
+        "真正随机的只有后面那一段。"),
+    SecretRule(
+        "aws_access_key_id",
+        r"\b((?:AKIA|ASIA|AIDA|AROA|AGPA)[A-Z0-9]{16})\b",
+        1,
+        "AWS 的访问键 id（长期键 AKIA / 临时键 ASIA / IAM 对象的 AIDA·AROA·AGPA）。"
+        "**只匹配 id 不匹配密钥**：AWS 的 secret access key 没有任何结构，它是一段"
+        "纯随机的 40 字符 base64 —— 拿正则追它等于追一个不存在的形状。这一条是"
+        "计划书 §10.3 点名的「云 AK」。"),
+    SecretRule(
+        "private_key_block",
+        r"-----\s*BEGIN ([A-Z]+ )?PRIVATE KEY-----",
+        1,
+        "PEM 私钥的**起头行**。取的是类型（`RSA ` / `EC ` / 空），不是密钥体 —— "
+        "私钥体是跨行的 base64，而「文件中出现了 PEM 私钥」这个信号在起头那一行"
+        "就已经完整了。起头行之后的内容**一行都不读**，所以不存在「只截了一部分」"
+        "那种半吊子记录。"),
+    SecretRule(
+        "jwt",
+        r"\beyJ[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}",
+        0,
+        "一个长得像 JWT 的三段串（header.payload.signature，前两段以 `eyJ` 开头 —— "
+        "那是 `{` 的 base64）。**整串都是值**（`capture=0`）：三段一起才是一个"
+        "凭据，只留 header 等于把两个不同的 token 记成同一个。"),
+    SecretRule(
+        "slack_token",
+        r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+        0,
+        "Slack 的 bot / user / app / refresh / workspace token。`xox?` 是格式常量，"
+        "后面才是秘密 —— 整串仍是值（`capture=0`），因为分隔符 `-` 在随机段里也有。"),
+)
+
+
+#: 规则名的冻结集合。夹具与用例按名字引用规则，所以"有哪些规则"是一件要对
+#: 外承诺的事 —— 改了这张表就是改了对外契约，而不是改了一个内部细节。
+SECRET_RULE_NAMES: frozenset[str] = frozenset(rule.name for rule in SECRET_RULES)
+
+
+def secret_rule_name(raw: object) -> str:
+    """规则名 → 规范写法。**规则名是词表**，所以它只允许是登记过的那几条。"""
+    if not isinstance(raw, str) or raw not in SECRET_RULE_NAMES:
+        raise NormalizeError(
+            f"未登记的敏感串规则名 {raw!r}；已登记：{sorted(SECRET_RULE_NAMES)}。"
+            f"新增规则要同时给出它的正则与「为什么是这个形状」（见 SECRET_RULES）")
+    return raw
+
+
+def mask_secret(value: object) -> str:
+    """明文 → 掩码前缀。**唯一**从明文派生可显示文本的地方（掩码那一节）。
+
+    返回 `前 4 位****`（值 ≥ 8 个字符）或 `****`（更短 / 空）。规则写在
+    文件头那三行里，这里不重复 —— 只有一处事实来源，改策略时只改那里。
+
+    长度**直说**而不是编码进星号个数：`ghp_****` 里的星号数是排版，而
+    `len(value)` 是可复算的数。两者混在一起（"数一下星号就知道长度"）会让
+    "掩码该多长"变成一个没人敢改的隐式约定。
+    """
+    text = "" if value is None else str(value)
+    if len(text) < SECRET_MASK_MIN_LENGTH:
+        return SECRET_MASK_FULL
+    return f"{text[:SECRET_MASK_PREFIX]}{SECRET_MASK_FULL}"
+
+
+def _reveal_line(text: str) -> str:
+    """匹配里的**内部**空白折成一个空格，两端的空白原样留着。
+
+    折叠是为**身份**，不是为显示：`private_key_block` 的起头行可能被排版切成
+    两行（`-----` 换行 `BEGIN RSA PRIVATE KEY-----`），不折叠的话同一把私钥会
+    因为多了一个换行落成两个身份。折叠用空格而不是删掉分隔符 —— 删掉会让
+    `PRIVATE KEY` 与 `PRIVATEKEY` 撞在一起。
+
+    **两端不清洗，只折内部。** `RSA `（`RSA PRIVATE KEY` 的类型段）尾部那一个
+    空格是**值的一部分**：`" ".join(text.split())` 会把它顺手丢掉，于是同一把
+    私钥的两种写法折成两个身份。
+
+    形如 `(?<=\\s)\\s+` 的写法**做不到"只折内部"**，这一点是实测出来的：
+    `RSA \\nPRIVATE` 里那个换行组的左边紧跟的是一个空格，而 `(?<=\\s)` 要求
+    "组的**起点**左边是空白" —— 表达式会在这个组的前一个字符上先试一次、
+    失败后再从组内第二个字符起匹配，于是整组被折成两个空格（`RSA  PRIVATE`，
+    两个值因此算出两个身份）。所以要折的是**整段空白run**，而 run 的右边界用
+    前瞻排除"后面什么都没有"的情形：
+    """
+    return re.sub(r"\s+(?=\S)", " ", text)
+
+
+def secret_value(raw: object) -> str:
+    """命中的原文片段 → 用来算身份 / 掩码的那个**串**。
+
+    与 `normalize_domain` 同一条纪律：先做形状校验再返回，**不静默接受空值**。
+    一个空串算出的 sha256 是 `e3b0c44…`（一个所有空值共用的值），把它当成
+    「一条找到了的秘密」会让每一条坏匹配折叠成同一个实体。
+    """
+    if not isinstance(raw, str):
+        raise NormalizeError(f"敏感串的片段必须是字符串，收到 {type(raw).__name__}")
+    #  只折**内部的**连续空白（换行 / 缩进是排版），**不动两端** ——
+    #  `private_key_block` 的捕获组就是 `RSA `，尾部那一个空格是有意义的值，
+    #  它必须原样活到身份里去。这一条与调用方的 `.strip("'\"")` 分工明确：
+    #  那里丢的是引号，这里不丢任何字符（见 `_reveal_line`）。
+    text = _reveal_line(raw)
+    if not text:
+        raise NormalizeError("敏感串的片段是空的 —— 它没有身份可言")
+    return text
+
+
+def detect_secrets(line: object) -> list[dict[str, object]]:
+    """一行文本 → 命中的 `{"rule": …, "value": …, "masked": …}` 列表（**可为空**）。
+
+    `value` 是明文，它**只在本函数的返回值里存在** —— 调用方（`core/scan.py`）
+    拿它去算身份 / 掩码，然后立刻丢掉。这个函数的返回值**永远不许**被写进
+    数据库、报告或任何落盘的东西（`scan.py` 的文件头把这条说死了）。
+
+    一条规则在一行上只报**第一次**命中：`password=a&password=b` 里的第二个值
+    是一段被截断的文本，报它比不报更容易误导（同一条 `password=` 前缀下，
+    第二次出现的往往不是另一个凭据，而是同一个值被日志重复了一遍）。
+
+    值里的引号在**这里**剥掉：`password="hunter2xyz"` 的引号是 JSON 的语法，
+    不是口令的一部分 —— 不剥的话同一个口令在 JSON 与查询串里会落成两个实体。
+    """
+    if not isinstance(line, str) or not line:
+        return []
+    out: list[dict[str, object]] = []
+    for rule in SECRET_RULES:
+        match = rule.pattern.search(line)
+        if match is None:
+            continue
+        # 取值：候选取值组里**第一个非空**的那个；候选全空时退回**整段匹配**。
+        # 两个分支各占一种情况：
+        #   * `captures=(0,)` 的规则（`jwt` / `slack_token`）—— 组 0 永远非空，
+        #     于是"整串就是值"是它们唯一的取值方式；
+        #   * 取值组是**可选**的规则（`private_key_block` 的 `([A-Z]+ )?`）——
+        #     无名私钥的 `-----BEGIN PRIVATE KEY-----` 让组 1 是 None，而这时
+        #     整段匹配（也就是起头行本身）才是那个"类型段为空"的诚实答案。
+        # 退回是**规则的形状**决定的，不是"哪个非空算哪个"的松散约定：候选清单
+        # 写在 `capture` 里，所以"这条规则能从哪取值"永远是可数的。
+        captured = next(
+            (match.group(index) for index in rule.captures
+             if match.group(index) is not None), None)
+        #  **捕获组优先，整段匹配只是兜底** —— 两层不是"哪个非空算哪个"，而是
+        #  一条顺序：组在 `capture` 里列出来的就一定是值本身（`RSA ` 连同它
+        #  尾部那个有意义的空格），只有**所有**候选组都空（可选组没参与匹配）
+        #  时才退回整段匹配。
+        #  ⚠️  两端的清洗只对兜底那一路做。捕获组是规则的作者写下的**取值边界**，
+        #  这里不许再动它一个字符 —— 一句 `.strip()` 能把 `RSA ` 变成 `RSA`，
+        #  于是同一把私钥的两种命名折成两个身份，而且没有任何信号。
+        captured = next((match.group(index) for index in rule.captures
+                         if match.group(index) is not None), None)
+        if captured is None:
+            #  兜底：整段匹配。它两端的引号 / 空白是**语法**，剥掉 —— 这与捕获组
+            #  那一路不同：整段匹配的边界是**正则自己**划的，不是作者声明的取值
+            #  范围，所以它两端除了语法什么也不可能有。
+            captured = match.group(0).strip("'\" \t\r\n\f\v")
+        try:
+            text = secret_value(captured)
+        except NormalizeError:
+            continue
+        out.append({"rule": rule.name, "value": text, "masked": mask_secret(text)})
+        out.append({"rule": rule.name, "value": text, "masked": mask_secret(text)})
+    return out

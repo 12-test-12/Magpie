@@ -354,7 +354,8 @@ class RelationSpec:
 
 
 #: **真的落地**的 kind（2.4 的五个 + 3.1 的 `cidr` + 3.2 的 `vuln`
-#: + 3.3 的 `endpoint` + 3.4 的 `apischema` + 4.1 的 `flow`）。刻意先窄后宽：
+#: + 3.3 的 `endpoint` + 3.4 的 `apischema` + 4.1 的 `flow` + 4.2 的 `secret`）。
+#: 刻意先窄后宽：
 #: 每个登记的 kind 都要带三件套，而 `param` 之流的三件套只有在它自己的解析器里
 #: 才有真实形状。提前登记它们等于凭空设计一套必然要返工的约束（计划书 §3.3 的
 #: 教训）。
@@ -368,7 +369,8 @@ class RelationSpec:
 #: `flow` 是这条纪律的**反面记录**：它从 3.x 起就一直在测试里当"未登记的 kind"
 #: 那个反例（`test_unregistered_kind_gets_a_readable_python_error_too`），
 #: 而它被登记的这一天，那条用例得**换一个反例**而不是删掉断言 —— 反例只有在
-#: "仍然未登记"时才是一条约束（4.1 换成了 `param` / `secret`）。
+#: "仍然未登记"时才是一条约束（4.1 换成了 `param` / `secret`，4.2 又把
+#: `secret` 转正，于是只剩 `param` —— **每次都是换反例，不是删断言**）。
 KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
              produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
@@ -442,6 +444,25 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 会话，时间窗必须进身份。
     KindSpec(kind="flow", fixture="fixtures/kinds/flow.json", lens="traffic",
              produced_by=("har@1", "tshark@1")),
+    #: 敏感串（4.2 起由 `magpie/core/scan.py` 产出）。**第二个 `traffic` 镜头的
+    #: kind** —— 计划书 §3.5 的镜头表里那一行的主语写的就是 `flow / secret`，
+    #: 典型问题写的是「有 token 泄漏吗」。归 `traffic` 不归 `assets` 的理由
+    #: 写在 `schema/012_kind_secret.sql` 的文件头第二节。
+    #:
+    #: 身份是**一个凭据的值**：`规则名:sha256(规则名:值)`（`scan.secret_key`）。
+    #: 完整正文在 `schema/012_kind_secret.sql` 与 `fixtures/kinds/secret.json` 里。
+    #:
+    #: ⚠️  **`produced_by` 是空的，而且这是唯一诚实的值。** 它的产出者不是一个
+    #: 解析器，而是一条**独立的管线阶段**：扫描跑在解析之后、与选中的解析器
+    #: 正交（同一份 HAR 无论被 har 还是被 curl 认领，扫出来的结果必须一样）。
+    #: 挂到某个指纹上等于宣称"换个解析器就换一套扫描结果"，而那是假的。代价是
+    #: `magpie kinds` 里这一行的"产出者"一栏空着 —— 一个空的格子比一个编出来的
+    #: 指纹诚实，后者会被 `verify_g3.py` 的 B 段当场抓住（它要求在**那个来源
+    #: 自己**的黄金夹具里真的出现这个 kind，而没有任何 `expected.json` 会出现
+    #: `secret` 实体：那 13 份是逐字段合同）。与 `host` 的"空"是同一条性质，
+    #: 但理由不同：`host` 是名称级兜底 kind，`secret` 是阶段级产出。
+    KindSpec(kind="secret", fixture="fixtures/kinds/secret.json", lens="traffic",
+             produced_by=()),
 )
 
 #: 本步**真的被解析器产出**的关系动词。同样先窄后宽。

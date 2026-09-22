@@ -50,7 +50,7 @@ from magpie.core import ops, store                                   # noqa: E40
 # 整张表，详见该文件头）。
 # 新增迁移必须同步改这一行，否则 `schema --json` 的契约数字会与真实库对不上，
 # 而那条断言正是为"迁移与描述分叉"准备的。
-MIGRATIONS = 11
+MIGRATIONS = 12
 
 #: 子进程的公共环境（定义在 `conftest.py`，两个测试文件共用一份）。
 ENV = ENV

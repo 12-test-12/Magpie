@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, normalize, ops, store
+from magpie.core import ingest, normalize, ops, scan, store
 from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, gau, \
     har, httpx, katana, nmap, nuclei, openapi, postman, tshark
 
@@ -438,8 +438,8 @@ def test_unregistered_kind_is_rejected_by_the_database(db, project):
 
     **一个被转正的反例就不再是反例**：它会让这条测试永远绿，同时悄悄失去它唯一
     的作用。所以每当一个 kind 落地，这一行就跟着换 —— 换的是反例，不是删断言。
-    `param` 与 `flow` 至今没有产出者，按 003 的准入纪律不该登记
-    （`test_unregistered_kind_gets_a_readable_python_error_too` 用的也是它们）。
+    `param` 至今没有产出者，按 003 的准入纪律不该登记
+    （`test_unregistered_kind_gets_a_readable_python_error_too` 用的也是它）。
     """
     with pytest.raises(sqlite3.IntegrityError) as exc:
         store.new_entity(db, project_id=project, kind="param", entity_key="x")
@@ -526,16 +526,19 @@ def test_every_registered_kind_has_a_real_producer(db):
 def test_unregistered_kind_gets_a_readable_python_error_too():
     """Python 镜像也拒 —— 而且报错说的是"缺哪一件套"，不是一句约束失败。
 
-    反例用的是 `param` / `secret`：两者**至今没有产出者**，所以按 003 的准入纪律
-    不该被登记（`secret` 要等 4.2 的敏感串扫描，`param` 要等它自己的三件套）。
-    3.4 之前这里写的是 `apischema`（本步有了真产出者），4.1 之前写的是 `flow`
-    （本步有了真产出者）—— **两次都是换反例而不是删断言**：反例只有在"仍然
-    未登记"时才是一条约束。
+    反例用的是 `param`：它**至今没有产出者**，所以按 003 的准入纪律不该被登记
+    （`param` 要等它自己的三件套）。3.4 之前这里写的是 `apischema`（本步有了真
+    产出者），4.1 之前写的是 `flow`（本步有了真产出者），4.2 之前 `secret` 还在
+    这张单子上 —— **三次都是换反例而不是删断言**：反例只有在"仍然未登记"时才是
+    一条约束。
+
+    反向那一半（4.2 起）：`secret` **必须已经登记** —— 只验"未登记的会拒"会漏掉
+    "登记漏了"这种坏，而它的症状恰好是这条用例永远绿。
     """
-    for kind in ("param", "secret"):
-        with pytest.raises(base.VocabularyError) as exc:
-            base.require_kind(kind)
-        assert "身份规则 + 样例夹具 + 镜头归属" in str(exc.value)
+    with pytest.raises(base.VocabularyError) as exc:
+        base.require_kind("param")
+    assert "身份规则 + 样例夹具 + 镜头归属" in str(exc.value)
+    assert base.require_kind("secret").lens == "traffic"
     with pytest.raises(base.VocabularyError):
         base.require_relation("exposes")
 
@@ -570,6 +573,12 @@ def _identity_rules() -> dict:
         "normalize.apischema_key": normalize.apischema_key,
         # 4.1 的 flow 身份规则（登记在 `kind_registry.identity_rule` 里）。
         "normalize.flow_key": normalize.flow_key,
+        # 4.2 的 secret 身份规则（登记在 `kind_registry.identity_rule` 里）。
+        # 两个函数都要在：`secret_key` 是身份本身，`mask_secret` 是它"只留
+        # 前 4 位"那一半的**可执行证据** —— 掩码策略是一句会被引用的承诺，
+        # 不放进白名单的话，夹具里关于它的那两条样例就只能是一段文字。
+        "scan.secret_key": scan.secret_key,
+        "normalize.mask_secret": normalize.mask_secret,
         "normalize.param_name": normalize.param_name,
         "httpx.service_key": httpx.service_key,
         "httpx.product_key": httpx.product_key,

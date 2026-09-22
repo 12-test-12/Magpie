@@ -82,7 +82,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from magpie.core import ingest, normalize, ops, query, store      # noqa: E402
+from magpie.core import ingest, normalize, ops, query, scan, store  # noqa: E402
 from magpie.core.parsers import base, domainlist, httpx           # noqa: E402
 
 FIXTURES = ROOT / "magpie" / "core" / "tests" / "fixtures"
@@ -127,6 +127,9 @@ _RULES = {
     # 4.1 的 flow 身份规则（登记在 `kind_registry.identity_rule` 里）。
     # 与 `test_parsers.py::_identity_rules()` 的白名单同一份口径。
     "normalize.flow_key": normalize.flow_key,
+    # 4.2 的 secret 身份规则与它的掩码（同样登记在 `kind_registry.identity_rule`）。
+    "scan.secret_key": scan.secret_key,
+    "normalize.mask_secret": normalize.mask_secret,
     "normalize.param_name": normalize.param_name,
     "httpx.service_key": httpx.service_key,
     "httpx.product_key": httpx.product_key,
@@ -683,10 +686,12 @@ def section_b(parsers: dict, conn) -> None:
               f"produced_by {len(row['produced_by'])} 个"
               f"{'（严格判据）' if strict else ''}")
 
-    # 同 A1：这个数每加一个 kind 就要改一次（4.1 加了 `flow`，9 → 10）。
+    # 同 A1：这个数每加一个 kind 就要改一次（4.1 加了 `flow`，9 → 10；
+    # 4.2 加了 `secret`，10 → 11）。改这一行是一次**显式的确认**：一个 kind
+    # 落地必须被看见，而"多出来的那一行有没有三件套"正是本段要核的事。
     check(f"B1 {len(rows)} 个 kind 逐行核：身份规则 / 镜头归属 / fixture_path 存在 / "
           f"样例算得出 key / 反例真的被拒 / golden 声明为真 / produced_by 指得到东西",
-          len(rows) == 10 and not problems, "；".join(problems))
+          len(rows) == 11 and not problems, "；".join(problems))
 
     for line in notes:
         note("produced_by 缺夹具证据（老 kind，只报告不判红）", line)
