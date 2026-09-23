@@ -12,6 +12,39 @@
 
 ---
 
+## 0.11.0 — 4.5 可选 extras 收口：有哪些、装没装、怎么装，一条 `schema` 可查
+
+`/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.10.0 → 0.11.0，
+已重新生成）。没有新增迁移（R4 未动）。4.1–4.5 **没有引入任何新的第三方依赖**：
+YAML 复用 `api-yaml`，`traffic` 保持为空（零第三方走标准库），`tshark` 是外部
+可执行、不进 `pyproject.toml`。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · `magpie schema --json` 的 `data` 多一个 `extras` 键**：每个
+`[project.optional-dependencies]` 里的 extras 一条 ——
+
+```json
+{"api-yaml": {"packages": ["pyyaml"], "installed": true,
+              "install": "pip install -e \".[api-yaml]\"",
+              "purpose": "YAML 解析：OpenAPI YAML、指纹规则、管线定义 —— …"}}
+```
+
+`installed` 探的是**模块**名（`pyyaml` 提供的模块叫 `yaml`），探针每个模块都问
+（`api` 缺 fastapi 或缺 uvicorn 都报"没装"）；`traffic.packages == []` 是刻意的
+（零第三方，理由写在 `pyproject.toml` 的注释里）。人读表格同步多一节。登记表与
+`pyproject.toml` 逐项一致由 `test_extras_registry_matches_pyproject` 钉住 ——
+pyproject 仍是唯一事实来源，改它不改登记表当场红。
+
+其余属于内部报错形状的收口，不占篇幅（git log 记）：`pipeline` 的 YAML 入口在
+缺 `api-yaml` 时改抛具名 `MissingExtrasError`（此前是裸 `RuntimeError`，在
+`pipeline run` 上直接出 traceback；且不再被 `load_definition` 包成"不是合法
+YAML"——环境问题不改判成格式问题），`main` 接住后一行收在 stderr；
+`magpie.api.available()` 把 `uvicorn` 纳入探针（报错文案说的一直是
+"FastAPI / uvicorn"）。
+
+---
+
 ## 0.10.0 — 4.4 时间线 / 导出打包：默认脱敏，`--full` 才含原文
 
 **两条纯新增 CLI 命令（`magpie timeline` / `magpie export`）+ 一个新 core 模块

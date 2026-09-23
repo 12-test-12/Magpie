@@ -178,6 +178,55 @@ steps:
 
 
 # ---------------------------------------------------------------------------
+# 4.5 —— 缺 `api-yaml` extras：可读错误（"缺"的那半边；"装"的那半边是上面
+# 所有真的从 YAML 文件载入的用例，A6 两条即是 —— 两侧各自独立，缺一边收口就是假的）
+# ---------------------------------------------------------------------------
+
+
+def test_load_definition_yaml_without_the_extras_is_a_readable_error(monkeypatch,
+                                                                     tmp_path):
+    """缺 extras → `MissingExtrasError`（具名 + extras 名 + 安装命令），
+    **不是**裸 `ImportError`，也**不许**被 `load_definition` 改判成
+    "不是合法 YAML" —— 文件没有问题，照那句话去改文件的人会一直改不对。
+
+    这条此前是 `pragma: no cover`（4.5 审计抓到的口）：`_load_yaml` 抛的是一句
+    不带 extras 名的裸 `RuntimeError`，而 `pipeline run` 的 `main` 只接
+    `ValueError` —— 缺 pyyaml 时用户看到的是 traceback。
+    """
+    import sys
+
+    from magpie.core.parsers import base
+
+    path = _yaml(tmp_path, "name: 不会被读到\n")
+    monkeypatch.setitem(sys.modules, "yaml", None)   # "这个模块装不上"的标准模拟
+
+    with pytest.raises(base.MissingExtrasError) as exc:
+        pipeline.load_definition(path)
+    message = str(exc.value)
+    assert not isinstance(exc.value, ImportError)
+    assert not isinstance(exc.value, ValueError), \
+        "环境问题被改判成了格式问题（'不是合法 YAML'）—— 文件没有错"
+    assert "api-yaml" in message and "pip install" in message, message
+
+
+def test_pipeline_run_missing_extras_is_a_still_readable_line(monkeypatch, capsys,
+                                                              tmp_path):
+    """`python -m magpie.core.pipeline run` 缺 extras：stderr 一行人话 +
+    退出码 2，**没有 traceback**（4.5 判据 1 对这个逃生通道入口同样适用）。
+    """
+    import sys
+
+    path = _yaml(tmp_path, "name: 不会被读到\n")
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    code = pipeline.main(["run", str(path)])
+    err = capsys.readouterr().err
+    assert code == pipeline.EXIT_USAGE, code
+    assert "api-yaml" in err and "pip install" in err, err
+    assert "Traceback" not in err, err
+
+
+# ---------------------------------------------------------------------------
 # `source` 的形态：三种 kind + 旧写法
 # ---------------------------------------------------------------------------
 

@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -45,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core import export, ingest, ops, query, store
+from ..core.parsers.base import extras_install_hint
 from . import write
 from .db import Database, resolve_project
 from .envelope import (
@@ -852,12 +854,88 @@ def _query_syntax(parser) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# extras —— 有哪些、装没装、怎么装（4.5 收口点）
+# ---------------------------------------------------------------------------
+
+#: 每个 extras 的**用途人话**与**探针模块名**（`packages` 逐字来自
+#: `pyproject.toml`）。**唯一事实来源是 `pyproject.toml` 的
+#: `[project.optional-dependencies]`** —— 名字与包的逐项一致由
+#: `test_extras_registry_matches_pyproject` 钉住：改了 pyproject 不改这里，
+#: 测试当场红。这里只多带 pyproject 装不下的两样：一句"这 extras 是干嘛的"
+#: （要知道它干嘛只能读源码，正是 4.5 要收掉的口）和一个"装没装"的探针 ——
+#: 探针按**模块**问而不是按包名（`pyyaml` 提供的模块叫 `yaml`）。
+EXTRAS_REGISTRY: dict[str, dict[str, Any]] = {
+    "api": {
+        "packages": ["fastapi", "uvicorn"],
+        "modules": ("fastapi", "uvicorn"),
+        "purpose": "本地 API 层（FastAPI / uvicorn）—— `magpie app` 起服务用；"
+                   "缺它时 app 入口报可读错误，core / 只读命令不受影响",
+    },
+    "api-yaml": {
+        "packages": ["pyyaml"],
+        "modules": ("yaml",),
+        "purpose": "YAML 解析：OpenAPI YAML、指纹规则（fingerprints/*.yaml）、"
+                   "管线定义 —— 只在函数体内 lazy import（R6），缺时抛 "
+                   "MissingExtrasError（消息含安装命令）",
+    },
+    "traffic": {
+        "packages": [],
+        "modules": (),
+        "purpose": "流量解析（HAR / tshark JSON，4.1 起）—— 当前零第三方、"
+                   "刻意为空（走标准库 json）；tshark 是外部可执行（Wireshark），"
+                   "pip 装不出它，不进任何 extras（缺它见 parsers/tshark.py "
+                   "的 ensure_available）",
+    },
+    "dev": {
+        "packages": ["pytest"],
+        "modules": ("pytest",),
+        "purpose": "开发用（pytest）—— 跑 check.py / 单元测试，非运行时依赖；"
+                   "缺了测试起不来，不属于运行时报错的那类",
+    },
+}
+
+
+def _extras_report() -> dict[str, dict[str, Any]]:
+    """每个 extras → 包清单 / 装没装 / 安装命令 / 用途。
+
+    `installed` 探的是模块名，且**空模块表恒为 True**（`traffic` 零第三方 ——
+    标准库环境它就绪，"没装东西"不是它的缺失状态）。探测失败（模块在
+    `sys.modules` 里被置 None 之类的半残状态）一律按"没装"报 —— 与 `import`
+    当场抛 `ImportError` 的判断一致，不比它更乐观。
+    """
+    report: dict[str, dict[str, Any]] = {}
+    for name in sorted(EXTRAS_REGISTRY):
+        spec = EXTRAS_REGISTRY[name]
+        installed = True
+        for module in spec["modules"]:
+            try:
+                if importlib.util.find_spec(module) is None:
+                    installed = False
+                    break
+            except (ImportError, ValueError, AttributeError):
+                installed = False
+                break
+        report[name] = {
+            "packages": list(spec["packages"]),
+            "installed": installed,
+            "install": extras_install_hint(name),
+            "purpose": spec["purpose"],
+        }
+    return report
+
+
 def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
     """一条命令吐出类型、关系动词、字段与查询语法（§6.3）。**agent 无需读源码。**
 
-    还有一样东西也在这里：**具名查询的清单**（`query.NAMED_QUERIES`）。agent
-    据此知道"哪些问题可以直接问"，而不必自己拼过滤条件 —— 拼接就是发明语义，
-    而 2.2 已经拒绝过一次"CLI 自己发明查询语义"。
+    还有两样东西也在这里：
+
+      * **具名查询的清单**（`query.NAMED_QUERIES`）—— agent 据此知道"哪些问题
+        可以直接问"，而不必自己拼过滤条件 —— 拼接就是发明语义，而 2.2 已经
+        拒绝过一次"CLI 自己发明查询语义"；
+      * **可选 extras 的清单**（4.5）—— 有哪些 extras、装没装、跑哪条命令装、
+        各自是干嘛的。此前要知道这些只能读源码 / 读 pyproject，而"agent 无需
+        读源码"正是本命令立在这里的理由 —— 所以扩这里，不新造一条命令。
     """
     conn = ctx.conn()
     kinds = query.kinds(conn)
@@ -889,6 +967,7 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
                    "observation": observed,
                    "observation_note": OBSERVATION_FIELDS_NOTE},
         "query_syntax": _query_syntax(ctx.parser),
+        "extras": _extras_report(),
         "notes": notes,
     }
     human = [f"schema 版本 {data['schema_version']}",
@@ -908,6 +987,12 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
     human += _tbl(["KIND", "FIELD", "VALUE_KIND", "N"],
                   [[k["kind"], f["field"], f["value_kind"], f["count"]]
                    for k in observed for f in k["fields"]])
+    human += ["", "可选 extras（4.5 收口：装没装一并报出；缺了按 install 装）："]
+    human += _tbl(["EXTRAS", "已装", "包", "用途"],
+                  [[name, "✓" if info["installed"] else "✗",
+                    ", ".join(info["packages"]) or "（无 —— 零第三方，见用途）",
+                    info["purpose"]]
+                   for name, info in data["extras"].items()])
     for note in notes:
         human.append(f"  ⚠ {note}")
     return data, human

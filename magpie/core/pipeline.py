@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from . import ingest, ops, store
+from .parsers.base import MissingExtrasError, extras_install_hint
 
 USAGE = """用法:
   python -m magpie.core.pipeline run <pipeline.yaml> [--dry-run] [--db <path>]
@@ -434,21 +435,38 @@ def definition_hash(definition: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: YAML 那一个 extras 的名字与安装命令。与 `openapi._load_yaml`、
+#: `_fingerprints._load_yaml` 各写一份是**同一处纪律**（那两处的 docstring 讲了
+#: 为什么文案不抽公共函数）：报错说的是**各自的**文件，而 extras 名与安装命令
+#: 统一走 `extras_install_hint` —— 命令只能有一条。
+_YAML_EXTRAS = "api-yaml"
+
+
 def _load_yaml(path: Path) -> Any:
+    """YAML 文件 → Python 对象。**extras 缺失时抛可读的 `MissingExtrasError`**。
+
+    `import` 在函数体里，不在模块顶层 —— 那是 R6 与 extras 两条约束唯一的交点
+    （`check.py` 的 R6 只看 `tree.body`）。此前三句裸 `RuntimeError` + 不带
+    extras 名的 `pip install pyyaml`，而 4.5 的判据要求说清**缺哪个 extras、
+    跑哪条命令装** —— `MissingExtrasError` 是这条纪律在 3.4 立下的具名形状。
+    """
     try:
-        import yaml                                        # noqa: PLC0415
-    except ImportError as exc:                             # pragma: no cover
-        raise RuntimeError(
-            "读 YAML 管线定义需要 PyYAML，但它不在当前解释器里。\n"
-            "  pip install pyyaml   （或 py -3.13 -m pip install pyyaml）\n"
-            "它只在需要 YAML 时才 import，所以核心功能不受影响（core 仅标准库）。"
+        import yaml                                        # noqa: PLC0415 —— 见上
+    except ImportError as exc:
+        raise MissingExtrasError(
+            f"{path} 是 YAML 格式的管线定义，而 YAML 解析器不在标准库里。"
+            f"缺少 extras `{_YAML_EXTRAS}`（pyyaml）—— 装上它："
+            f"`{extras_install_hint(_YAML_EXTRAS)}`。"
+            f"（core 本身零第三方依赖，所以这个 import 只在真的读定义时发生。）"
         ) from exc
     with open(path, "r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
 def load_definition(path: str | Path) -> dict[str, Any]:
-    """读入并校验管线定义，返回**规范形态**（§2.2）。任何问题都抛可读的 ValueError。
+    """读入并校验管线定义，返回**规范形态**（§2.2）。问题都抛可读的异常 ——
+    格式问题 → `ValueError`（`DefinitionError` 是它的子类），**环境问题**（缺
+    `api-yaml` extras）→ `MissingExtrasError`，原样放行不改判。
 
     这是**文件入口**，它给旧 YAML 盖上 `format_version: 1` —— 于是"没有版本
     字段的那一天"永远不会到来，而那一天正是这个字段存在的理由（F3）。
@@ -460,6 +478,10 @@ def load_definition(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"管线定义不存在：{path}")
     try:
         raw = _load_yaml(path)
+    except MissingExtrasError:
+        # 环境问题**不许**被下面那句改判成"不是合法 YAML"—— 文件没有问题，
+        # 照那句话去改文件的人会一直改不对（3.4 点名过的头号陷阱，A6 同款纪律）。
+        raise
     except Exception as exc:
         raise ValueError(f"{path} 不是合法 YAML：{type(exc).__name__}: {exc}") from exc
     if not isinstance(raw, dict):
@@ -753,7 +775,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_USAGE
         try:
             definition = load_definition(positional[0])
-        except ValueError as exc:
+        except (MissingExtrasError, ValueError) as exc:
+            # 环境问题（缺 extras）与格式问题走同一张三行退出码表：两者都得先
+            # 做一件事（装 extras / 改定义）才能再跑，且必须是一行人话、不是
+            # traceback（4.5 判据 1 的"缺"那半边，本入口同样适用）。
             print(f"!! {exc}", file=sys.stderr)
             return EXIT_USAGE
         # data_dir 只解析一次，db 与归档目录必须落在**同一个**基准下 ——

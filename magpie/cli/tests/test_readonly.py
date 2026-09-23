@@ -301,6 +301,25 @@ def test_cli_adds_no_dependencies():
     assert not bad, "CLI 引入了非标准库依赖：" + "; ".join(bad)
 
 
+def test_app_without_api_extras_is_a_still_readable_message(monkeypatch, capsys):
+    """extras.api 缺失时 `magpie app`：一行人话 + 安装命令 + 退出码，没有 traceback。
+
+    4.5 判据 1 里 `api` 那一侧"缺"的半边（"装"的半边是 api/tests 整套真起
+    服务的用例 —— 两条各自独立）。本机装了 extras.api，真实缺失造不出来，
+    所以模拟 `available() is False` —— 那正是 `_run_app` 放行与否的唯一判据。
+    """
+    import magpie.api as api
+    from magpie.cli import EXIT_NOT_IMPLEMENTED, main
+
+    monkeypatch.setattr(api, "available", lambda: False)
+    code = main(["app"])
+    err = capsys.readouterr().err
+    assert code == EXIT_NOT_IMPLEMENTED, code
+    assert "extras.api" in err, err
+    assert 'pip install -e ".[api]"' in err, err
+    assert "Traceback" not in err, err
+
+
 # ---------------------------------------------------------------------------
 # 可消费性
 # ---------------------------------------------------------------------------

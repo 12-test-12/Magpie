@@ -13,6 +13,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.10.0"       # 与 pyproject.toml 的 version 保持一致（4.4：时间线 / 导出打包）
+__version__ = "0.11.0"       # 与 pyproject.toml 的 version 保持一致（4.5：extras 收口）
 
 __all__ = ["__version__"]

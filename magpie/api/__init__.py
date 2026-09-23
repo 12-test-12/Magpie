@@ -38,6 +38,14 @@ LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
 __all__ = ["API_PREFIX", "OPENAPI_PATH", "DEFAULT_HOST", "LOOPBACK_HOSTS", "available"]
 
 
+#: extras.api 必须齐的**每个模块**（4.5 收口：探针问的必须与报错说的一致 ——
+#: `_run_app` 的那句"FastAPI / uvicorn ……没有"只问 fastapi 的话会说谎：
+#: fastapi 在、uvicorn 缺的环境里它放行，然后在起服务时炸出裸 ImportError）。
+_API_MODULES = ("fastapi", "uvicorn")
+
+
 def available() -> bool:
-    """extras.api 装了没有。**不 import 它**，只问解释器有没有。"""
-    return importlib.util.find_spec("fastapi") is not None
+    """extras.api 装了没有。**不 import 它**，只问解释器有没有 —— 这套 extras
+    的每个模块都问（缺任何一个，`magpie app` 都该走那条可读报错）。"""
+    return all(importlib.util.find_spec(module) is not None
+               for module in _API_MODULES)

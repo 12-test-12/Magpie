@@ -514,6 +514,48 @@ def test_schema_describes_types_verbs_fields_and_syntax(loaded_db):
     assert "hint" in syntax["envelope"]["failure"]["error"]
 
 
+def test_schema_lists_every_extra_with_install_command_and_purpose(empty_db):
+    """4.5 收口：有哪些 extras、装没装、跑哪条命令装、各自干嘛 —— `schema` 是
+    查得到的，不用再读源码（"agent 无需读源码"本来就是这条命令立着的理由）。
+    """
+    _, payload = envelope("schema", "--db", str(empty_db), "--json")
+    extras = assert_ok(payload)["extras"]
+    assert set(extras) == {"api", "api-yaml", "traffic", "dev"}, sorted(extras)
+    for name, info in extras.items():
+        assert info["install"] == f'pip install -e ".[{name}]"', (name, info)
+        assert isinstance(info["installed"], bool), name
+        assert info["purpose"], f"{name} 的用途说明是空的"
+        assert isinstance(info["packages"], list), name
+    # 4.1 的裁定：traffic 刻意为空（零第三方走标准库 json；tshark 是外部可执行，
+    # pip 装不出它）—— 空 extras 的 installed 必须是 True（就绪，不是"缺"）。
+    assert extras["traffic"]["packages"] == []
+    assert extras["traffic"]["installed"] is True
+    # 探针按**模块**名问（pyyaml 提供的模块叫 yaml），包清单仍按 pyproject 的写法。
+    assert extras["api-yaml"]["packages"] == ["pyyaml"]
+
+
+def test_extras_registry_matches_pyproject_exactly():
+    """`pyproject.toml` 的 `[project.optional-dependencies]` 是唯一事实来源 ——
+    这里把它钉成断言：改了 pyproject 不同步 `EXTRAS_REGISTRY`，本条当场红。
+
+    顺带把 4.5 点名的两条边界也钉在这里（都是解析出**值**，不是搜字符串 ——
+    traffic 的注释里正大光明地写着 "tshark 不进这里"，字符串判据会把它误伤）：
+    `traffic == []` 与 `api-yaml` 的包名。
+    """
+    import tomllib
+
+    from magpie.cli.read import EXTRAS_REGISTRY
+
+    table = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = table["project"]["optional-dependencies"]
+    assert set(EXTRAS_REGISTRY) == set(extras), (
+        f"pyproject: {sorted(extras)} ≠ registry: {sorted(EXTRAS_REGISTRY)}")
+    for name, packages in extras.items():
+        assert EXTRAS_REGISTRY[name]["packages"] == list(packages), name
+    assert extras["traffic"] == [], "4.5 裁定：traffic 保持为空（零第三方）"
+    assert extras["api-yaml"] == ["pyyaml"]
+
+
 def test_schema_query_syntax_matches_the_real_parser(empty_db):
     """语法是从**真的那个 parser** 生成的 —— 手写的文档会过期。
 

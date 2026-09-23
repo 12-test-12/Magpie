@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.10.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.11.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -35,6 +35,10 @@ version = "0.10.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 两条**纯新增** CLI 命令 + `core/export.py`）。`/api/v1` 一行未改 —— openapi
 # 快照只差 `info.version`；本步动的既有面是 0.9.0 第 2 条留下的体检页 custody
 # 标签（前端模板，非 API）。见 CHANGELOG 的 `0.10.0` 一节。
+# 0.10.0 → 0.11.0 对应 4.5：可选 extras 收口 —— `magpie schema --json` 的 data
+# **纯新增**一个 `extras` 键（有哪些 / 装没装 / 怎么装 / 各自干嘛）。`/api/v1`
+# 一行未改 —— openapi 快照只差 `info.version`（已重新生成）。没有新增迁移
+# （R4 未动）。见 CHANGELOG 的 `0.11.0` 一节。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +54,12 @@ dependencies = []
 # 一起钉死了：升级带来的**契约漂移**会一直藏着，直到某天在某个消费者那里爆炸。
 # 让快照在升级时红一次，正是 test_contract_openapi.py 本来要换来的信号。
 api = ["fastapi", "uvicorn"]
+# YAML 解析的 extras（名字沿用 3.4 的 `api-yaml`，**不新开**）：3.4 的 OpenAPI
+# YAML、3.7b 的管线定义、4.3 的指纹规则都用它 —— 全部只在**函数体内** lazy
+# import（R6：core 顶层 ⊆ 标准库），缺时报 `MissingExtrasError`（消息里带
+# extras 名与安装命令，`pipeline run` 一行收在 stderr 不出 traceback）。
+# "有哪些 extras、装没装"由 `magpie schema --json` 的 `extras` 键查给人看（4.5
+# 收口），登记表与本文件逐项一致由 `test_extras_registry_matches_pyproject` 钉住。
 api-yaml = ["pyyaml"]
 # 阶段 4.5 的收口点（流量 / 接口文件解析）。目前那块解析走标准库，故为空；
 # 真需要第三方时加在这里，core 仍然不得 import 它。
