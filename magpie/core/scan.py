@@ -98,12 +98,12 @@ def secret_key(rule: object, value: object) -> str:
     digest = hashlib.sha256(f"{name}:{text}".encode("utf-8")).hexdigest()
     return f"{name}:{digest}"
 
-__all__ = ["MAX_LOCATION_CHARS", "ScanResult", "Scanner", "scan_lines"]
-
 
 #: 一次扫描最多保留几个 `location` 值。同一份文件里出现几十次同一个 token 是
 #: 常态（一个 token 在一份 HAR 的每个请求里都有），把它们全记下来会让观测值
-#: 变成一份行号清单 —— 而问题"这个凭据出现过几次"由 `occurrence_count` 回答。
+#: 变成一份行号清单 —— 而问题"这个凭据出现过几次"由**报告里的 `by_rule` /
+#: `occurrences`** 回答（`secret` 实体没有 `occurrence_count` 列 —— 那是
+#: `inbox_items` 的列，别在这儿找它；LARI-37 审查纠正过这条注释）。
 #: 保留上限同时也是**确定性**的要求：截断必须是"从前往后取前 N 个"，而不是
 #: "遇到谁算谁"（后者会让同一份文件重导两次得到两组不同的行号）。
 MAX_LOCATION_CHARS = 24
@@ -233,15 +233,21 @@ class Scanner:
         """一处命中的位置：`{"file": …, "lines": [首见, …]}`（canonical JSON）。
 
         为什么要一个 JSON 字符串而不是一个整数行号：`secret` 的身份是**值**，
-        不是位置 —— 同一个 token 在几行里出现说的是同一件事。把位置做成一个
-        **多值**字段会让它同时回答"在哪"与"出现几次"，而后者已经是
-        `occurrence_count` 的活了（4.1 的 `app_protocols` 是同一个取舍：
-        排序过的列表**是一个事实**）。
+        不是位置 —— 同一个 token 在几行里出现说的是同一件事。"出现了几次"由
+        报告的 `by_rule` / `occurrences` 回答，"在文件的哪几行"由这里的
+        `lines` 回答 —— 各答各的，不混进身份（4.1 的 `app_protocols` 是同一个
+        取舍：排序过的列表**是一个事实**）。
+
+        **文件名先过 `redact_secrets` 再截断**（LARI-37 向量 B）：这份观测的
+        `file` 字段曾经把 `path.name` 原样落库 —— 而 issue 正文点名过"外部归档
+        那条路上的文件名里可能带凭据"。掩码先于截断：反过来的话一个跨在 200 字符
+        边界上的凭据会被截成半截明文，那比不掩更糟。
 
         文件名截断到 200 字符：一份抓包的文件名可以是任意长的路径，而 4.2 的
         观测值不该被一个文件名撑爆（同 `_urls.MAX_VALUE_CHARS` 的做法）。
         """
-        payload = {"file": self._file_name[:200], "lines": list(hit.lines)}
+        file_name = normalize.redact_secrets(self._file_name)
+        payload = {"file": str(file_name)[:200], "lines": list(hit.lines)}
         return json.dumps(payload, ensure_ascii=False, sort_keys=True,
                           separators=(",", ":"))
 

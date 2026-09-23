@@ -69,6 +69,7 @@ __all__ = [
     "path_template",
     "prerelease_tuple",
     "product_name",
+    "redact_secrets",
     "secret_rule_name",
     "secret_value",
     "try_cidr",
@@ -1490,7 +1491,13 @@ SECRET_RULES: tuple[SecretRule, ...] = (
         #  在这里让它停住，同一条 token 才会落成
         #  「`password_param` 看到一段 8+ 的串」+「`jwt` 看到整串」两条各说各话
         #  的发现，而不是一条被截断的、谁也不认识的半截值。
-        "(?i)\\b(?:password|passwd|pwd|secret|token|"
+        #
+        #  ⚠️  名字**不带词首 `\b`**（LARI-37 审查后的修正）：带的时候
+        #  `access_token=…` / `user_password=…` 这类**下划线粘连**的表单字段
+        #  整条漏掉 —— `_` 与字母之间没有词边界。这正是凭据最常出现的两种写法
+        #  之一，而这条规则的文件头写着「宁多勿漏」。代价（`notasecret=` 这种
+        #  假阳性）是可数的一条误报 + 一次掩码，比漏掉一个真凭据便宜得多。
+        "(?i)(?:password|passwd|pwd|secret|token|"
         "api[_-]?key|access[_-]?key|client[_-]?secret)"
         "[\"']?\\s*[:=]\\s*[\"']?([^\\s\"'&,;}\\\\)\\].]{8,})",
         1,
@@ -1501,14 +1508,22 @@ SECRET_RULES: tuple[SecretRule, ...] = (
         "这个代价是刻意接受的，见上面那段「宁多勿漏」。"),
     SecretRule(
         "github_token",
-        r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
+        #  词首**不带** `\b`（LARI-37 审查后的修正）：凭据最常见的存放形状之一
+        #  是**粘在前缀上**的 —— 文件名 `tok_ghp_….har`、字段 `deploy_ghp_…`，
+        #  而 `_` 与 `g` 之间没有词边界，带 `\b` 时整条漏掉。值从 `gh[pousr]_`
+        #  起算，前面粘着什么都不改变"这是一个 GitHub token"这件事，所以捕获的
+        #  值与带 `\b` 时逐字相同 —— 已登记的身份一个都不会动，变的只是覆盖面。
+        #  词尾的 `\b` 保留：它挡的是把 `ghp_abc` 后面粘连的字符也吞进值里。
+        r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b",
         0,
         "GitHub 的 PAT / OAuth / user / server / refresh token，以及细粒度 PAT。"
         "`gh[pousr]_` 这一段是**格式常量**（它标出这是 GitHub 的哪一类 token），"
         "真正随机的只有后面那一段。"),
     SecretRule(
         "aws_access_key_id",
-        r"\b((?:AKIA|ASIA|AIDA|AROA|AGPA)[A-Z0-9]{16})\b",
+        #  词首不带 `\b`，理由同 `github_token`：`tok_AKIA1234567890ABCDEF.har`
+        #  这种粘连形状要认得出来（值本身仍是那 4+16 个字符，身份不变）。
+        r"((?:AKIA|ASIA|AIDA|AROA|AGPA)[A-Z0-9]{16})\b",
         1,
         "AWS 的访问键 id（长期键 AKIA / 临时键 ASIA / IAM 对象的 AIDA·AROA·AGPA）。"
         "**只匹配 id 不匹配密钥**：AWS 的 secret access key 没有任何结构，它是一段"
@@ -1524,14 +1539,17 @@ SECRET_RULES: tuple[SecretRule, ...] = (
         "那种半吊子记录。"),
     SecretRule(
         "jwt",
-        r"\beyJ[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}",
+        #  词首不带 `\b`，理由同 `github_token`：`session=eyJ…` 本来就有边界
+        #  （`=`），但 `s_eyJ…` 这种粘连写法不该漏。
+        r"eyJ[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}\.[A-Za-z0-9\-_]{8,}",
         0,
         "一个长得像 JWT 的三段串（header.payload.signature，前两段以 `eyJ` 开头 —— "
         "那是 `{` 的 base64）。**整串都是值**（`capture=0`）：三段一起才是一个"
         "凭据，只留 header 等于把两个不同的 token 记成同一个。"),
     SecretRule(
         "slack_token",
-        r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+        #  词首不带 `\b`，理由同上（`tok_xoxb-…` 这种文件名形状）。
+        r"xox[abprs]-[A-Za-z0-9-]{10,}",
         0,
         "Slack 的 bot / user / app / refresh / workspace token。`xox?` 是格式常量，"
         "后面才是秘密 —— 整串仍是值（`capture=0`），因为分隔符 `-` 在随机段里也有。"),
@@ -1630,22 +1648,17 @@ def detect_secrets(line: object) -> list[dict[str, object]]:
         match = rule.pattern.search(line)
         if match is None:
             continue
-        # 取值：候选取值组里**第一个非空**的那个；候选全空时退回**整段匹配**。
-        # 两个分支各占一种情况：
-        #   * `captures=(0,)` 的规则（`jwt` / `slack_token`）—— 组 0 永远非空，
-        #     于是"整串就是值"是它们唯一的取值方式；
+        #  **捕获组优先，整段匹配只是兜底** —— 一条顺序，不是"哪个非空算哪个"：
+        #  组在 `capture` 里列出来的就一定是值本身（`RSA ` 连同它尾部那个有意义
+        #  的空格），只有**所有**候选组都空（可选组没参与匹配）时才退回整段匹配。
+        #  两个分支各占一种情况：
+        #   * `captures=(0,)` 的规则（`jwt` / `slack_token` / `github_token`）——
+        #     组 0 永远非空，于是"整串就是值"是它们唯一的取值方式；
         #   * 取值组是**可选**的规则（`private_key_block` 的 `([A-Z]+ )?`）——
         #     无名私钥的 `-----BEGIN PRIVATE KEY-----` 让组 1 是 None，而这时
         #     整段匹配（也就是起头行本身）才是那个"类型段为空"的诚实答案。
-        # 退回是**规则的形状**决定的，不是"哪个非空算哪个"的松散约定：候选清单
-        # 写在 `capture` 里，所以"这条规则能从哪取值"永远是可数的。
-        captured = next(
-            (match.group(index) for index in rule.captures
-             if match.group(index) is not None), None)
-        #  **捕获组优先，整段匹配只是兜底** —— 两层不是"哪个非空算哪个"，而是
-        #  一条顺序：组在 `capture` 里列出来的就一定是值本身（`RSA ` 连同它
-        #  尾部那个有意义的空格），只有**所有**候选组都空（可选组没参与匹配）
-        #  时才退回整段匹配。
+        #  退回是**规则的形状**决定的：候选清单写在 `capture` 里，所以"这条规则
+        #  能从哪取值"永远是可数的。
         #  ⚠️  两端的清洗只对兜底那一路做。捕获组是规则的作者写下的**取值边界**，
         #  这里不许再动它一个字符 —— 一句 `.strip()` 能把 `RSA ` 变成 `RSA`，
         #  于是同一把私钥的两种命名折成两个身份，而且没有任何信号。
@@ -1660,6 +1673,77 @@ def detect_secrets(line: object) -> list[dict[str, object]]:
             text = secret_value(captured)
         except NormalizeError:
             continue
+        #  ⚠️  **每次命中只 append 一次。** 这里曾经连着两条一模一样的
+        #  `out.append(...)` —— 每个命中返回两条，`Scanner.feed` 的计数于是
+        #  恒 ×2，而实体数（按键去重）与 location 行号（`last != lineno` 守卫）
+        #  都不受影响，10 条专项用例全绿也抓不到它（LARI-37 审查抓出）。
+        #  `test_detect_secrets_returns_one_entry_per_rule_hit` 从此钉住它。
         out.append({"rule": rule.name, "value": text, "masked": mask_secret(text)})
-        out.append({"rule": rule.name, "value": text, "masked": mask_secret(text)})
+    return out
+
+
+def redact_secrets(text: object) -> object:
+    """把文本里**所有**敏感串命中替换成掩码 —— 写入前的最后一道闸门（4.2）。
+
+    为什么需要它：判据 ①（明文永不落库）扫的是**整张库 + 落盘报告**，而不只是
+    `secret` 表。凭据会以别的身份混进来 —— 最典型的是 URL 查询串：har 解析器把
+    `path` 观测按"原始路径保留证据"的裁定写库（计划书 §4.4），于是
+    `?api_key=xxx` 的原文跟着观测值一起落进 `observations.value` 与
+    `contributions.field_value`。解析器**不该**背这个锅（它只读文件，写入是
+    ingest 的职责 —— PARSE-RO），所以掩码发生在写入 chokepoint：观测值、实体
+    展示值、evidence 片段、坏行 raw、报告字符串，全部过这一道。
+
+    与 `detect_secrets` 的三点不同，都是刻意的：
+
+      * **替换全部命中，不是每规则第一条** —— `detect_secrets` 每规则只报第一次
+        是计数口径（第二遍往往只是同一值的重复）；而这里是"把明文消掉"，漏掉
+        `password=a&password=b` 的第二个就是留了一半明文。
+      * **跨规则的重叠先合并再替换** —— `token=eyJ….sig` 会同时命中
+        `password_param`（值到第一个 `.` 为止）与 `jwt`（整串）。分开替换会把
+        签名那一段留在原地。合并按 span 并集，掩码取**较长**那个值的掩码。
+      * **掩码策略与 `secret` 实体同一个函数**（`mask_secret`）—— 同一个凭据在
+        `secret` 表里长什么样，在 `path` 观测里就长什么样，人对得上号。
+
+    幂等：掩码（`xxxx****`）自己不再命中任何规则 —— 重复清洗是恒等变换，
+    所以报告链路上的二次清洗（`ingest_file` 与 `ingest_paths` 各过一道）无害。
+
+    返回类型跟随输入：非字符串（None / 数字 / 已结构化的值）原样返回 ——
+    调用方到处都是 `str | None | Any`，让每个调用点先判类型只会催生漏网的。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    #  收集 (start, end, 值长度, 掩码)：每条规则的**每一次**匹配。
+    spans: list[tuple[int, int, int, str]] = []
+    for rule in SECRET_RULES:
+        for match in rule.pattern.finditer(text):
+            index = next((i for i in rule.captures
+                          if match.group(i) is not None), None)
+            if index is None:
+                start, end = match.span(0)
+                captured = match.group(0).strip("'\" \t\r\n\f\v")
+            else:
+                start, end = match.span(index)
+                captured = match.group(index)
+            try:
+                value = secret_value(captured)
+            except NormalizeError:
+                continue
+            spans.append((start, end, len(value), mask_secret(value)))
+    if not spans:
+        return text
+    #  合并重叠（排序后一次线性扫）：并集区间，掩码取较长值那个。
+    spans.sort(key=lambda item: (item[0], -item[1]))
+    merged: list[tuple[int, int, int, str]] = []
+    for start, end, length, mask in spans:
+        if merged and start <= merged[-1][1]:
+            cur_start, cur_end, cur_len, cur_mask = merged[-1]
+            merged[-1] = (cur_start, max(cur_end, end),
+                          max(cur_len, length),
+                          mask if length > cur_len else cur_mask)
+        else:
+            merged.append((start, end, length, mask))
+    #  从后往前替换，前面的 span 不因位移失效。
+    out = text
+    for start, end, _length, mask in reversed(merged):
+        out = out[:start] + mask + out[end:]
     return out

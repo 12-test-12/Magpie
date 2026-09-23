@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from . import ops, scan, store
+from . import normalize, ops, scan, store
 
 # ---------------------------------------------------------------------------
 # 常量（嗅探阈值来自计划书 §5.4，不是可调参数）
@@ -208,8 +208,15 @@ class ParseContext:
         # 计数**永远**加一；只有明细受内存上限约束（5000 条足够看清"坏在哪"）。
         self.bad_line_total += 1
         if len(self.bad_lines) < BAD_LINE_DETAIL_LIMIT:
-            self.bad_lines.append({"line": int(lineno), "reason": str(reason),
-                                   "raw": str(raw)[:400]})
+            #  raw 是**行原文的副本**，而坏行明细是判据 ① 点名的落盘物
+            #  （`reports/<job>.badlines.txt`）—— 先掩码再截断：反过来的话一个
+            #  跨在 400 字符边界上的凭据会被截成半截明文。
+            self.bad_lines.append(
+                {"line": int(lineno),
+                 #  reason 也会过一道：坏行理由偶有输入插值（`…不是合法域名：
+                 #  'x'`），掩码对正常文案是恒等变换，对插进去的凭据是救命的。
+                 "reason": str(normalize.redact_secrets(str(reason))),
+                 "raw": str(normalize.redact_secrets(str(raw)))[:400]})
 
     def on_unknown_field(self, name: str, lineno: int | None = None) -> None:
         key = str(name)
@@ -683,6 +690,14 @@ def _write_record(conn: sqlite3.Connection, opts: IngestOptions, job_id: int,
     解析器给的是 (kind, key) 引用；这里负责把它翻成数据层的调用参数。
     关系的端点 kind 只影响**实体首次创建**时的 kind —— 解析器应当先产出
     RawEntity 再产出 RawRelation，否则端点会被兜底 kind 建出来。
+
+    **所有值在这一层过 `normalize.redact_secrets`**（4.2 判据 ①，LARI-37 向量 A）：
+    观测值与实体展示值是凭据最容易"以别的身份"落库的地方 —— 最典型的是 URL
+    查询串：`path` 观测按"原始路径保留证据"的裁定写库，于是 `?api_key=xxx`
+    的原文跟着观测值进了 `observations.value` / `contributions.field_value`。
+    解析器只读文件（PARSE-RO），掩码是写入口的职责。**身份键（entity_key）不
+    掩** —— 它是事实的主键，动它等于改身份；而现有所有 key 函数（endpoint 的
+    `path_template` 丢查询串、flow 的 5 元组、secret 的 hash）本来就不含明文。
     """
     if _is_relation(rec):
         ops.add_relation(conn, project_id=opts.project_id, job_id=job_id,
@@ -702,7 +717,9 @@ def _write_record(conn: sqlite3.Connection, opts: IngestOptions, job_id: int,
                          evidence_id=evidence_id, source_id=source_id,
                          entity_key=str(rec.key), kind=str(rec.kind),
                          semantic_field="display_name",
-                         value=str(rec.display or rec.key), authorship="tool")
+                         value=str(normalize.redact_secrets(
+                             str(rec.display or rec.key))),
+                         authorship="tool")
 
 
 #: 数据层允许的 value_kind（schema 的 CHECK 就是这份清单）
@@ -721,10 +738,18 @@ def _value_kind(value: Any) -> str:
 
 
 def _value_text(value: Any) -> str:
-    """值一律以文本入库（observations.value 是 TEXT）。结构化值走 canonical JSON。"""
+    """值一律以文本入库（observations.value 是 TEXT）。结构化值走 canonical JSON。
+
+    **文本化之后过一遍 `redact_secrets`**（4.2 判据 ① 的 chokepoint 之一）：
+    这是所有观测值落库的唯一出口 —— `path` 观测的查询串、`client` 观测的
+    URL、conflict payload 引用的值，全从这里过。掩码与 `secret` 实体用同一个
+    `mask_secret`，同一个凭据在两处长得一样，人对得上号。
+    """
     if isinstance(value, (dict, list, tuple)):
-        return store.canonical_json(value)
-    return str(value)
+        text = store.canonical_json(value)
+    else:
+        text = str(value)
+    return str(normalize.redact_secrets(text))
 
 
 def _endpoint_kind(rec: Any) -> str:
@@ -996,7 +1021,11 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
     for rep in reports:
         for name, value in rep.get("counts", {}).items():
             totals[name] = totals.get(name, 0) + int(value)
-    return {
+    #  再过一道 `_redact_report`（4.2 判据 ①）：单文件报告在 `ingest_file` 里
+    #  已经掩过，但这一层还有两个自己的面 —— `problems`（`discover` 的提示语里
+    #  嵌着原样路径）与任何聚合时拼进去的字符串。掩码幂等（掩完不再命中），
+    #  所以二次清洗无害。
+    return _redact_report({
         "kind": "import",
         "dry_run": opts.dry_run,
         "parser_source": source_pkg,
@@ -1007,7 +1036,29 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
         "totals": totals,
         "job_ids": [rep["job_id"] for rep in reports if rep.get("job_id")],
         "db": _db_facts(conn, opts.project_id),
-    }
+    })
+
+
+def _redact_report(obj: Any) -> Any:
+    """递归把报告里的**所有字符串**过一遍 `redact_secrets`（4.2 判据 ①）。
+
+    报告是判据 ① 点名的落盘物（`reports/*.json`），也是 CLI stdout 的数据源
+    （`cmd_import` 把它整个塞进 JSON 信封）—— 在这一处掩码，落盘与 stdout
+    两个面一次收口。为什么递归扫**全部**字符串而不是挑字段：报告的形状随
+    解析器与阶段演进（`skip_reason` 的措辞、`arbitration.ranking` 的内容……），
+    挑字段的清单必然过期，而"某个新字段把文件名带出去了"没有任何症状。
+    掩码对不含凭据的字符串是恒等变换，所以 sha256、指纹、计数一个都不会变。
+
+    只掩**值**不掩**键**：键是报告的 schema（`path` / `sha256` 这些名字），
+    掩键会让下游按名取值的代码静默取空。
+    """
+    if isinstance(obj, str):
+        return normalize.redact_secrets(obj)
+    if isinstance(obj, dict):
+        return {key: _redact_report(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_report(item) for item in obj]
+    return obj
 
 
 def ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
@@ -1023,7 +1074,8 @@ def ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
     开的整轮干跑事务兜着（见 `_JobTxn`）。单文件调用（含 CLI 的 `--dry-run`）
     保持默认，自持事务、末尾 ROLLBACK。
     """
-    report = _ingest_file(conn, opts, path, parsers=parsers, _shared_txn=_shared_txn)
+    report = _redact_report(
+        _ingest_file(conn, opts, path, parsers=parsers, _shared_txn=_shared_txn))
     _write_report(opts, report)
     return report
 
@@ -1165,7 +1217,13 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         definition_drift = _definition_drift(conn, fingerprint, definition_hash)
         job_id = ops.start_job(conn, project_id=opts.project_id, kind="ingest",
                                coverage="partial",
-                               coverage_scope={"file": path.name, "sha256": digest,
+                               #  file 过掩码（4.2 判据 ①，向量 B）：coverage_scope
+                               #  是落库的诊断信息，不是路径指针 —— 幂等判定走
+                               #  `_already_imported` 的 sha256 + fingerprint，与
+                               #  这一格无关，掩掉文件名不损失任何功能。
+                               coverage_scope={"file": str(normalize.redact_secrets(
+                                                   path.name)),
+                                               "sha256": digest,
                                                "parser": fingerprint},
                                parser_fingerprint=fingerprint, actor=opts.actor)
         ctx.job_id = job_id
@@ -1352,22 +1410,30 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
         report["definition_drift"] = definition_drift
     if not opts.dry_run:
         report["db"] = _job_facts(conn, job_id)
-    if counters.secrets:
-        report["secrets"] = {"secrets": counters.secrets,
-                             "lines": scan_result.lines,
-                             "by_rule": scan_result.by_rule}
+    if scan_result is not None and scan_result.secrets:
+        #  **单一出处**（LARI-37 审查）：这一块就是 `ScanResult.as_dict()`，
+        #  不再手拼 —— 手拼的那版缺 `occurrences` 键，与 `as_dict` 各说各话，
+        #  而"报告数字能不能复算"正是判据 ②/③ 要回答的问题。
+        report["secrets"] = scan_result.as_dict()
     return report
 
 
 def _evidence_for_line(conn: sqlite3.Connection, opts: IngestOptions, raw_id: int,
                        ctx: ParseContext, cache: dict[int, int]) -> int:
-    """一行一条 evidence（locator 记行号，§5.3）。懒创建：只给真正产出事实的行建。"""
+    """一行一条 evidence（locator 记行号，§5.3）。懒创建：只给真正产出事实的行建。
+
+    **snippet 先掩码再截断**（4.2 判据 ①）：它是行原文的副本，而一行 JSON 完全
+    可能就是 `{"url": "…?api_key=…"}`。截断在掩码之后 —— 反过来的话一个跨在
+    512 字符边界上的凭据会被截成半截明文。掩码后的片段仍然回答"这行长什么样"，
+    真原文按 locator 回归档文件取（`recovery_state` 的语义不变）。
+    """
     lineno = int(ctx.current_line)
     if lineno not in cache:
+        snippet = str(normalize.redact_secrets(ctx.current_line_text))[:512]
         cache[lineno] = ops.add_evidence(
             conn, project_id=opts.project_id, raw_file_id=raw_id,
             locator={"line": lineno, "file": Path(ctx.source_name).name},
-            snippet=ctx.current_line_text[:512], quality_class="high")
+            snippet=snippet, quality_class="high")
     return cache[lineno]
 
 
@@ -1389,7 +1455,11 @@ def _scan_and_write(conn: sqlite3.Connection, opts: IngestOptions, job_id: int,
         return result
     scan_evidence = ops.add_evidence(
         conn, project_id=opts.project_id, raw_file_id=raw_id,
-        locator={"scan": "secrets", "file": path.name},
+        #  file 过掩码（4.2 判据 ①，向量 B 的"4.2 自产"两处之一）：evidence
+        #  locator 是派生记录，真文件由 raw_file_id 指着，掩掉文件名不丢线索
+        #  （与 `scan._location` 的 file 字段同一个口径）。
+        locator={"scan": "secrets",
+                 "file": str(normalize.redact_secrets(path.name))},
         snippet="", quality_class="medium")
     scan_source = store.register_source(
         conn, name="scanner", authority_level=opts.authority_level,
@@ -1615,15 +1685,20 @@ def _no_parser_report(conn: sqlite3.Connection, opts: IngestOptions, path: Path,
     item_id: int | None = None
     if not opts.dry_run:
         with store.atomic(conn):
+            #  文件名过掩码（4.2 判据 ①，向量 B）：coverage_scope 是诊断信息；
+            #  inbox 的 `values` 进指纹、`payload.file` 是给人看的 —— 两者都是
+            #  **派生**落点，掩掉文件名不损失功能（payload 里 sha256 还在）。
+            safe_name = str(normalize.redact_secrets(path.name))
             job_id = ops.start_job(conn, project_id=opts.project_id, kind="ingest",
                                    coverage="unknown",
-                                   coverage_scope={"file": path.name, "sha256": digest},
+                                   coverage_scope={"file": safe_name,
+                                                   "sha256": digest},
                                    actor=opts.actor)
             item_id, _ = ops._open_inbox(          # noqa: SLF001 — 复用唯一 inbox 写入口
                 conn, project_id=opts.project_id, kind="manual_required",
-                subject_kind="entity", subject_id=0, values=[path.name], sources=[],
+                subject_kind="entity", subject_id=0, values=[safe_name], sources=[],
                 job_id=job_id, severity="medium",
-                payload={"reason": arbitration["reason"], "file": path.name,
+                payload={"reason": arbitration["reason"], "file": safe_name,
                          "sha256": digest, "ranking": arbitration["ranking"]})
             ops.finish_job(conn, job_id, state="partial", actor=opts.actor)
     return {

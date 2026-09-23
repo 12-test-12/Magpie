@@ -51,7 +51,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from ..core import ingest, ops
+from ..core import ingest, normalize, ops
 from .db import resolve_data_dir, resolve_project
 from .envelope import (
     EXIT_DATA,
@@ -474,7 +474,10 @@ def cmd_import(args, ctx) -> tuple[dict, list[str]]:
             f"（{'、'.join(ingest.INPUT_SUFFIXES)}）—— "        # noqa: SLF001
             "要导一个扩展名不在这个清单里的文件，直接写它的路径。")
 
-    paths = [str(p) for p in args.paths]
+    #  回显的输入路径也过掩码（4.2 判据 ①，向量 B）：`report` 里的 path 在
+    #  `ingest_file` 已经掩过，但 JSON 信封的 `paths` 是从命令行实参直接来的
+    #  —— 不掩它，`magpie import tok_ghp_….har` 的 stdout 就带着明文出去。
+    paths = [str(normalize.redact_secrets(str(p))) for p in args.paths]
     data = {
         "kind": "import",
         "project_id": project_id,
