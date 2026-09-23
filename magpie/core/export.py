@@ -385,10 +385,83 @@ def build_package(conn, project_id: int, *, full: bool = False,
     return files
 
 
+def _safe_rel(name: str) -> bool:
+    """清单里的 `name` 是不是**安全的相对路径**（不许穿越出包目录）。
+
+    `manifest.json` 是我们自己写的，但它落盘后就是一份可被篡改的输入 ——
+    读它来删文件时若不设防，一个带 `../` 的 `name` 就能让 `write_package`
+    删到包目录之外。便宜的守卫：拒绝绝对路径、盘符与 `..`。
+    """
+    if not name or name.startswith(("/", "\\")):
+        return False
+    if len(name) >= 2 and name[1] == ":":
+        return False
+    if ".." in Path(name).parts:
+        return False
+    return True
+
+
 def write_package(files: dict[str, bytes], out_dir: str | os.PathLike) -> Path:
-    """把包落到磁盘目录。已存在的同名文件被覆盖（导出是幂等的重跑）。"""
+    """把包落到磁盘目录。
+
+    **落盘前先清残留**（跨模式重导的幽灵文件）。这不是洁癖，是本 issue 的**唯一
+    失败模式**：`export --full -o pkg` 写进 `raw/<sha256>` 之后，默认模式再导到
+    同一个 `pkg` —— 新包不带 `raw/`，但上一轮的正文还躺在磁盘上，而新 manifest
+    与信封都声称"包是干净的"。用户照 manifest 打包发出，带出去的却是上一轮的
+    凭据明文。`-o` 的默认值还是固定名 `magpie-export`，撞车是最自然的操作序列。
+
+    清理边界（**只删这两类来源、且本包不再产出的，不碰用户自己的文件**）：
+
+      * 上一轮 `manifest.json` **列过**、而本包不再产出的文件；
+      * `raw/` 下磁盘**实有**、而本包不再产出的正文（`--full → 默认` 的那一步）。
+
+    本包要写的文件（`files` 的键）永远**覆盖写**、不先删。清完后若本包不带正文
+    而 `raw/` 已空，把空目录也收走 —— 默认包的磁盘上不该留一个 `raw/` 空壳，
+    否则"manifest 所列 == 磁盘实有"的核对又要为一个空目录破例。
+    """
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
+    current = set(files)
+    stale: set[str] = set()
+
+    # 来源一：上一轮 manifest 列过的文件
+    prev_path = root / MANIFEST_NAME
+    if prev_path.is_file():
+        try:
+            prev = json.loads(prev_path.read_text(encoding="utf-8"))
+            for entry in prev.get("files", []):
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if isinstance(name, str) and name and name not in current \
+                        and _safe_rel(name):
+                    stale.add(name)
+        except (ValueError, OSError, TypeError, AttributeError):
+            pass   # 上一轮清单读不了 → 靠下面的 raw/ 兜底，不让导出失败
+
+    # 来源二：raw/ 下磁盘实有、本包不带的正文
+    raw_dir = root / "raw"
+    if raw_dir.is_dir():
+        for path in raw_dir.rglob("*"):
+            if path.is_file():
+                rel = path.relative_to(root).as_posix()
+                if rel not in current:
+                    stale.add(rel)
+
+    for rel in sorted(stale):
+        target = root / rel
+        try:
+            if target.is_file():
+                target.unlink()
+        except OSError:
+            pass   # 一个删不掉的残留不该让整个导出失败；manifest 只列磁盘实有
+
+    # 本包不带正文、而 raw/ 清空了 → 连空目录一起收走
+    if raw_dir.is_dir() and not any(k.startswith("raw/") for k in current):
+        try:
+            if not any(raw_dir.rglob("*")):
+                raw_dir.rmdir()
+        except OSError:
+            pass
+
     for name, content in files.items():
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)

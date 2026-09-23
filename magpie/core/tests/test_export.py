@@ -257,6 +257,58 @@ def test_full_export_prints_visible_warning_on_stderr():
             f"默认导出不该告警：{stderr2[:300]!r}"
 
 
+def test_reexport_default_into_previous_full_dir_leaves_no_stale_raw(
+        db, project, tmp_path):
+    """跨模式重导不留幽灵文件（判据①的**唯一失败模式**：默认泄露）。
+
+    复现审查报告的路径：`--full` 往目录写了 `raw/<sha256>`（含凭据明文）之后，
+    默认模式重导**同一目录**。修之前：磁盘上留着上一轮的正文，而新 manifest 与
+    信封都声称"包是干净的" —— 用户照 manifest 打包发出，带出去的却是上一轮的
+    凭据明文，而 14 条旧用例都在空目录里跑、对此零覆盖。`-o` 默认值还是固定名
+    `magpie-export`，撞车是最自然的操作序列。
+
+    修之后断言两件事：① 整个目录扫一遍，凭据向量 **0 命中**；②
+    **manifest 所列 == 磁盘实有**（无幽灵文件、无漏列、默认包磁盘上无 `raw/`）。
+    """
+    _ingest(db, project, tmp_path)
+    out = tmp_path / "pkg"
+
+    # 第一步：--full → raw/ 带明文正文
+    full_files = export.build_package(db, project, full=True,
+                                      tool_version="t", project_name="p")
+    export.write_package(full_files, out)
+    assert any(n.startswith("raw/") for n in full_files), "前提：--full 得带正文"
+    assert CRED_PLAINTEXT.encode() in b"".join(
+        full_files[n] for n in full_files if n.startswith("raw/"))
+
+    # 第二步：默认模式重导**同一目录**
+    default_files = export.build_package(db, project, full=False,
+                                         tool_version="t", project_name="p")
+    export.write_package(default_files, out)
+
+    # 断言①：整个目录（含所有落盘文件）扫一遍，凭据向量 0 命中
+    hits = []
+    for p in out.rglob("*"):
+        if p.is_file():
+            blob = p.read_bytes()
+            for marker in _SCAN_MARKERS:
+                if marker.encode("utf-8") in blob:
+                    hits.append((p.relative_to(out).as_posix(), marker))
+    assert not hits, f"跨模式重导后目录残留明文：{hits}"
+
+    # 断言②：manifest 所列 == 磁盘实有（幽灵文件会让这两者分叉）
+    manifest = json.loads(
+        (out / export.MANIFEST_NAME).read_text(encoding="utf-8"))
+    listed = {e["name"] for e in manifest["files"]} | {export.MANIFEST_NAME}
+    on_disk = {p.relative_to(out).as_posix()
+               for p in out.rglob("*") if p.is_file()}
+    assert listed == on_disk, (
+        f"manifest 与磁盘不一致：只在 manifest={listed - on_disk}, "
+        f"只在磁盘={on_disk - listed}")
+    assert not any(n.startswith("raw/") for n in on_disk), \
+        "默认包磁盘上不该有任何 raw/ 正文"
+
+
 # ===========================================================================
 # 判据③ 导出 → 读回往返一致 + 明确说明刻意不往返的部分
 # ===========================================================================
