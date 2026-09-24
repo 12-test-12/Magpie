@@ -1,6 +1,6 @@
 """一条命令跑全绿（阶段 0 的可重复入口；2.1 起把静态红线也收了进来）。
 
-    py -3.13 check.py          # 静态红线 + 单元测试 + 四个验收脚本
+    py -3.13 check.py          # 静态红线 + 单元测试 + 五个验收脚本
     py -3.13 check.py lint     # 只跑静态红线（秒级）
     py -3.13 check.py bench    # 严格性能契约（MAGPIE_PERF_STRICT=1）
     py -3.13 check.py all      # 上面全部
@@ -121,6 +121,15 @@ UNIT = [
     # 实测 0.37s（3 次中位）：12 个来源各跑一次黄金夹具 + 12 次负向解析 +
     # 24 次完整管线导入，全在内存库里 —— 便宜到没有理由不默认跑。
     [sys.executable, "verify_g3.py"],
+    # G4 出口 Gate（阶段 4 的两条验收：明文凭据永不落库的**专项断言** /
+    # 离线指纹回归夹具）。同一条纪律的第三次执行。判据 1 的扫描是它**自己写的**
+    # （不 import 4.2 的实现 —— 拿被考的人的实现去验被考的人的结论等于自己出题）：
+    # 全表逐格 + 落盘报告逐字节 + 导出包逐字节，stored/external 各一遍，四根明文
+    # 针（头部/查询串/口令/文件名）先过正对照再搜 0。判据 2 核钉三连：还在 /
+    # 是活的（rules_digest 实算）/ 混进 definition_hash。带反例开关
+    # MAGPIE_VERIFY_G4_BREAK=mask|pin（进程内改坏掩码或钉死规则版本 → 对应段必须红），
+    # D 段另有 13 个进程内反例/对照（7 反例 + 6 对照），每次跑都验，不会锈。
+    [sys.executable, "verify_g4.py"],
 ]
 BENCH = [
     [sys.executable, "-m", "pytest", "bench/test_perf.py", "-q"],
