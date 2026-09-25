@@ -524,6 +524,20 @@ def load_parsers() -> tuple[list[Any], str]:
     return [], "（无）"
 
 
+def parser_catalog() -> tuple[list[dict], str]:
+    """可用解析器的机器可读清单（`tool` + `format_version`）+ 来源包名。
+
+    `/api/v1/meta` 与 `magpie schema --json` **共用这一份**（5.2）：两个入口此前
+    各写一遍同样的列表推导，而它们描述的是同一个注册表 —— 两份实现在"解析器
+    加了一个 tool"那天不会一起坏，只会让其中一个入口对着空手的 agent 说"取值见
+    `magpie schema`"而 schema 里没有。`import --parser <tool>` 按 `tool` 匹配，
+    指纹按 `tool@format_version` 记 —— 这两个字段就是消费方需要的全部。
+    """
+    parsers, source = load_parsers()
+    return ([{"tool": str(c.tool), "format_version": str(c.format_version)}
+             for c in parsers], str(source))
+
+
 def _parsers_in_package(pkg_name: str) -> list[Any]:
     try:
         pkg = importlib.import_module(pkg_name)

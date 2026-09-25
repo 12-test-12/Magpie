@@ -12,6 +12,51 @@
 
 ---
 
+## 0.12.0 — 5.2 `schema --json` 收口：agent 不读源码就能正确使用本工具
+
+`/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.11.0 → 0.12.0，
+已重新生成）。没有新增迁移（R4 未动）。**既有键一字未动**：`schema_version` /
+`kinds` / `relation_verbs` / `named_queries` / `fields` / `query_syntax` /
+`extras` / `notes` 的形状与取值不变（契约测试在消费，逐字节对齐）—— 本步是
+缺口审计后的**纯增量**，不是重做。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · `magpie schema --json` 的 `data` 多四个键：`tool_version` / `commands` /
+`enums` / `parsers`。**
+
+* **`tool_version`** —— 包版本（`magpie.__version__`）。本库事实从此两半齐全：
+  `schema_version`（迁移数）+ `tool_version`（工具号）。
+* **`commands`** —— 全部子命令 → `{access, mutates_db, note?}` 的读 / 写分类。
+  分类**从分发层的事实算**（`magpie.cli.WRITABLE` —— `main` 决定开只读还是
+  可写连接用的那一份），不另抄表：`jobs` 住在 `write.py` 却算 `read`、`init`
+  住在 `read.py` 却算 `write`，按文件位置手抄必错的键全部按事实落位。`app`
+  （service）与 `project` 父节点（group）是仅有的两个非 `RUNNERS` 键，例外集
+  由契约测试钉死。
+* **`enums`** —— 镜头六（003 的 CHECK 冻结）/ 生命周期 / Inbox kind（011 重建
+  表后的八个）· severity · state / `authority_level`（`--authority` 的取值，
+  此前 argparse 没有 choices、无处可查）/ `storage_state` / `custody` /
+  scope 三态。**每一项从真库的 `CHECK (… IN (…))` 读出** —— 新增
+  `query.check_enum()`（读 `sqlite_master` 的建表语句，`ALTER ADD COLUMN`
+  的列也读得到）；读不懂抛 `E_ENUM_UNREADABLE`，**绝不回空列表**冒充"词表
+  是空的"。`scope` 没有 CHECK，它的三态来自 `core/scope.py`，并由契约测试拿
+  `in_scope()` 的真实行为（true / false / null 各一例）钉住。
+* **`parsers`** —— `import --parser` 的取值（`tool` + `format_version`），
+  与 `/api/v1/meta` **共用** `ingest.parser_catalog()`（同一注册表一份描述，
+  两个入口不会各自过期）。此前 `--parser` 的帮助写着"取值见 `magpie schema`"
+  而 schema 里没有它 —— 一个指向空处的指引。
+
+**2 · 冻结**：`magpie/cli/tests/test_contract.py` 新增 4 条契约测试 ——
+读写分类对 `WRITABLE` 双向相等 + 例外集恰为 `{app, project}`；枚举逐项对真库
+CHECK 钉住（含 `ops.LIFECYCLES` / `query.LENSES` / argparse `choices` 的三方
+一致）；`check_enum` 的正反例（表不在 / 无 CHECK / 非 IN 形态，三种读不懂都
+必须响亮失败）；`tool_version` 与解析器清单对真包、真注册表。CLI 测试 67 → 71。
+
+人读表格（`--human`）同步多三节（命令读写 / 枚举取值 / 解析器）—— 人读输出
+不是契约，改动不另占篇幅。
+
+---
+
 ## 0.11.0 — 4.5 可选 extras 收口：有哪些、装没装、怎么装，一条 `schema` 可查
 
 `/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.10.0 → 0.11.0，

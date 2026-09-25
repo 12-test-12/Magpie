@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -2009,6 +2010,51 @@ def probe_schema_version(db_path: Path) -> int:
         raise QueryError("E_DB_NOT_A_DB", f"{db_path} 不是一个可读的 SQLite 库：{exc}") from exc
     finally:
         conn.close()
+
+
+def check_enum(conn: sqlite3.Connection, table: str, column: str) -> list[str]:
+    """表列的 `CHECK (… IN (…))` 词表 —— **从真库的建表语句里读**，不抄第二份。
+
+    `magpie schema --json` 的 `enums` 走这条路（5.2）：lens 只有六个、Inbox 的
+    kind 有八个、`custody` 只许两个值 —— 这些事实的**权威**是 schema 里的 CHECK
+    约束，而把它们复制成一张 Python 静态表的那天，就埋下了一个不会红的分叉：
+    下一次迁移重建表加了第九个 inbox kind，静态表照旧绿着，输出照旧是八个。
+
+    实现就是读 `sqlite_master` 里那一句建表 SQL（`ALTER TABLE ADD COLUMN` 的列
+    SQLite 也会写回这份 SQL —— `raw_files.custody` 实测如此），正则取出列自己的
+    IN 清单。**读不懂就响亮地失败**（`E_ENUM_UNREADABLE`）：一个"解析失败 →
+    空列表"的输出与"这个词表真的是空的"长得一模一样，而前者会让 agent 按
+    "没有任何合法取值"行动。
+
+    边界（说清楚，别把这条读成完整保证）：只认**单层、无嵌套括号**的 IN 清单 ——
+    现有迁移里全部词表都是 `'a','b'` 这个形状；哪天 CHECK 里真的需要嵌套表达式，
+    这里会报 `E_ENUM_UNREADABLE` 而不是猜一个值出来。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (str(table),)).fetchone()
+    if row is None or not row[0]:
+        raise QueryError(
+            "E_ENUM_UNREADABLE", f"表 {table!r} 不在本库里（或没有建表语句）",
+            hint="`magpie schema` 的 enums 按当前迁移（只读连接保证版本自洽）"
+                 "读真库的 CHECK —— 读不到说明库不是这份代码建的。",
+            table=str(table), column=str(column))
+    match = re.search(
+        r"CHECK\s*\(\s*" + re.escape(str(column)) + r"\s+IN\s*\(([^)]*)\)",
+        str(row[0]), re.IGNORECASE | re.DOTALL)
+    if match is None:
+        raise QueryError(
+            "E_ENUM_UNREADABLE",
+            f"{table}.{column} 没有 CHECK (… IN (…)) 词表",
+            hint="要么这一列的取值本来就不是 DB 冻结的（如 semantic_field 自由文本），"
+                 "要么判据搬了家 —— 别在这里手抄一张表顶上。",
+            table=str(table), column=str(column))
+    values = re.findall(r"'((?:[^']|'')*)'", match.group(1))
+    if not values:
+        raise QueryError(
+            "E_ENUM_UNREADABLE", f"{table}.{column} 的 IN 清单解析出来是空的",
+            table=str(table), column=str(column))
+    return values
 
 
 def kinds(conn: sqlite3.Connection) -> list[dict]:

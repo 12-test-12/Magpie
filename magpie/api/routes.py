@@ -199,9 +199,9 @@ def get_meta(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     kinds = [{k: v for k, v in row.items() if k != "fixture_path"}
              for row in query.kinds(conn)]
     try:
-        parsers, source_pkg = ingest.load_parsers()
-        parser_list = [{"tool": str(c.tool), "format_version": str(c.format_version)}
-                       for c in parsers]
+        # 清单的构造与 `magpie schema --json` 共用 `ingest.parser_catalog()`
+        # （5.2：同一个注册表只有一份描述，两个入口不会各自过期）。
+        parser_list, source_pkg = ingest.parser_catalog()
     except Exception as exc:                       # 解析器坏了不该让 /meta 也坏
         source_pkg, parser_list = f"<{type(exc).__name__}: {exc}>", []
     return ok({

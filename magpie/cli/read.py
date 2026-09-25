@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core import export, ingest, ops, query, store
+from ..core import scope as scope_module
 from ..core.parsers.base import extras_install_hint
 from . import write
 from .db import Database, resolve_project
@@ -794,16 +795,16 @@ OBSERVATION_FIELDS_NOTE = (
 )
 
 
-def _query_syntax(parser) -> dict:
-    """从**真的那个 parser** 生成命令语法。
-
-    一份手写的语法文档会在第三次改命令时过期，而一个过期的语法文档比没有更坏
-    （agent 会照着它拼参数）。直接从 argparse 的注册表读，两边就不可能分叉。
+def _command_nodes(parser) -> dict[str, Any]:
+    """命令键 → 子 parser（**唯一的展平走查**，`_query_syntax` 与
+    `_commands_report` 共用）。
 
     **嵌套的命令展平成一个带空格的键**（`project create`），与 `RUNNERS` 的键
-    逐字一致。
+    逐字一致。展平规则本身由 `test_schema_query_syntax_matches_the_real_parser`
+    的 `set(described) == set(real_commands)` 钉住 —— 那条断言拿的是测试自己
+    走一遍真 parser 的结果，两边任何一处展平得不一样，先红的就是它。
     """
-    commands: dict[str, Any] = {}
+    nodes: dict[str, Any] = {}
 
     def walk(node, prefix: str) -> None:
         for action in getattr(node, "_actions", []):
@@ -812,27 +813,39 @@ def _query_syntax(parser) -> dict:
                 continue
             for name, sub in choices.items():
                 key = f"{prefix} {name}".strip()
-                options, positionals = [], []
-                for sub_action in getattr(sub, "_actions", []):
-                    if isinstance(sub_action, argparse._SubParsersAction):
-                        continue
-                    entry = {"help": (sub_action.help or "").strip() or None}
-                    if not sub_action.option_strings:           # 位置参数
-                        entry["name"] = sub_action.dest
-                        positionals.append(entry)
-                        continue
-                    entry["flag"] = "/".join(sub_action.option_strings)
-                    entry["metavar"] = sub_action.metavar
-                    if sub_action.choices:
-                        entry["choices"] = list(sub_action.choices)
-                    if sub_action.default not in (None, False, argparse.SUPPRESS):
-                        entry["default"] = sub_action.default
-                    options.append(entry)
-                commands[key] = {"help": (sub.description or "").strip() or None,
-                                 "options": options, "positionals": positionals}
+                nodes[key] = sub
                 walk(sub, key)                                 # 再下去一层
 
     walk(parser, "")
+    return nodes
+
+
+def _query_syntax(parser) -> dict:
+    """从**真的那个 parser** 生成命令语法。
+
+    一份手写的语法文档会在第三次改命令时过期，而一个过期的语法文档比没有更坏
+    （agent 会照着它拼参数）。直接从 argparse 的注册表读，两边就不可能分叉。
+    """
+    commands: dict[str, Any] = {}
+    for key, sub in _command_nodes(parser).items():
+        options, positionals = [], []
+        for sub_action in getattr(sub, "_actions", []):
+            if isinstance(sub_action, argparse._SubParsersAction):
+                continue
+            entry = {"help": (sub_action.help or "").strip() or None}
+            if not sub_action.option_strings:                   # 位置参数
+                entry["name"] = sub_action.dest
+                positionals.append(entry)
+                continue
+            entry["flag"] = "/".join(sub_action.option_strings)
+            entry["metavar"] = sub_action.metavar
+            if sub_action.choices:
+                entry["choices"] = list(sub_action.choices)
+            if sub_action.default not in (None, False, argparse.SUPPRESS):
+                entry["default"] = sub_action.default
+            options.append(entry)
+        commands[key] = {"help": (sub.description or "").strip() or None,
+                         "options": options, "positionals": positionals}
     return {
         "program": parser.prog,
         "commands": commands,
@@ -925,17 +938,121 @@ def _extras_report() -> dict[str, dict[str, Any]]:
     return report
 
 
+def _commands_report(parser) -> dict:
+    """每条命令 → 读 / 写分类（5.2）。**分类从代码算，不另抄一张表。**
+
+    判据是**分发层的事实**：`magpie.cli.WRITABLE`（= `("init",) + write.
+    WRITE_COMMANDS`）就是 `main` 决定开只读连接还是可写连接用的那一份，这里
+    直接问它 —— 写命令在 `write.py` 登记、`init` 是 `read.py` 里唯一的写，
+    `jobs` 虽然实现在 `write.py` 但不在 `WRITABLE` 里（它是读），全部按事实算。
+
+    两个非 RUNNERS 的键单独认：
+
+      * **父节点**（`project` 单独出现）——有子命令表的键，执行它只打印用法；
+      * **服务**（`app`）—— `main` 在分发到 `RUNNERS` **之前**把它接走。
+        目前恰好各一个，`test_schema_command_access_is_tied_to_dispatch` 把
+        "只有这些例外"钉住：将来多出一个没登记的键，先红的是那条测试，而不是
+        这里静默给它编一个分类。
+
+    延迟导入 `WRITABLE`：包根（`__init__`）在 `read` 之后才完成初始化，
+    模块顶层 import 它会撞进循环 —— 而 `cmd_schema` 运行时一切都已就位。
+    """
+    from . import WRITABLE
+
+    report: dict[str, dict] = {}
+    for key, sub in _command_nodes(parser).items():
+        if any(isinstance(a, argparse._SubParsersAction) for a in sub._actions):
+            report[key] = {
+                "access": "group", "mutates_db": False,
+                "note": "命令族的父节点（如 `magpie project` 单独出现）——"
+                        "只打印该族的用法并退出 1，本身不执行任何操作"}
+        elif key not in RUNNERS:
+            report[key] = {
+                "access": "service", "mutates_db": False,
+                "note": "本地服务（GUI + /api/v1 与 CLI 同一份数据）——"
+                        "本进程不执行一次查询，读写经 HTTP；缺 extras.api 时"
+                        "响亮失败"}
+        elif key.split()[0] in WRITABLE:
+            report[key] = {
+                "access": "write", "mutates_db": True,
+                "note": "只写 schema（建库 / 应用迁移）—— 不建项目、不写事实"
+                        if key == "init" else
+                        "写路径：会改库（事实 / 作业 / 项目）——"
+                        "干跑类开关（--dry-run）见 query_syntax 里该命令的 options"}
+        else:
+            report[key] = {"access": "read", "mutates_db": False}
+    return report
+
+
+def _enums_report(conn) -> dict:
+    """枚举取值（5.2）。**每一项都从真库的 CHECK / 真代码算出，一张表不手抄。**
+
+    词表的权威是 schema 里的 `CHECK (… IN (…))` —— 003 冻结镜头只有六个、
+    011 重建 Inbox 表加了第八个 kind，这些事实由迁移本身守着；`check_enum`
+    把它们从**这个库当前真的建表语句**里读出来。手抄一张静态表在下一次迁移
+    那天不会红 —— 那等于把分叉埋进输出里。
+
+    `scope` 没有 CHECK（它是求值语义，不是存储约束），所以它的三态从
+    `core/scope.py` 的真代码取，并由契约测试拿 `in_scope()` 的真实行为钉住。
+    """
+    return {
+        "lens": query.check_enum(conn, "kind_registry", "lens"),
+        "lifecycle": query.check_enum(conn, "entities", "lifecycle"),
+        "inbox_kind": query.check_enum(conn, "inbox_items", "kind"),
+        "inbox_severity": query.check_enum(conn, "inbox_items", "severity"),
+        "inbox_state": query.check_enum(conn, "inbox_items", "state"),
+        "authority_level": query.check_enum(conn, "sources", "authority_level"),
+        "storage_state": query.check_enum(conn, "raw_files", "storage_state"),
+        "custody": query.check_enum(conn, "raw_files", "custody"),
+        "scope": {
+            "evaluated_kinds": list(scope_module.SCOPE_KINDS),
+            "verdicts": {"in_scope": True, "out_of_scope": False,
+                         "not_applicable": None},
+            "note": (
+                "scope 求值是三态：true=在范围内、false=越界、null=不问 —— "
+                "只有资产类 kind（evaluated_kinds）且项目配了 scope 才问得出"
+                "答案。null 不是越界：体检的越界计数与 Inbox 的 scope_drift "
+                "都只收 false。include 是白名单（空=无约束）、exclude 优先；"
+                "模式支持 '*.example.com'（含 apex 自己）与 '10.0.0.0/24'"
+                "（网段包含）。"),
+        },
+    }
+
+
+def _parsers_report() -> dict:
+    """可用解析器（5.2）。清单与 `/api/v1/meta` **共用** `ingest.parser_catalog()`。
+
+    这一条是审计里"不读源码就不可能知道"的典型：`import --parser` 的帮助文本
+    写着"取值见 `magpie schema`"，而 schema 此前根本没有解析器清单 —— 一个
+    指向空处的指引，比没有指引更费时间。
+    """
+    tools, source = ingest.parser_catalog()
+    return {
+        "source": source,
+        "tools": tools,
+        "note": "`magpie import --parser <tool>` 按 tool 匹配；不给时嗅探仲裁"
+                "自动选，仲裁不出结果的文件进 Inbox 待人工裁决（退出码 3），"
+                "不猜。指纹按 tool@format_version 记。",
+    }
+
+
 def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
     """一条命令吐出类型、关系动词、字段与查询语法（§6.3）。**agent 无需读源码。**
 
-    还有两样东西也在这里：
+    还有几样东西也在这里（每一样存在的理由相同：此前要知道它只能读源码）：
 
       * **具名查询的清单**（`query.NAMED_QUERIES`）—— agent 据此知道"哪些问题
         可以直接问"，而不必自己拼过滤条件 —— 拼接就是发明语义，而 2.2 已经
         拒绝过一次"CLI 自己发明查询语义"；
       * **可选 extras 的清单**（4.5）—— 有哪些 extras、装没装、跑哪条命令装、
-        各自是干嘛的。此前要知道这些只能读源码 / 读 pyproject，而"agent 无需
-        读源码"正是本命令立在这里的理由 —— 所以扩这里，不新造一条命令。
+        各自是干嘛的；
+      * **命令的读 / 写分类**（5.2，`_commands_report`）—— 哪些能随便调、
+        哪些会改库；分类与 `WRITABLE`（分发层真正用来开连接的事实）绑定；
+      * **枚举取值**（5.2，`_enums_report`）—— 镜头 / 生命周期 / Inbox /
+        存储与持有 / scope 三态，从真库 CHECK 与 `core/scope.py` 算出；
+      * **解析器清单**（5.2，`_parsers_report`）—— `import --parser` 的取值。
+
+    扩这里，不新造一条命令 —— 这条规矩从 4.5 起就是本命令的 docstring 明文。
     """
     conn = ctx.conn()
     kinds = query.kinds(conn)
@@ -957,6 +1074,7 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
 
     data = {
         "schema_version": ctx.db.schema_version,
+        "tool_version": _tool_version(),
         "kinds": kinds,
         "relation_verbs": verbs,
         "named_queries": {name: {"help": help_text,
@@ -967,10 +1085,14 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
                    "observation": observed,
                    "observation_note": OBSERVATION_FIELDS_NOTE},
         "query_syntax": _query_syntax(ctx.parser),
+        "commands": _commands_report(ctx.parser),
+        "enums": _enums_report(conn),
+        "parsers": _parsers_report(),
         "extras": _extras_report(),
         "notes": notes,
     }
-    human = [f"schema 版本 {data['schema_version']}",
+    human = [f"schema 版本 {data['schema_version']}"
+             f"（magpie {data['tool_version']}）",
              "", "资源类型（kind_registry）："]
     human += _tbl(["KIND", "LENS", "PRODUCED_BY"],
                   [[k["kind"], k["lens"], ",".join(k["produced_by"])] for k in kinds])
@@ -987,6 +1109,22 @@ def cmd_schema(args, ctx) -> tuple[dict, list[str]]:
     human += _tbl(["KIND", "FIELD", "VALUE_KIND", "N"],
                   [[k["kind"], f["field"], f["value_kind"], f["count"]]
                    for k in observed for f in k["fields"]])
+    human += ["", "命令读写（access=write 的会改库；read 的随便调）："]
+    human += _tbl(["COMMAND", "ACCESS", "说明"],
+                  [[key, entry["access"], entry.get("note") or "—"]
+                   for key, entry in data["commands"].items()])
+    human += ["", "枚举取值（从真库 CHECK / scope 求值算出，不手抄）："]
+    human += _tbl(["词表", "取值"],
+                  [[name, ", ".join(str(v) for v in values)]
+                   for name, values in data["enums"].items() if name != "scope"])
+    human.append(f"  scope：三态 true / false / null，只判 "
+                 f"{'、'.join(data['enums']['scope']['evaluated_kinds'])}"
+                 f"（null=不问，不当越界 —— 详见 --json 的 enums.scope.note）")
+    human += ["", "解析器（`import --parser <tool>` 的取值）："]
+    human += _tbl(["TOOL", "FMT"], [[tool["tool"], tool["format_version"]]
+                                    for tool in data["parsers"]["tools"]],
+                  empty="（无 —— 任何文件都仲裁不出解析器）")
+    human.append(f"  来源：{data['parsers']['source']}")
     human += ["", "可选 extras（4.5 收口：装没装一并报出；缺了按 install 装）："]
     human += _tbl(["EXTRAS", "已装", "包", "用途"],
                   [[name, "✓" if info["installed"] else "✗",

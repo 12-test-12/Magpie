@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.11.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.12.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -39,6 +39,11 @@ version = "0.11.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # **纯新增**一个 `extras` 键（有哪些 / 装没装 / 怎么装 / 各自干嘛）。`/api/v1`
 # 一行未改 —— openapi 快照只差 `info.version`（已重新生成）。没有新增迁移
 # （R4 未动）。见 CHANGELOG 的 `0.11.0` 一节。
+# 0.11.0 → 0.12.0 对应 5.2：schema 收口 —— `magpie schema --json` 的 data
+# **纯新增**四个键（`tool_version` / `commands` / `enums` / `parsers`），既有键
+# 一字未动。`/api/v1` 一行未改（`/meta` 改用共用的 `ingest.parser_catalog()`，
+# 响应形状不变）—— openapi 快照只差 `info.version`。没有新增迁移（R4 未动）。
+# 见 CHANGELOG 的 `0.12.0` 一节。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"

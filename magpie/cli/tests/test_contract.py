@@ -601,6 +601,177 @@ def test_schema_query_syntax_matches_the_real_parser(empty_db):
             assert option["default"] == 50
 
 
+def test_schema_command_access_is_tied_to_dispatch(empty_db):
+    """读 / 写分类与**分发层的事实**逐项一致（5.2）。
+
+    `magpie.cli.WRITABLE` 就是 `main` 决定开只读连接还是可写连接用的那一份 ——
+    本条把 `commands` 输出钉在它身上：两边任何一侧改了而另一侧没跟，先红的
+    是这里，而不是"某天 agent 按 read 调了一条会改库的命令"。
+    """
+    from magpie.cli import WRITABLE
+    from magpie.cli.read import RUNNERS
+
+    _, payload = envelope("schema", "--db", str(empty_db), "--json")
+    data = assert_ok(payload)
+    commands = data["commands"]
+
+    # 完整性：真 parser 的每个键都要有分类（少一个就是"没分类的命令"）
+    assert set(commands) == set(data["query_syntax"]["commands"])
+    assert set(RUNNERS) <= set(commands)
+    for key, entry in commands.items():
+        assert entry["access"] in ("read", "write", "service", "group"), key
+        assert isinstance(entry["mutates_db"], bool), key
+
+    # 会改库的那些：顶层命令名与 WRITABLE **集合相等**（双向，不只是子集）
+    mutates = {key for key, entry in commands.items() if entry["mutates_db"]}
+    assert {key.split()[0] for key in mutates} == set(WRITABLE)
+
+    # 各就各位的四个关键键 —— 每一个都曾是"按文件位置手抄会抄错"的陷阱：
+    # jobs 住在 write.py 却是读；init 住在 read.py 却是写；
+    # search 是读（未实现但不改库）；app / project 不是普通可执行命令。
+    assert commands["jobs"]["access"] == "read"
+    assert commands["init"]["access"] == "write"
+    assert commands["init"]["mutates_db"] is True
+    assert commands["search"]["access"] == "read"
+    assert commands["app"]["access"] == "service"
+    assert commands["project"]["access"] == "group"
+    # 反例自检：service / group 的例外**恰好**只有这两个 —— 哪天 parser 多出
+    # 一个不在 RUNNERS 里的键，先红的是这条（而不是它被静默编成 service）。
+    assert {key for key, entry in commands.items()
+            if entry["access"] in ("service", "group")} == {"app", "project"}
+    # RUNNERS 里没有第三态：每条可分发命令不是读就是写
+    for key in RUNNERS:
+        assert commands[key]["access"] in ("read", "write"), key
+
+
+def test_schema_enums_come_from_the_live_db_checks(empty_db):
+    """枚举每一条都对得上**真库的 CHECK**（5.2）—— 003 冻结的六个镜头、
+    011 重建表后的第八个 inbox kind，一个不多一个不少。
+
+    手抄一张静态表在下一次迁移那天不会红 —— 这条与 `cmd_schema` 的
+    `check_enum` 是一对：那边负责"从真库算"，这边负责"算错了要红"。
+    """
+    from magpie.cli import build_parser
+    from magpie.core import ops, query as core_query, scope as scope_module
+
+    _, payload = envelope("schema", "--db", str(empty_db), "--json")
+    data = assert_ok(payload)
+    enums = data["enums"]
+
+    # 镜头：003 的 CHECK 冻结**只有六个**，且与代码常量一致
+    assert enums["lens"] == ["graph", "assets", "services", "api", "traffic", "vuln"]
+    assert enums["lens"] == list(core_query.LENSES)
+    # kind → 镜头的归属由 kinds[].lens 给出，必须落在镜头全集里
+    assert {k["lens"] for k in data["kinds"]} <= set(enums["lens"])
+
+    # 生命周期：真库 CHECK == ops.LIFECYCLES == argparse 的 choices（三方一致）
+    assert enums["lifecycle"] == list(ops.LIFECYCLES) == ["active", "retired"]
+    ls_parser = _subparsers(build_parser())["ls"]
+    lifecycle_action = next(a for a in ls_parser._actions
+                            if "--lifecycle" in a.option_strings)
+    assert list(lifecycle_action.choices) == enums["lifecycle"]
+
+    # Inbox：001 的七个 kind + 011 重建表加的第八个；severity / state 一并钉住
+    assert enums["inbox_kind"] == [
+        "value_conflict", "orphan_subject", "identity_ambiguous",
+        "merge_conflict", "evidence_missing", "scope_drift",
+        "manual_required", "unregistered_asset"]
+    assert enums["inbox_severity"] == ["low", "medium", "high"]
+    assert enums["inbox_state"] == ["open", "resolved", "dismissed", "closed"]
+
+    # 原文持有（011 的 custody + 001 的 storage_state）与来源可信度
+    assert enums["storage_state"] == ["present", "archived", "purged", "missing"]
+    assert enums["custody"] == ["stored", "external"]
+    assert enums["authority_level"] == ["verified", "semiautomatic",
+                                        "manual", "unverified"]
+
+    # scope 三态：描述钉一遍，**真求值行为**再钉一遍（描述与实现分叉必须红）
+    scope = enums["scope"]
+    assert scope["evaluated_kinds"] == list(scope_module.SCOPE_KINDS) \
+        == ["domain", "ip", "cidr"]
+    assert scope["verdicts"] == {"in_scope": True, "out_of_scope": False,
+                                 "not_applicable": None}
+    cfg = {"include": ["*.example.com"], "exclude": []}
+    assert scope_module.in_scope(cfg, "domain", "api.example.com") is True
+    assert scope_module.in_scope(cfg, "domain", "evil.test") is False
+    assert scope_module.in_scope(cfg, "product", "nginx@1.24.0") is None
+
+
+def test_check_enum_reads_the_live_schema_and_fails_loudly(empty_db):
+    """`query.check_enum` 的正反两面：真表读得出；读不懂**响亮失败**，不回空表。
+
+    "解析失败 → 空列表"与"这个词表真的是空的"在输出里长得一模一样，而前者
+    会让 agent 按"没有任何合法取值"行动 —— 所以三种读不懂的形态都必须抛
+    `E_ENUM_UNREADABLE`，这一条就是那三个反例。
+    """
+    from magpie.core import query as core_query
+
+    conn = store.connect(empty_db)
+    try:
+        # 正面：从**这个库真的建表语句**里读（不是读任何一张 Python 常量表）
+        assert core_query.check_enum(conn, "kind_registry", "lens") == [
+            "graph", "assets", "services", "api", "traffic", "vuln"]
+        assert core_query.check_enum(conn, "inbox_items", "kind")[-1] \
+            == "unregistered_asset"          # 011 重建表加的第八个真的在
+
+        # 反例①：表不在本库里
+        with pytest.raises(core_query.QueryError) as exc:
+            core_query.check_enum(conn, "no_such_table", "x")
+        assert exc.value.code == "E_ENUM_UNREADABLE"
+        assert exc.value.details["table"] == "no_such_table"
+
+        # 反例②：列没有 CHECK 词表 —— 不许回空列表冒充"词表是空的"
+        conn.execute("CREATE TABLE plain (z TEXT NOT NULL)")
+        with pytest.raises(core_query.QueryError) as exc:
+            core_query.check_enum(conn, "plain", "z")
+        assert exc.value.code == "E_ENUM_UNREADABLE"
+        assert exc.value.details["column"] == "z"
+
+        # 反例③：有 CHECK 但不是 IN 清单（表达式形态，本步的已知边界）
+        conn.execute("CREATE TABLE guarded (w TEXT CHECK (length(w) > 0))")
+        with pytest.raises(core_query.QueryError):
+            core_query.check_enum(conn, "guarded", "w")
+
+        # 对照：同一张新表上的 IN 清单照常读得出（反例②不是"新表都失败"）
+        conn.execute("CREATE TABLE synthetic (x TEXT CHECK (x IN ('a', 'b')))")
+        assert core_query.check_enum(conn, "synthetic", "x") == ["a", "b"]
+    finally:
+        conn.close()
+
+
+def test_schema_tool_version_and_parser_catalog_are_live(empty_db):
+    """`tool_version` / `parsers`（5.2）：版本对得上包，清单对得上**真的注册表**。
+
+    `import --parser` 的帮助文本写着"取值见 `magpie schema`"—— 这条断言里
+    对 help 的那两行就是在钉这个承诺：指引指向的地方必须真的有货。
+    """
+    from magpie import __version__
+    from magpie.cli import build_parser
+    from magpie.core import ingest
+
+    _, payload = envelope("schema", "--db", str(empty_db), "--json")
+    data = assert_ok(payload)
+
+    assert data["tool_version"] == __version__
+
+    tools, source = ingest.parser_catalog()
+    assert data["parsers"]["tools"] == tools
+    assert data["parsers"]["source"] == source
+    names = [t["tool"] for t in tools]
+    assert len(names) == len(set(names)), "解析器 tool 名重复"
+    # 空清单是另一种故障：它与"真的没有解析器"在输出里一模一样地绿
+    assert {"domainlist", "httpx", "nuclei", "har"} <= set(names)
+    # kinds 声称的产出者必须真的是注册表里的解析器（tool@version 的前半段）
+    assert {p.split("@")[0] for k in data["kinds"]
+            for p in k["produced_by"]} <= set(names)
+
+    # --parser 的帮助承诺"取值见 magpie schema"—— 承诺本身也钉在这里
+    import_parser = _subparsers(build_parser())["import"]
+    parser_action = next(a for a in import_parser._actions
+                         if "--parser" in a.option_strings)
+    assert "magpie schema" in (parser_action.help or "")
+
+
 def _subparsers(parser) -> dict:
     """parser → {命令名: 子 parser}，**嵌套的展平成带空格的键**。
 
