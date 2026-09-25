@@ -41,6 +41,18 @@ snapshots/
 .claude/
 description.md
 reply.md
+# G3 待办④ / LARI-41 扫描补：这些名字在 git status 里反复出现，全是运行时落盘
+# 的临时文件，不是交付物（两次 Gate 都点名过，靠人肉分辨迟早出事）。
+CLAUDE.md
+comments*.json
+comments*.err
+issue*.json
+issue*.err
+children*.json
+parent.err
+thread_delta.json
+thread_delta.err
+sec27.txt
 
 # --- IDE / 临时工作区 ---
 # `.idea/` 由 IDE 生成；`_scratch/` 是调试与复验的临时目录（含 magpie-data）。
