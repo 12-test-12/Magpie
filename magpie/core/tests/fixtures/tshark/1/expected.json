@@ -2,322 +2,88 @@
   "tool": "tshark",
   "format_version": "1",
   "input": "input.json",
-  "provenance": "按 `tshark -T json` 的**已发布形状**现写的样本，**不是真导出**：本机没有 tshark（放行说明里写死了这一条）。它证明的是解析器与形状自洽，不是与 Wireshark 的输出一致。装上 Wireshark 之后第一件事是拿一份真导出的文件替换它。",
-  "bad_lines": [
-    {
-      "line": 1,
-      "reason": "这份抓包里有 1 个不构成 IP 会话的包（ARP 之类），它们不进 flow ——flow 的身份是 IP 的 5 元组"
-    }
-  ],
+  "provenance": "真抓包：WSL Ubuntu 的 tcpdump 抓本地回环一次 HTTP GET，tshark 4.2.2 `-T json` 转出（2026-09-25，无任何凭据）。它替换掉原先按'已发布形状'手写的样本 —— 手写样本是顶层平铺（ip_ip_src），真输出把字段嵌在协议组里、键是点名（layers['ip']['ip.src']），照手写形状写的组内取值读真文件是 0 记录（G4 复验 / LARI-41 揪出并修复）。",
+  "bad_lines": [],
   "unknown_fields": {},
   "records": [
     {
       "type": "entity",
       "kind": "flow",
-      "key": "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z",
-      "display": "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+      "key": "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z",
+      "display": "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "packet_count",
-      "value": 3
+      "value": 12
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "byte_count",
-      "value": 1820
+      "value": 1113
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "first_seen",
-      "value": "2026-01-01T00:00:00Z"
+      "value": "2026-09-25T11:33:56Z"
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "last_seen",
-      "value": "2026-01-01T00:00:05Z"
+      "value": "2026-09-25T11:33:56Z"
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "app_protocols",
       "value": [
-        "http",
-        "tls"
+        "data-text-lines",
+        "http"
       ]
     },
     {
       "type": "observation",
       "entity_ref": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "field": "client",
-      "value": "10.0.0.5"
+      "value": "127.0.0.1"
     },
     {
       "type": "entity",
       "kind": "ip",
-      "key": "93.184.216.34",
-      "display": "93.184.216.34"
+      "key": "127.0.0.1",
+      "display": "127.0.0.1"
     },
     {
       "type": "relation",
       "src": [
         "flow",
-        "tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"
+        "tcp|127.0.0.1:51126|127.0.0.1:8951|2026-09-25T11:33:56Z"
       ],
       "dst": [
         "ip",
-        "93.184.216.34"
-      ],
-      "rel": "involves"
-    },
-    {
-      "type": "entity",
-      "kind": "flow",
-      "key": "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z",
-      "display": "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "packet_count",
-      "value": 1
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "byte_count",
-      "value": 90
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "first_seen",
-      "value": "2026-01-01T00:05:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "last_seen",
-      "value": "2026-01-01T00:05:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "app_protocols",
-      "value": [
-        "tls"
-      ]
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "field": "client",
-      "value": "10.0.0.5"
-    },
-    {
-      "type": "entity",
-      "kind": "ip",
-      "key": "93.184.216.34",
-      "display": "93.184.216.34"
-    },
-    {
-      "type": "relation",
-      "src": [
-        "flow",
-        "tcp|10.0.0.5:51235|93.184.216.34:443|2026-01-01T00:05:00Z"
-      ],
-      "dst": [
-        "ip",
-        "93.184.216.34"
-      ],
-      "rel": "involves"
-    },
-    {
-      "type": "entity",
-      "kind": "flow",
-      "key": "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z",
-      "display": "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "packet_count",
-      "value": 1
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "byte_count",
-      "value": 74
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "first_seen",
-      "value": "2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "last_seen",
-      "value": "2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "app_protocols",
-      "value": [
-        "dns"
-      ]
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "field": "client",
-      "value": "10.0.0.5"
-    },
-    {
-      "type": "entity",
-      "kind": "ip",
-      "key": "8.8.8.8",
-      "display": "8.8.8.8"
-    },
-    {
-      "type": "relation",
-      "src": [
-        "flow",
-        "udp|10.0.0.5:40000|8.8.8.8:53|2026-01-01T00:00:00Z"
-      ],
-      "dst": [
-        "ip",
-        "8.8.8.8"
-      ],
-      "rel": "involves"
-    },
-    {
-      "type": "entity",
-      "kind": "flow",
-      "key": "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z",
-      "display": "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "field": "packet_count",
-      "value": 1
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "field": "byte_count",
-      "value": 118
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "field": "first_seen",
-      "value": "2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "field": "last_seen",
-      "value": "2026-01-01T00:00:00Z"
-    },
-    {
-      "type": "observation",
-      "entity_ref": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "field": "client",
-      "value": "10.0.0.7"
-    },
-    {
-      "type": "entity",
-      "kind": "ip",
-      "key": "10.0.0.8",
-      "display": "10.0.0.8"
-    },
-    {
-      "type": "relation",
-      "src": [
-        "flow",
-        "udp|10.0.0.7:5000|10.0.0.8:4500|2026-01-01T00:00:00Z"
-      ],
-      "dst": [
-        "ip",
-        "10.0.0.8"
+        "127.0.0.1"
       ],
       "rel": "involves"
     }

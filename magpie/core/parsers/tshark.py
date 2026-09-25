@@ -1,20 +1,27 @@
 """`tshark` —— Wireshark 命令行导出的 `-T json` 包列表（4.1）。
 
-⚠️  **本机没有 tshark**，所以这份解析器**没有对着真实输出跑过**
+✅  **2026-09-25 已对着真导出复核完毕**（G4 复验 / LARI-41）
 ---------------------------------------------------------------------
-放行说明里写死了一条：没有的工具不许声称有。这一条对代码的影响必须说清楚，
-否则读的人会把"通过"读成"验过了真导出"：
+上一版这里写死的是"本机没有 tshark、形状是猜的"，还预言了猜错的样子是
+"整份文件读不出一个包" —— 这条预言在复核时应验了：真 `tshark -T json`
+（4.2.2）把字段**嵌在协议组里、键是点名**（`layers["ip"]["ip.src"]`），而
+组内取值没试这个键 → 31 个真包 **0 记录**，坏行还把真 IP/TCP 包误诊成
+"ARP 之类"。
 
-* **取值按已发布的形状写**，并因为**无法实测**而接受几种书写（见 `_field`）——
-  这份宽容不是设计，是**对冲**：形状猜错的方向是"整份文件读不出一个包"，
-  而那正是同一个错误在被实测时会暴露的样子；
-* **夹具是按形状现写的样本，不是真导出**（`fixtures/tshark/1/input.json` 的
-  文件头与交付说明里都写着这句）。它证明的是"解析器与形状自洽"，不是
-  "与 Wireshark 的输出一致"；
-* **缺 tshark 的可读错误路径是真验过的**（`ensure_available`）——那才是今天
-  能真跑的那一半。
+这次复核落成的三件事：
 
-装上 Wireshark 之后要补的第一件事：拿一份**真导出**重跑一次黄金夹具。
+* `_field` 组内**第一个就试点名**（真形状），其余书写留作版本差异的对冲
+  （见 `_field`）；
+* 夹具 `fixtures/tshark/1/input.json` 换成**真抓包**（WSL tcpdump 抓本地
+  回环一次 GET → tshark 4.2.2 转出，无任何凭据），`expected.json` 的
+  `provenance` 记录来历，`test_tshark_fixture_declares_its_provenance`
+  把它钉住；
+* 坏行理由分得开"真没有 IP 层"与"带 IP 层却取不出 5 元组"（后者要人去核
+  取值，报成 ARP 会指错方向）。
+
+**缺 tshark 的可读错误路径仍是真验过的**（`ensure_available`）—— Windows
+主机的 PATH 上没有 tshark（这次只装在 WSL 里），这条"缺工具"路径在产品运行
+的主机上依然是现实。
 
 为什么主路径是"离线解析已经导出的 JSON 文件"
 ----------------------------------------------
@@ -74,8 +81,9 @@ MAX_PACKET_CHARS = 1024 * 1024
 
 #: `-T json` 的顶层是数组，这是它与 3.4 那三个"整份 JSON"来源（顶层是对象）
 #: 的**形状判据**。嗅探靠它 ＋ 那个特征键 —— 见 `sniff`。
-#: `_source` 是 tshark 的 EK 风格外壳（`{"_index","_type","_source":{"layers"}}`），
-#: `layers` 是真身。两个都要出现才算认得出。
+#: `_source` 是 tshark 的 EK 风格外壳（`{"_index","_type","_source":{"layers"}}` ——
+#: 4.2.2 真输出实测带全四个键，2026-09-25），`layers` 是真身。两个都要出现
+#: 才算认得出。
 _TSHARK_MARKERS = ('"_source"', '"layers"')
 
 #: `frame.protocols` 里的**结构性**层（链路 / 网络 / 传输）。它们不落进
@@ -182,9 +190,11 @@ class TsharkParser(Parser):
 
     def parse(self, lines: Iterable[str], ctx: ParseContext) -> Iterator[Record]:
         sink = FlowSink()
-        #: 一眼可见的两个计数：`packets` = 真的读出来几个包（用于区分"空文件"
-        #: 与"读不出包"），`not_ip` = 覆盖不到的包（只报一次，见文件头）。
-        state = {"packets": 0, "not_ip": 0, "content": False}
+        #: 一眼可见的三个计数：`packets` = 真的读出来几个包（用于区分"空文件"
+        #: 与"读不出包"），`not_ip` = 覆盖不到的包（只报一次，见文件头），
+        #: `field_fail` = **带 IP 层却取不出 5 元组**（字段名漂移 —— 与
+        #: not_ip 分开报：报成"ARP 之类"会把下一个人指去错的方向）。
+        state = {"packets": 0, "not_ip": 0, "field_fail": 0, "content": False}
         for index, text in enumerate(_packet_texts(lines, ctx, state), start=1):
             if ctx.cancelled():
                 return
@@ -204,9 +214,20 @@ class TsharkParser(Parser):
                 continue
             fields = _packet_fields(layers)
             if fields is None:
-                # 非 IP 的包（ARP / STP / 802.1X……）。**不是坏数据**，是这份
-                # 模型覆盖不到的东西 —— 只报一次（见文件头）。
-                state["not_ip"] += 1
+                # 两类要分开（都只报一次，口径见文件头）：
+                #   * 真没有 IP 层的包（ARP / STP / 802.1X……）—— **不是坏数据**，
+                #     是这份模型覆盖不到的东西；
+                #   * **带 IP 层却取不出 5 元组** —— 字段名与认下的几种书写都
+                #     对不上（形状漂移），这是"去核 `_field` 取值"的信号。报成
+                #     "ARP 之类"会把下一个人指去错的方向（G4 复验真文件时就被
+                #     这条误诊坑过一次）。
+                if (isinstance(layers.get("ip"), dict)
+                        or isinstance(layers.get("ipv6"), dict)
+                        or any(proto in ("ip", "ipv6")
+                               for proto in _stack(layers))):
+                    state["field_fail"] += 1
+                else:
+                    state["not_ip"] += 1
                 continue
             yield from sink.observe(ctx=ctx, lineno=index, **fields)
         yield from sink.finish(ctx)
@@ -217,6 +238,16 @@ class TsharkParser(Parser):
             if state["content"]:
                 ctx.on_bad_line(1, "这份 `tshark -T json` 里一个包都读不出来 ——"
                                    "取不到任何会话", "")
+        elif state["field_fail"]:
+            # 形状漂移优先报：它是"去核 `_field` 取值"的信号，不是"这份抓包里
+            # 有 ARP"的信号。两者同时出现时把 ARP 那半句捎上，一个字都不藏。
+            message = (f"这份抓包里有 {state['field_fail']} 个带 IP 层的包取不出"
+                       f" 5 元组 —— 字段名与认下的几种书写都对不上（拿一份真导出"
+                       f"对照 `_field` 取值），它们不进 flow")
+            if state["not_ip"]:
+                message += (f"；另有 {state['not_ip']} 个不构成 IP 会话的包"
+                            f"（ARP 之类）")
+            ctx.on_bad_line(1, message, "")
         elif state["not_ip"]:
             ctx.on_bad_line(1, f"这份抓包里有 {state['not_ip']} 个不构成 IP 会话的包"
                                f"（ARP 之类），它们不进 flow ——"
@@ -332,11 +363,14 @@ def _layers_of(packet: dict) -> dict | None:
 def _field(layers: dict, name: str) -> Any:
     """按**字段的点名**取值（`ip.src` / `frame.time_epoch`）。
 
-    ⚠️  `tshark -T json` 把层里的字段名写成了**平铺**的形式（`ip_ip_src`），
-    而不同版本/封装下也可能就是点名本身（`ip.src`）或者嵌在子对象里
-    （`layers["ip"]["ip_src"]`）。**没有 tshark 可以对着验**，所以这里按
-    "几种可能的书写都试一遍"取值 —— 这份宽容是对冲，不是设计（文件头讲了
-    为什么必须这么做，以及装上 Wireshark 之后第一件事是拿真导出复核）。
+    真 `tshark -T json`（4.2.2 实测，2026-09-25 —— 见夹具 `provenance`）把
+    字段**嵌在协议组里、键就是点名**：`layers["ip"]["ip.src"]`。所以组内
+    **第一个就试 `name`** —— 这正是 G4 复验揪出的那次 0-flow 的病根：组内
+    当时只试平铺/短名（`ip_src` / `src`），真键一个都没试到，31 个真包全部
+    取不出 5 元组。
+
+    其余书写（顶层平铺 `ip_ip_src`、顶层点名、组内平铺）是其它版本/封装可能
+    给的形状，一并留着 —— 宽容仍然存在，但对冲面从"猜"缩小到了"版本差异"。
 
     取到列表时取**第一个**元素：某些字段（同名多值）在 tshark 里是数组，
     而 5 元组的每一件都只有一个值。这与 `_json.as_list` 的口径一致。
@@ -350,7 +384,8 @@ def _field(layers: dict, name: str) -> Any:
             return _first(value)
     group = layers.get(proto)
     if isinstance(group, dict):
-        for key in (flat, f"{proto}_{field}", field):
+        # 组内先试点名（真形状），再退平铺/短名（其它书写）。
+        for key in (name, flat, f"{proto}_{field}", field):
             value = group.get(key)
             if value is not None:
                 return _first(value)

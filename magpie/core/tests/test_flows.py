@@ -12,14 +12,17 @@
       （不沿用 `stored` 的结论），而 `purge_raw_file` 对外部文件拒绝执行 ——
       因为"清除"这个词在它身上没有对应动作。
 
-  ③  **缺 `tshark` 的可读错误路径**：这是"缺工具"这一半**今天能真跑**的形态
-      （本机没有 tshark，放行说明里写死了）。它验的是报错指对了方向（缺什么、
-      怎么装、以及本步其实不需要它），而不是一句 `FileNotFoundError`。
+  ③  **缺 `tshark` 的可读错误路径**：它验的是报错指对了方向（缺什么、怎么装、
+      以及本步其实不需要它），而不是一句 `FileNotFoundError` —— 靠 monkeypatch
+      `shutil.which` 每次真跑（Windows 主机的 PATH 上没有 tshark，这条"缺
+      工具"路径在产品主机上依然是现实）。
 
-⚠️  **夹具的来历**：`fixtures/tshark/1/input.json` 是按 `tshark -T json` 的
-已发布形状现写的**样本**，不是真导出 —— 本机没有 tshark。它证明的是"解析器与
-形状自洽"，不是"与 Wireshark 的输出一致"。`test_tshark_fixture_declares_its_
-provenance` 把这句话钉在夹具里：装上 Wireshark 之后，替换夹具的人会先看到它。
+✅  **夹具的来历**：`fixtures/tshark/1/input.json` 是**真抓包**（WSL tcpdump
+抓本地回环一次 GET → tshark 4.2.2 `-T json` 转出，2026-09-25，无任何凭据），
+替换了原先按"已发布形状"手写的样本 —— 手写形状与真输出对不上（真字段在协议
+组内、键是点名，手写是顶层平铺），G4 复验揪出后按放行条件"装上 tshark 先拿
+真导出复核"补上。`test_tshark_fixture_declares_its_provenance` 把来历钉在夹具
+里：下次换夹具的人必须同时更新 `provenance` 的事实，否则这条断言红。
 """
 
 from __future__ import annotations
@@ -64,7 +67,8 @@ def write(tmp_path: Path, name: str, text: str) -> Path:
 
 def packet(index: int, epoch: str, src: str, sport: str, dst: str, dport: str,
            protocols: str, length: str) -> dict:
-    """一条 `tshark -T json` 的包（形状见夹具的文件头）。"""
+    """一条**合成**的 `tshark -T json` 包（顶层平铺书写；真形状是组内点名，
+    见夹具 `provenance` 与 `test_field_lookup_accepts_all_documented_shapes`）。"""
     layers = {
         "frame_frame_protocols": protocols,
         "frame_frame_time_epoch": epoch,
@@ -127,19 +131,22 @@ def test_golden_fixture_is_live_and_covers_both_sources():
 
 
 def test_tshark_fixture_declares_its_provenance():
-    """那份 `tshark` 夹具**自报来历**：它是按形状现写的样本，不是真导出。
+    """那份 `tshark` 夹具**自报来历**：它是真抓包，且把工具与版本说清楚。
 
-    为什么要一条断言：夹具是"当时被确认过的输出"，而这份没有"当时"——本机没有
-    tshark，它从来没有被任何一个真导出确认过。这句话不能只写在交付评论里（评论
-    会过期），也不能只写在解析器的文件头里（换夹具的人先看的是夹具目录）。
+    为什么要一条断言：夹具是"当时被确认过的输出"，来历必须住在夹具自己的
+    `expected.json` 里 —— 交付评论会过期、解析器文件头有人不读，而换夹具的
+    人先看的是夹具目录。
 
-    装上 Wireshark 之后，这条断言会**逼着**替换夹具的人先把话说清楚：要么换上
-    真导出并把 `provenance` 改掉，要么留着这句话。
+    这条断言钉三个事实（G4 复验 / LARI-41 换夹具时定下的）：抓包工具
+    （tcpdump）、转换工具的版本（tshark 4.2.2）、以及"真抓包"这三个字 ——
+    上一版 provenance 写的是"不是真导出"，同一条断言当时钉着那句话。工具或
+    版本换了、或者有人把夹具换回手写样本，这里必须跟着改，否则红。
     """
     doc = json.loads((TSHARK_CASE / "expected.json").read_text(encoding="utf-8"))
     provenance = str(doc.get("provenance") or "")
-    assert "不是真导出" in provenance, provenance
-    assert "tshark" in provenance, provenance
+    assert "tcpdump" in provenance, provenance
+    assert "tshark 4.2.2" in provenance, provenance
+    assert "真抓包" in provenance, provenance
 
 
 def test_session_is_split_by_the_idle_gap_not_by_the_file():
@@ -239,12 +246,39 @@ def test_arp_packets_are_skipped_once_with_a_readable_note():
     assert "Traceback" not in str(ctx.bad_lines[0]["reason"])
 
 
-def test_field_lookup_accepts_both_documented_shapes():
-    """取值对两种书写都认（`ip_ip_src` 与 `ip.src`）。
+def test_field_shape_drift_reports_a_different_reason_than_arp():
+    """**带 IP 层却取不出 5 元组** ≠ "ARP 之类" —— 两种坏行必须分得开。
 
-    ⚠️  **这条宽容是对冲，不是设计**：本机没有 tshark，形状无法实测，而猜错的
-    方向是"整份文件读不出一个包"。测试把它钉住，免得下一个人在"清理死代码"
-    时把另一半删掉 —— 删掉它需要先有一次真导出复核（见夹具的 `provenance`）。
+    这是 G4 复验真文件时被坑的那条误诊的反例：31 个真 IP/TCP 包因为字段名
+    与认下的书写都对不上而取不出 5 元组，坏行却说"ARP 之类"，把人指去错的
+    方向。分不开时，形状漂移（要人去核 `_field` 取值）会被当成覆盖边界
+    （要人去放行）—— 一字之差，处置完全相反。
+    """
+    drifted = {"_index": "x", "_type": "pcap_file", "_score": None,
+               "_source": {"layers": {
+                   "frame": {"frame.protocols": "eth:ethertype:ip:tcp",
+                             "frame.time_epoch": "1767225600.100000",
+                             "frame.len": "100"},
+                   "ip": {"ipv4.src": "10.0.0.5", "ipv4.dst": "93.184.216.34"},
+                   "tcp": {"tcp.sourceport": "51234",
+                           "tcp.destinationport": "443"}}}}
+    ctx = base.OfflineContext()
+    records = tshark.parse_text(capture(drifted), ctx)
+    assert records == [], records
+    reasons = [str(b["reason"]) for b in ctx.bad_lines]
+    assert any("取不出 5 元组" in r for r in reasons), reasons
+    assert not any("ARP" in r for r in reasons), reasons
+
+
+def test_field_lookup_accepts_all_documented_shapes():
+    """取值对每种**有据可依**的书写都认 —— 包括**真形状**（组内点名）。
+
+    真 `tshark -T json`（4.2.2 实测，2026-09-25）是**组内点名**：
+    `layers["ip"]["ip.src"]`。这正是 G4 复验揪出的病根（组内没试点名 → 真
+    文件 0 记录）；夹具已换成真抓包，这里再用**合成载荷**把形状单独钉一次 ——
+    免得下一次"清理死代码"把 `name` 从组内候选里删掉时，要等真文件复核才
+    发现。顶层平铺（`ip_ip_src`）与顶层点名（`ip.src`）是其它书写，一并
+    留着：宽容是对版本差异的对冲，不是设计。
     """
     dotted = {"_index": "x", "_type": "pcap_file", "_score": None, "_source": {"layers": {
         "frame.protocols": "eth:ethertype:ip:tcp",
@@ -253,6 +287,18 @@ def test_field_lookup_accepts_both_documented_shapes():
         "ip.src": "10.0.0.5", "ip.dst": "93.184.216.34",
         "tcp.srcport": "51234", "tcp.dstport": "443"}}}
     records = tshark.parse_text(capture(dotted))
+    flows = [r.key for r in records if isinstance(r, base.RawEntity) and r.kind == "flow"]
+    assert flows == ["tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"], flows
+
+    # 真形状：字段嵌在协议组里、键是点名（4.2.2 实测，2026-09-25）。
+    nested = {"_index": "x", "_type": "pcap_file", "_score": None,
+              "_source": {"layers": {
+                  "frame": {"frame.protocols": "eth:ethertype:ip:tcp",
+                            "frame.time_epoch": "1767225600.100000",
+                            "frame.len": "100"},
+                  "ip": {"ip.src": "10.0.0.5", "ip.dst": "93.184.216.34"},
+                  "tcp": {"tcp.srcport": "51234", "tcp.dstport": "443"}}}}
+    records = tshark.parse_text(capture(nested))
     flows = [r.key for r in records if isinstance(r, base.RawEntity) and r.kind == "flow"]
     assert flows == ["tcp|10.0.0.5:51234|93.184.216.34:443|2026-01-01T00:00:00Z"], flows
 
@@ -396,8 +442,9 @@ def test_purging_an_external_file_is_refused_with_a_readable_reason(db, project,
 def test_missing_tshark_gives_a_readable_error_not_a_bare_filenotfound(monkeypatch):
     """缺 `tshark` 时抛**可读错误**：说清缺什么、怎么装、以及本步其实不需要它。
 
-    放行说明里点名了这一条，理由是它**今天能真跑** —— 本机没有 tshark，所以这条
-    路径是"缺工具"那一半里唯一能被真实执行的部分。三条判据缺一不可：
+    放行说明里点名了这一条；它靠 monkeypatch 每次**真跑** —— Windows 主机的
+    PATH 上没有 tshark（这次只装在 WSL 里），"缺工具"这条路径在产品运行的主机
+    上依然是现实。三条判据缺一不可：
 
       * 不是 `FileNotFoundError`（那是"文件没找到"的形状，会把人引去查路径）；
       * 说清**缺的是什么**（tshark）与**怎么装**（winget / apt）；
