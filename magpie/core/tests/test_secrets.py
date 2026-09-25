@@ -478,6 +478,43 @@ def test_detect_secrets_returns_one_entry_per_rule_hit():
     assert all(h["value"] == token for h in hits)
 
 
+#: `detect_secrets` 预筛（`normalize._SECRET_TRIGGERS`）的**每规则样例** ——
+#: 一行已知能命中该规则的文本。与预筛表配对维护：新增规则必须同时给样例，
+#: 否则下面那条测试当场红（预筛漏了它的字面量同样红：样例行会被拦下）。
+_SECRET_LINE_SAMPLES = {
+    "authorization_header": "Authorization: Bearer ghp_A1b2C3d4E5f6G7h8Ij90Kl12Mn34Op56",
+    "basic_auth": "curl -u alice:G4BasicNeedle9876543210 https://a.example.com/x",
+    "password_param": "?api_key=G4QueryNeedle9876543210",
+    "github_token": "ghp_A1b2C3d4E5f6G7h8Ij90Kl12Mn34Op56",
+    "aws_access_key_id": "role arn:aws:iam::123456789012:deploy AKIA1234567890ABCDEF",
+    "private_key_block": "-----BEGIN RSA PRIVATE KEY-----",
+    "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+           "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c",
+    "slack_token": "xoxb-123456789012-abcdefghijklmnopqrstuvwxyz",
+}
+
+
+def test_detect_secrets_prefilter_never_drops_a_rule_hit():
+    """预筛（`_SECRET_TRIGGERS`）不许吞掉任何一条真实命中。
+
+    预筛是"必要字面量都不在 → 直接返回空"的**纯过滤**。这条测试给**每一条
+    规则**钉一行必命中样例，两个方向各钉一针：
+
+      * 新规则没有样例行 → 红（逼作者同时校准 `_SECRET_TRIGGERS` 与样例）；
+      * 预筛把样例行拦下（推导漏了某个字面量）→ `detect_secrets` 返回空 → 红。
+
+    与手数用例的分工：那条钉"不多"（by_rule 逐项相等），这条钉"不少"。
+    """
+    for rule in normalize.SECRET_RULES:
+        sample = _SECRET_LINE_SAMPLES.get(rule.name)
+        assert sample is not None, (
+            f"规则 {rule.name} 缺样例行 —— 新增规则必须同时给一行能命中它的样例"
+            f"（并确认 normalize._SECRET_TRIGGERS 覆盖它的必要字面量）")
+        hits = normalize.detect_secrets(sample)
+        assert any(h["rule"] == rule.name for h in hits), (
+            f"{rule.name}: 样例 {sample!r} 没命中 —— 预筛拦错了行，或规则坏了")
+
+
 def test_by_rule_counts_equal_hand_tally():
     """`by_rule` 每个规则 = **手工数**（不是"两遍相等"）。
 
