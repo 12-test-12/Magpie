@@ -6,6 +6,7 @@
     magpie.core   数据层。**只用标准库**（红线 R6），不含任何第三方依赖。
     magpie.cli    命令行入口（`console_scripts: magpie = magpie.cli:main`）。
     magpie.api    可选的本地 API（依赖走 extras.api / extras.api-yaml）。
+    magpie.adapters 对外传输适配层（5.1：MCP stdio —— 只读工具面，零第三方）。
 
 这里刻意**不** eager import `core`：`import magpie` 应当廉价且无副作用，
 以便 `magpie --help` 之类的入口不受数据层导入成本拖累。
@@ -13,6 +14,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.12.0"       # 与 pyproject.toml 的 version 保持一致（5.2：schema 收口）
+__version__ = "0.13.0"       # 与 pyproject.toml 的 version 保持一致（5.1：MCP 适配器）
 
 __all__ = ["__version__"]

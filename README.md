@@ -106,6 +106,40 @@ agent 不必读源码。
 因为空结果对 agent 是一个确定的断言，而事实是"这条命令还不存在"。
 写路径见 2.6，整体排期见 `Magpie-项目计划书.md`。
 
+## MCP 适配器（5.1 · 只读）
+
+让 agent 经 Model Context Protocol 只读地使用这份数据：**stdio 传输**
+（本地子进程、换行分帧的 JSON-RPC 2.0），零第三方依赖，不发起任何网络请求
+（HTTP / SSE 传输刻意不实现 —— 红线 R7）。
+
+```bash
+py -3.13 -m magpie.adapters.mcp --db D:/path/to/.magpie/magpie.db
+```
+
+MCP 客户端（Claude Desktop 等）的接线示例（`--help` 里也有）：
+
+```json
+{
+  "mcpServers": {
+    "magpie": {
+      "command": "py",
+      "args": ["-3.13", "-m", "magpie.adapters.mcp",
+               "--db", "D:/path/to/.magpie/magpie.db"]
+    }
+  }
+}
+```
+
+工具面（`magpie/adapters/mcp.py` 的 `READONLY_TOOLS`）：`ls` / `lens` / `show` /
+`diff` / `doctor` / `schema` / `timeline` / `jobs` / `agent_context` ——
+**全部只读**。清单不是手抄的：从 `magpie schema --json` 的 `commands` 键派生
+（`access == "read"` 的一半，明文剔除 `export` 与 `search`），描述 / 参数枚举 /
+版本分别来自契约的 `query_syntax` / `enums` / `tool_version`。导入、undo/redo、
+合并、裁决 Inbox、管线、导出落盘等写操作**不在工具面**（G5 之后另议）。
+`tools/call` 的结果与 `--json` / `/api/v1` 逐字同形（成功带 `meta`、失败不带，
+分叉按 `error.code`）。自动化断言在 `magpie/adapters/tests/`：逐工具跑完
+整库指纹不变（带反例）、实际 ≡ 声明的双向清单、写入口 AST 静态断言。
+
 ## 一条命令验证
 
 ```bash

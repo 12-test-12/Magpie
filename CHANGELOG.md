@@ -12,6 +12,43 @@
 
 ---
 
+## 0.13.0 — 5.1 MCP 适配器：stdio 只读工具面，清单从 schema 契约派生
+
+`/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.12.0 → 0.13.0，
+已重新生成）。没有新增迁移（R4 未动）。既有入口（GUI / CLI）的键、退出码、
+信封一字未动 —— 本步是**新增第三个消费者**（`envelope.py` 点名的
+GUI / CLI / MCP 里最后那个），不是重做。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · 新增 MCP 入口：`python -m magpie.adapters.mcp`（stdio 传输，只读）。**
+
+* **传输**：换行分帧的 JSON-RPC 2.0 over stdio，零第三方依赖（协议面手写
+  最小集：`initialize` / `notifications/initialized` / `ping` / `tools/list` /
+  `tools/call`）。**只有 stdio** —— HTTP / SSE 传输刻意不实现（红线 R7）。
+  接线示例见 README 与 `--help`。
+* **工具面 9 个**：`ls` / `lens` / `show` / `diff` / `doctor` / `schema` /
+  `timeline` / `jobs` / `agent_context`，**全部只读**。清单**从
+  `magpie schema --json` 的 `commands` 键派生**（`access == "read"` 的一半，
+  明文剔除 `export`（导出落盘）与 `search`（§8 未实现，恒红对 agent 是噪声））；
+  描述 / 参数枚举 / `serverInfo` 版本分别派生自契约的 `query_syntax` /
+  `enums` / `tool_version`。实际注册 ≡ 声明的 `READONLY_TOOLS` 由**双向断言**
+  （实际 ⊆ 声明 且 声明 ⊆ 实际）与 `McpServer` 启动时的漂移检查共同钉住 ——
+  契约新增一条 read 命令而声明没跟，服务起不来、测试红。
+* **信封**：`tools/call` 的结果与 CLI `--json` / `/api/v1` **逐字同形** ——
+  成功 `{ok, data, meta:{db, took_ms, schema_version}}`，失败
+  `{ok:false, error:{code, message, hint?}}`（**失败没有 meta**）。工具级
+  失败进 `result.isError`；协议级失败走 JSON-RPC 错误码（-32700 解析错 /
+  -32600 形状错 / -32601 未知方法 / -32602 未知工具或参数 / -32603 内部错）。
+  分叉按 `error.code`，与另外两个消费者一致。
+* **`agent_context`** ↔ `GET /api/v1/agent/context`：同一份 payload
+  （JSON 逐键 + Markdown 逐字节，收敛断言钉住）。
+* **只读保证是自动化断言**：全部注册工具 × 两轮实参跑完，整库逐表指纹
+  （行数 + 内容 sha256）不变（带"真的写一次必须检出"的反例）；
+  `magpie/adapters/**` 的写入口 AST 静态断言（`core.ops` / `core.store` /
+  `cli.write` / `sqlite3` 直连，带反例自检）。`pytest magpie/adapters/tests`
+  已进 `check.py` 默认执行表。
+
 ## 0.12.0 — 5.2 `schema --json` 收口：agent 不读源码就能正确使用本工具
 
 `/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.11.0 → 0.12.0，

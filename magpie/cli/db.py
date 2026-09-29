@@ -280,6 +280,21 @@ def _open(db: Path) -> sqlite3.Connection:
     return conn
 
 
+def map_db_error(exc: Exception, db: Path) -> CliError | None:
+    """`sqlite3.Error` → CLI 信封错误；**不是** sqlite 的异常返回 `None`。
+
+    给 MCP 适配器（`magpie/adapters/**`）用：那边的 AST 断言禁止 import
+    `sqlite3`（直连 sqlite 就绕开了 `Database(read_only=True)` 的
+    `PRAGMA query_only`），但它要把查询中途的 sqlite 失败映射成与 CLI **同一张**
+    错误表（`E_LOCKED` / `E_DB_NOT_A_DB` …）—— 判定因此住在会 import `sqlite3`
+    的这一侧；调用方拿到 `None` 就知道"这不是 sqlite 的事"，不许硬套一个
+    `E_DB` 假 code 把程序缺陷盖掉。
+    """
+    if isinstance(exc, sqlite3.Error):
+        return _map_sqlite(exc, db)
+    return None
+
+
 def _map_sqlite(exc: sqlite3.Error, db: Path) -> CliError:
     """数据库异常 → CLI 错误。
 
