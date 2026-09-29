@@ -193,6 +193,13 @@ def _input_schema(node: argparse.ArgumentParser,
     for action in node._actions:                                   # noqa: SLF001
         if isinstance(action, argparse._SubParsersAction):         # noqa: SLF001
             continue
+        if isinstance(action, argparse._HelpAction):               # noqa: SLF001
+            # `-h/--help` 在终端里对，在协议面里是一条逃逸：argparse 把帮助文本
+            # **print 到 stdout（协议流）**然后抛 SystemExit —— 而 SystemExit 是
+            # BaseException，`except Exception` 接不住，会逃出 serve() 杀会话
+            # （M1 审查实测；`{"help": true}` 是与位置参数 `-h` 同族的第二条路）。
+            # 不进 inputSchema，于是它是未知参数 → -32602，连生成 argv 的机会都没有。
+            continue
         if action.help == argparse.SUPPRESS:
             # CLI 里 help=SUPPRESS 的参数是"登记着但传了就 400"的（2.7 的
             # --review-status / --in-scope）—— 不给 agent 一个能看见却不该用的口。
@@ -418,7 +425,19 @@ def _argv_for(tool: Tool, arguments: dict[str, Any]) -> list[str]:
             if isinstance(value, (dict, list)):
                 raise _InvalidParams(
                     f"{param.prop} 要标量，给了 {type(value).__name__}")
-            argv.append(str(value))
+            text = str(value)
+            if text.startswith("-"):
+                # M1 审查必修：`-` 开头的**位置参数**值会被 argparse 当成 flag，
+                # `-h` / `--help` 于是打印帮助文本进协议流并 SystemExit 杀会话。
+                # 位置参数是实体 id/key、镜头 id、job id —— 合法值不以 `-` 开头，
+                # 在这里挡成协议级参数错（-32602），help 从此没有机会被触发。
+                # （option 值以 `-` 开头走另一条路：argparse 报
+                # "expected one argument" → CliError → isError 信封，已实测安全。）
+                raise _InvalidParams(
+                    f"{param.prop} 的值不许以 '-' 开头：{text!r} —— 位置参数是"
+                    f"实体 id/key、镜头 id、job id，'-' 开头会被 argparse 当成 "
+                    f"flag（-h/--help 会把帮助文本写进协议流）")
+            argv.append(text)
             continue
         if param.is_bool:
             if not isinstance(value, bool):
@@ -598,7 +617,24 @@ class McpServer:
             return tool.handler(db, arguments)
         argv = _argv_for(tool, arguments)
         parser = build_parser()
-        args = parser.parse_args(argv)             # 用法错 → CliError（同一张信封）
+        try:
+            args = parser.parse_args(argv)         # 用法错 → CliError（同一张信封）
+        except SystemExit as exc:
+            # 兜底保命（M1）：argparse 的 help/version 动作走 `_Parse.exit` →
+            # `SystemExit` —— 它是 **BaseException**，上面 `_tools_call` 与
+            # `handle` 的 `except Exception` 都接不住，逃出去就是 serve() 循环
+            # 死亡 + 进程伪装卸载。正常情况下到不了这：help 不在 inputSchema、
+            # `-` 开头的位置参数值在 `_argv_for` 已挡成 -32602 —— 走到这说明
+            # 有新的走私路径，转成工具级用法错（isError 信封），会话继续。
+            # （此时 help 文本可能已写向 stdout —— 所以这层只是保命，不能替代
+            # 入口的那两道挡。）
+            raise CliError(
+                "E_USAGE",
+                f"magpie {tool.command} 的参数解析被 argparse 以退出码 "
+                f"{exc.code} 终止（help/version 类动作不属于工具面）",
+                exit_code=EXIT_USAGE,
+                hint="位置参数不许以 '-' 开头；要看帮助请用 CLI 的 "
+                     "`magpie <命令> --help`，协议面不打印帮助文本。") from exc
         if str(args.command) in WRITABLE:
             # 双保险：注册表只从 read 一半派生，理论上到不了这 —— 到了就是缺陷，
             # 响亮失败而不是"反正只读连接也写不进去"。

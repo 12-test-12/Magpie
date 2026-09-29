@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -174,14 +175,97 @@ def test_protocol_version_negotiation(empty_db):
 
 
 # ---------------------------------------------------------------------------
+# M1 回归：help 走私不许杀死会话、不许污染协议流
+# ---------------------------------------------------------------------------
+#
+# 审查实测的逃逸链：位置参数值 `-h` → argparse help 动作 → 帮助文本 print 到
+# stdout（协议流）+ `SystemExit` → `except Exception` 接不住（BaseException）
+# → serve() 循环死亡、进程以 0 伪装卸载、后续请求无人应答。三层修复各有断言：
+# 入口挡（-32602）、help 属性不进面（-32602）、兜底（isError 信封）。
+
+
+def test_help_smuggling_cannot_kill_the_session(loaded_db):
+    """四条同形攻击路径全部落进协议层应答（-32602），会话随后照常 ping。"""
+    server = mcp.McpServer(loaded_db)
+    attacks = (
+        {"name": "show", "arguments": {"ref": "-h"}},
+        {"name": "show", "arguments": {"ref": "--help"}},
+        {"name": "lens", "arguments": {"lens": "-h"}},
+        {"name": "jobs", "arguments": {"job": "-h"}},
+    )
+    for attack in attacks:
+        response = server.handle(_request(1, "tools/call", attack))
+        assert response is not None, f"攻击 {attack} 没有应答 —— 会话被杀了"
+        assert "error" in response and "result" not in response, \
+            f"攻击 {attack} 没落进协议层错误：{response}"
+        assert response["error"]["code"] == -32602, attack
+
+    # 同族第二条路：`help` 属性根本不该在工具面里（它一进 argv 就是 --help）
+    listing = server.handle(_request(2, "tools/list"))["result"]["tools"]
+    for tool in listing:
+        assert "help" not in tool["inputSchema"]["properties"], \
+            f"{tool['name']} 的 inputSchema 泄漏了 help 属性"
+    smuggled = server.handle(_request(
+        3, "tools/call", {"name": "show", "arguments": {"help": True}}))
+    assert smuggled["error"]["code"] == -32602, smuggled
+
+    # 会话还活着
+    assert server.handle(_request(4, "ping"))["result"] == {}
+
+
+def test_serve_stream_stays_json_only_under_help_attack(loaded_db):
+    """真 serve() 循环：攻击之后 ping 仍有应答，**stdout 每一行都是可解析 JSON**。"""
+    stdin = StringIO(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize",'
+        '"params":{"protocolVersion":"2025-06-18"}}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"tools/call",'
+        '"params":{"name":"show","arguments":{"ref":"-h"}}}\n'
+        '{"jsonrpc":"2.0","id":3,"method":"ping"}\n')
+    stdout = StringIO()
+    assert mcp.serve(loaded_db, stdin=stdin, stdout=stdout) == 0
+
+    lines = stdout.getvalue().splitlines()
+    assert len(lines) == 3, \
+        f"应答行数不对（help 文本混进协议流了？）：{len(lines)} 行"
+    parsed = [json.loads(line) for line in lines]      # 每行都是可解析 JSON
+    assert "result" in parsed[0]                       # initialize 应答
+    assert parsed[1]["error"]["code"] == -32602        # 攻击 → 协议层错误
+    assert parsed[2]["result"] == {}                   # ping 仍被应答
+
+
+def test_systemexit_backstop_converts_to_error_envelope(monkeypatch, loaded_db):
+    """② 兜底保命：万一 SystemExit 仍从 parse_args 逃出 → 工具级 isError 信封。"""
+    server = mcp.McpServer(loaded_db)
+
+    class _ExplodingParser:
+        """与 `build_parser()` 同接口；parse_args 抛 SystemExit(0) —— argparse
+        help 动作在 `_Parse.exit` 里的真实形状（M1 的根因）。"""
+
+        def parse_args(self, argv):
+            raise SystemExit(0)
+
+    monkeypatch.setattr(mcp, "build_parser", lambda: _ExplodingParser())
+    response = server.handle(_request(1, "tools/call",
+                                      {"name": "ls", "arguments": {}}))
+    assert response is not None and "result" in response, \
+        f"SystemExit 逃出了协议层：{response}"
+    assert response["result"]["isError"] is True
+    envelope = _envelope_of(response["result"])
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "E_USAGE"
+    assert "meta" not in envelope
+
+    # 会话继续（ping 不经过 build_parser，monkeypatch 自动复原也无妨）
+    assert server.handle(_request(2, "ping"))["result"] == {}
+
+
+# ---------------------------------------------------------------------------
 # 换行分帧（serve 循环，进程内流）
 # ---------------------------------------------------------------------------
 
 
 def test_serve_frames_one_response_per_line(loaded_db):
     """stdin 三行（请求 / 空行 / 通知 / 请求）→ stdout 恰好两行可解析 JSON。"""
-    from io import StringIO
-
     stdin = StringIO(
         '{"jsonrpc":"2.0","id":1,"method":"ping"}\n'
         "\n"
