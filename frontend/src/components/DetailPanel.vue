@@ -23,6 +23,7 @@
  * 猜错的合并比没合并糟得多，因为它的症状要等到有人想拆开时才出现。
  */
 import { computed, ref } from 'vue'
+import { get } from '../api.js'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
 
@@ -36,6 +37,15 @@ const newTag = ref('')
 const tagError = ref('')
 const opError = ref('')
 const busy = ref(false)
+
+/** 「复制给 AI」的可见状态：成功反馈与失败提示**都必须落在界面上** ——
+ *  剪贴板这种"点了没反应"的操作，静默失败会让人以为复制成功了。 */
+const copyBusy = ref(false)
+const copyFeedback = ref('')
+const copyError = ref('')
+/** 剪贴板不可用时展开的上下文包原文：回退不是道歉，是把文本摆出来让人
+ *  选中手动复制（选中文本 / 提示手动复制 —— 二选一的下限，这里是两条都给）。 */
+const manualMarkdown = ref('')
 
 /** 合并的候选：当前**批量选中**里除了自己以外的那些实体（3.8）。
  *  批量选中是画布上 `Shift` 出来的东西，与"批量改状态"用的是同一个集合 ——
@@ -131,6 +141,58 @@ async function removeTag(tag) {
   }
 }
 
+/**
+ * 「复制给 AI」：取上下文包（`GET /agent/context`），把 **Markdown** 放进本机剪贴板。
+ *
+ * 三条边界，每一条都是这条功能最容易做错的地方：
+ *
+ *   1. **只复制，不发送** —— 请求走同源相对路径（`api.js` 的 `get`），
+ *      剪贴板是本机操作。没有任何"发给某个 AI 服务"的一步：那会撞 R7-ASSETS，
+ *      也违背这个工具零出站的前提。
+ *   2. **深度 1 是端点的默认** —— 界面不自己发明一个更大的 depth 再让上下文包
+ *      与详情页给出两个口径的邻居数。
+ *   3. **剪贴板是增强，不是前提** —— 非安全上下文 / 权限被拒 / 老浏览器里
+ *      `navigator.clipboard` 不在或 `writeText` 抛错。三种情况都把原文展开在
+ *      界面上让人手动复制，而不是"点了没反应"。
+ */
+async function copyForAI() {
+  const entity = detail.value?.entity
+  if (!entity || copyBusy.value) return
+  copyBusy.value = true
+  copyFeedback.value = ''
+  copyError.value = ''
+  manualMarkdown.value = ''
+  let markdown = ''
+  try {
+    const data = await get(`/agent/context?entity_id=${entity.id}&depth=1`)
+    markdown = String((data && data.markdown) || '')
+    if (!markdown) throw new Error('返回里没有 markdown')
+  } catch (err) {
+    copyError.value = `取上下文失败：${err.message}`
+    copyBusy.value = false
+    return
+  }
+  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard
+  if (clipboard && typeof clipboard.writeText === 'function') {
+    try {
+      await clipboard.writeText(markdown)
+      copyFeedback.value = `已复制 ${markdown.length} 字`
+    } catch (err) {
+      manualMarkdown.value = markdown
+      copyError.value = `剪贴板写入失败（${err.message || err}）—— 已展开原文，请手动复制`
+    }
+  } else {
+    manualMarkdown.value = markdown
+    copyError.value = '这个环境没有剪贴板 API —— 已展开原文，请手动复制'
+  }
+  copyBusy.value = false
+}
+
+/** 手动回退里的全选：点一下文本就整段选中，`Ctrl/Cmd+C` 直接走。 */
+function selectManual(event) {
+  event.target.select()
+}
+
 function goTo(key) {
   const node = store.visible.nodes.find(
     (n) => String(n.data?.key) === String(key) || String(n.id) === String(key))
@@ -165,6 +227,27 @@ function goTo(key) {
           <span class="chip mono">#{{ detail.entity.id }}</span>
         </div>
       </header>
+
+      <section>
+        <h2 class="section">复制给 AI</h2>
+        <div class="acts">
+          <button class="ghost copy-ai" :disabled="copyBusy" @click="copyForAI">
+            {{ copyBusy ? '正在取上下文…' : '复制给 AI' }}
+          </button>
+          <span v-if="copyFeedback" class="chip ok">{{ copyFeedback }}</span>
+        </div>
+        <p v-if="copyError" class="bad small">{{ copyError }}</p>
+        <template v-if="manualMarkdown">
+          <p class="warn small">
+            下面是上下文包原文 —— 点一下选中，Ctrl/Cmd+C 手动复制。
+          </p>
+          <textarea class="manual mono" readonly rows="8" :value="manualMarkdown"
+                    @click="selectManual"></textarea>
+        </template>
+        <p class="faint small">
+          只把 Markdown 放进本机剪贴板（`navigator.clipboard`），不向任何地方发送。
+        </p>
+      </section>
 
       <section>
         <h2 class="section">概况</h2>
@@ -348,8 +431,13 @@ section + section { margin-top: 14px; }
   font-size: 12px; line-height: 1; padding: 0 3px;
 }
 .chip .x:hover { color: var(--bad, #F03E3E); }
-.acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .acts button.on { border-color: var(--accent); color: var(--accent); }
+.manual {
+  width: 100%; margin-top: 6px; font-size: 11px; line-height: 1.5;
+  padding: 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg, #fff); color: var(--dim); resize: vertical;
+}
 .merges { list-style: none; margin: 0 0 8px; padding: 0; font-size: 11px; }
 .merges li { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
 .merges li span { color: var(--dim); word-break: break-all; }
