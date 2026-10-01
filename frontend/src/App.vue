@@ -27,6 +27,7 @@ import PipelineView from './views/PipelineView.vue'
 import JobsView from './views/JobsView.vue'
 import InboxView from './views/InboxView.vue'
 import DoctorView from './views/DoctorView.vue'
+import RiskView from './views/RiskView.vue'
 import ImportDialog from './views/ImportDialog.vue'
 import { store } from './store.js'
 import { hasToken } from './api.js'
@@ -115,6 +116,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <LensView v-else-if="store.view === 'vuln'" lens="vuln" label="漏洞" />
         <JobsView v-else-if="store.view === 'jobs'" />
         <InboxView v-else-if="store.view === 'inbox'" />
+        <RiskView v-else-if="store.view === 'risk'" />
         <DoctorView v-else-if="store.view === 'doctor'" />
       </section>
 

@@ -12,6 +12,64 @@
 
 ---
 
+## 0.14.0 — 5.5 风险评分与攻击面概览：可解释（每个分数能答「为什么」），零出站
+
+`/api/v1` **纯新增一条** `GET /api/v1/risk`（openapi 快照已重新生成：新路径 +
+`info.version` 0.13.0 → 0.14.0）。没有新增迁移（R4 未动）—— 评分是**读侧派生**，
+不加表、不物化、不写盘；既有路由与既有 CLI 命令的键、退出码、信封一字未动。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · 新增 CLI 命令 `magpie risk`（只读）与 `GET /api/v1/risk`。** 两个入口
+调的是**同一段** `core/risk.overview`（与 `magpie doctor` ↔ `/doctor` 同一条
+纪律），`data` 形状逐字相同：
+
+```json
+{"query": "risk", "rule_version": "1", "rules_digest": "sha256:…",
+ "project_id": 1,
+ "score": {"total": 343, "factors": [
+   {"id": "vuln_open.critical", "label": "未处置漏洞（critical）",
+    "weight": 100, "count": 2, "contribution": 200,
+    "evidence": [{"type": "observation", "id": 1, "label": "…"}],
+    "evidence_total": 2}]},
+ "attack_surface": {"hosts": [{"host": "…", "services": [], "endpoints": [],
+                               "open_vulns": {"critical": 0},
+                               "open_vuln_total": 0,
+                               "service_count": 1, "endpoint_count": 0}],
+                    "totals": {"hosts": 1, "services": 1, "endpoints": 1,
+                               "open_vulns": {"critical": 0},
+                               "open_vuln_total": 0,
+                               "unmapped_open_vulns": []}},
+ "facts": {"vuln_total": 6, "vuln_by_severity": {"critical": 2},
+           "vuln_by_state": {"open": 6}, "inbox_open": 1, "untested": 18,
+           "out_of_scope": 0, "services": 10, "endpoints": 6, "secrets": 0}}
+```
+
+（JSON 为节选：`open_vulns` / `vuln_by_severity` 实际是六档全键
+`critical/high/medium/low/info/unknown`，空档也照列 —— 输出形状不随数据漂移。）
+
+* **可解释**：`sum(factors[*].contribution) == total` 是测试钉住的恒等式；
+  每条 `evidence` 的 `(type, id)` 都真存在于库（`entity` / `observation` /
+  `inbox_item` 三张表各查一遍）。`evidence` 最多展开 50 条（`EVIDENCE_CAP`），
+  计数与贡献**不截断**。
+* **确定性**：同库同输入两次评分逐字节相同（不读 `now()`、无随机项、全序遍历）。
+* **零出站（R7）**：不查 CVE 库 / 威胁情报 —— 分数因数据不足而保守是**如实**。
+  行为断言与 5.3 同款（socket 三点钉死 + `attempts` 记账）。
+* **规则表版本化**：`rule_version`（人读）+ `rules_digest`（`RULES` 的 sha256，
+  机器读）都进输出；改权重 → digest 变 → 回归夹具当场红（改坏一次、确实红了、
+  再修绿）。
+* 攻击面概览与评分**共用同一次 facts 采集**（`core/risk.collect`），不造第二套
+  统计；一个漏洞没有 `found_on` 落点时如实进 `totals.unmapped_open_vulns`。
+
+**2 · `magpie schema --json` 的 `commands` 多一条 `risk`（`access: "read"`，
+由分发层事实算出，不是手抄）。** MCP 工具面同步多一个 `risk` 工具 ——
+`READONLY_TOOLS` 的双向清单断言（实际 ≡ 声明）逼着声明与实现一起动。
+
+**3 · GUI 新增「风险」视图**（只读 `GET /api/v1/risk`，前端 vitest 全绿，
+`magpie/api/web/` 产物重建入库）。只读红线不涉及写操作。
+
+---
+
 ## 0.13.0 — 5.1 MCP 适配器：stdio 只读工具面，清单从 schema 契约派生
 
 `/api/v1` **一行未改** —— openapi 快照只差 `info.version`（0.12.0 → 0.13.0，

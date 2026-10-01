@@ -52,7 +52,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, pipeline, query, store
+from ..core import ingest, ops, pipeline, query, risk, store
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -919,6 +919,21 @@ def doctor(project: str | None = None,
         # 所以"GUI 说 3、CLI 说 2"这种分歧在结构上不可能出现。
         data["health"] = query.health_report(conn, project_id)
     return ok(data)
+
+
+@router.get("/risk", summary="风险评分 + 攻击面概览（纯读侧派生）")
+@_translating
+def get_risk(project: str | None = None,
+             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """总分 + 逐因子分解 + 攻击面聚合。**本路由不判任何东西** —— 分数、因子、
+    聚合全部来自 `core/risk.overview`，与 `magpie risk` 调的是同一个入口
+    （与 `/doctor` ↔ `magpie doctor` 同一条纪律：两个入口不可能给出不同的数）。
+
+    零出站（R7）：评分只吃库里已有的事实，不查 CVE 库 / 威胁情报；读侧派生，
+    不写一个字节（跑前跑后库逐字节不变由 CLI 侧的只读断言钉住，同一段实现）。
+    """
+    project_id = _resolve_project(conn, project)
+    return ok(risk.overview(conn, project_id))
 
 
 @router.get("/inbox", summary="Inbox（默认只看 open）")

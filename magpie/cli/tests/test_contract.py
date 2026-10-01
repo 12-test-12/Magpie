@@ -802,7 +802,7 @@ def _subparsers(parser) -> dict:
 #: 依赖的东西）。刻意不是"全集相等"：那条断言在 `test_schema_..._real_parser`
 #: 里已经逐项做过了，这里再钉一次是为了让"加命令时顺手删掉一条老的"也能红。
 RUNNER_COMMANDS = {"init", "ls", "lens", "show", "search", "diff", "doctor", "schema",
-                   "project create", "import", "undo", "redo", "jobs"}
+                   "project create", "import", "undo", "redo", "jobs", "risk"}
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +845,7 @@ def test_every_registered_command_is_dispatchable(empty_db):
         "diff": ("diff", "--since", "last"),
         "doctor": ("doctor",),
         "schema": ("schema",),
+        "risk": ("risk",),
         # 4.4：两条都在 resolve_project 处先要项目，空库上以 E_PROJECT_REQUIRED
         # 收场（不是 E_NOT_IMPLEMENTED / 用法错）—— "被分发了"这件事已成立。
         "timeline": ("timeline",),

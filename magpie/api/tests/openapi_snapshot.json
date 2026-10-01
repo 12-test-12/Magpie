@@ -434,7 +434,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.13.0"
+    "version": "0.14.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2802,6 +2802,55 @@
           }
         },
         "summary": "建项目（空库的第一件事）"
+      }
+    },
+    "/api/v1/risk": {
+      "get": {
+        "description": "总分 + 逐因子分解 + 攻击面聚合。**本路由不判任何东西** —— 分数、因子、\n聚合全部来自 `core/risk.overview`，与 `magpie risk` 调的是同一个入口\n（与 `/doctor` ↔ `magpie doctor` 同一条纪律：两个入口不可能给出不同的数）。\n\n零出站（R7）：评分只吃库里已有的事实，不查 CVE 库 / 威胁情报；读侧派生，\n不写一个字节（跑前跑后库逐字节不变由 CLI 侧的只读断言钉住，同一段实现）。",
+        "operationId": "get_risk_api_v1_risk_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Risk Api V1 Risk Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "风险评分 + 攻击面概览（纯读侧派生）"
       }
     },
     "/api/v1/runs/{run_id}": {

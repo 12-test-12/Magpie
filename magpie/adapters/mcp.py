@@ -104,6 +104,7 @@ READONLY_TOOLS = frozenset({
     "schema",      # schema 契约（类型 / 关系 / 字段 / 查询语法 / 5.2 四键）
     "timeline",    # 项目时间线（§8.1）
     "jobs",        # 作业历史（分发层事实：读，住在 write.py 不改这个事实）
+    "risk",        # 风险评分 + 攻击面概览（5.5 纯读侧派生 ↔ GET /api/v1/risk）
     "agent_context",  # 上下文包（↔ GET /api/v1/agent/context）
 })
 

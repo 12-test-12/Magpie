@@ -248,6 +248,15 @@ def build_parser() -> argparse.ArgumentParser:
                     "v_integrity_violations / explain_job_scope。"
                     "数据不健康时**仍然退出 0** —— 健康与否在 data.healthy 里。")
 
+    risk = sub.add_parser(
+        "risk", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="风险评分 + 攻击面概览（纯读侧派生：总分 + 逐因子为什么）",
+        description="把库里已有的事实读成「分数 + 为什么」：每个因子带贡献值与"
+                    "依据 id，sum(因子) == 总分；攻击面按 host/service/endpoint"
+                    " 聚合，与评分共用同一份因子数据。**零出站**（不查 CVE 库 / "
+                    "威胁情报 —— 分数保守是如实，不是缺陷）、不加表不落盘。"
+                    "输出带 rule_version 与 rules_digest（规则表指纹）。")
+
     schema = sub.add_parser(
         "schema", parents=[_LOCATION, _FORMAT, _PROJECT],
         help="一条命令吐出类型 / 关系动词 / 字段 / 查询语法",
@@ -346,7 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
                            f"上限 {write.MAX_JOB_LIMIT}）")
 
     parser.epilog = (
-        "只读：init、ls、lens、show、diff、doctor、schema、timeline、export。"
+        "只读：init、ls、lens、show、diff、doctor、schema、timeline、export、risk。"
         "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
         "放在一起便于对照）。本地服务：app。"
         "export 默认脱敏（不带原文正文），--full 才带 stored 归档原文并给可见告警。"

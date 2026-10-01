@@ -59,6 +59,10 @@ READ_INVOCATIONS = (
     ("schema", "--json"),
     ("timeline", "--json"),              # 4.4：纯读，不许碰库
     ("timeline", "--human"),
+    # 5.5：评分是**纯读侧派生** —— 分数不许被物化进库里，这条断言正是那句
+    # 话的执行位（跑前跑后逐字节指纹不变）。
+    ("risk", "--json"),
+    ("risk", "--human"),
     ("init", "--dry-run", "--json"),
     ("search", "x", "--json"),          # 未实现，但同样不许碰库
 )

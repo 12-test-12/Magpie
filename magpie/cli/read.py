@@ -1,4 +1,4 @@
-"""只读命令的实现：`init` / `ls` / `lens` / `show` / `search` / `diff` / `doctor` / `schema`。
+"""只读命令的实现：`init` / `ls` / `lens` / `show` / `search` / `diff` / `doctor` / `schema` / `risk`。
 
 **这个模块里没有一条 SQL —— 一条都没有。** 这不是风格问题：2.2 起这里记着一笔
 明写的债（`ls` / `show` 的查询语句与 `api/routes.py` 里的那几条是**同一份语义的
@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..core import export, ingest, ops, query, store
+from ..core import export, ingest, ops, query, risk, store
 from ..core import scope as scope_module
 from ..core.parsers.base import extras_install_hint
 from . import write
@@ -763,6 +763,81 @@ def _read_report(path) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# risk —— 风险评分 + 攻击面概览（5.5，纯读侧派生）
+# ---------------------------------------------------------------------------
+
+
+#: `--human` 里攻击面最多铺几台主机。**JSON 不截断**（截断是给人读的取舍，
+#: 不许改变机器拿到的事实）；这里 20 行之后折成一句"还有 N 台"，理由与
+#: `inbox_items` 的 limit 相同：一屏铺不下的列表等于没有列表。
+_RISK_HOST_LIMIT = 20
+
+
+def cmd_risk(args, ctx) -> tuple[dict, list[str]]:
+    """风险评分 + 攻击面概览。
+
+    **这条命令自己不判任何东西**：分数、因子、聚合全部来自 `core/risk.overview`
+    —— CLI / `GET /api/v1/risk` / GUI 三个消费者调的是同一个入口，"CLI 说 258、
+    界面说 273"在结构上不可能出现。这里只做命令行该做的三件事：解析项目、
+    调 core、把结果摆成人读的版式（`--human`）。
+
+    评分的输入全是库里已有的事实（零出站，R7），不加表、不加迁移、不落盘 ——
+    与 `doctor` 同款：跑前跑后库里每一个字节都不许变（`test_readonly` 钉住）。
+    """
+    conn = ctx.conn()
+    try:
+        project_id = resolve_project(conn, args.project)
+        data = risk.overview(conn, project_id)
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
+    return data, _risk_human(data)
+
+
+def _risk_human(data: dict[str, Any]) -> list[str]:
+    score = data["score"]
+    surface = data["attack_surface"]
+    lines = [f"风险评分 {score['total']}"
+             f"（规则 v{data['rule_version']} · {data['rules_digest'][:23]}…）",
+             "因子（只有非零的列出来；合计 = 总分）："]
+    hit = [f for f in score["factors"] if f["count"]]
+    if hit:
+        lines += _tbl(["因子", "贡献", "计数", "权重", "依据（首条）"],
+                      [[f["id"], f["contribution"], f["count"], f["weight"],
+                        (f["evidence"][0]["label"] if f["evidence"] else "—")]
+                       for f in hit])
+    else:
+        lines.append("  （全部因子 0 命中 —— 这是结果，不是错误：库里还没有"
+                     "可计分的事实）")
+
+    totals = surface["totals"]
+    lines += ["", f"攻击面（按主机，共 {totals['hosts']} 台 / "
+                  f"服务 {totals['services']} / 接口 {totals['endpoints']}）："]
+    shown = surface["hosts"][:_RISK_HOST_LIMIT]
+    if shown:
+        lines += _tbl(["HOST", "服务", "接口", "未处置漏洞"],
+                      [[row["host"], row["service_count"], row["endpoint_count"],
+                        row["open_vuln_total"]] for row in shown])
+        rest = len(surface["hosts"]) - len(shown)
+        if rest > 0:
+            lines.append(f"  … 还有 {rest} 台没铺开（--json 里是全量）")
+    else:
+        lines.append("  （没有暴露的 service / endpoint / 被打的主机）")
+    if totals["unmapped_open_vulns"]:
+        lines.append(f"  ⚠ {len(totals['unmapped_open_vulns'])} 条未处置漏洞"
+                     f"没有 found_on 落点，没进任何主机行（--json 的 "
+                     f"totals.unmapped_open_vulns 里）")
+
+    facts = data["facts"]
+    lines += ["", "摘要："
+              f"漏洞 {facts['vuln_total']}"
+              f"（severity {dict((k, v) for k, v in facts['vuln_by_severity'].items() if v)}"
+              f"；state {facts['vuln_by_state']}）、"
+              f"未决 Inbox {facts['inbox_open']}、未测 {facts['untested']}、"
+              f"越界 {facts['out_of_scope']}、secret {facts['secrets']}"]
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # schema
 # ---------------------------------------------------------------------------
 
@@ -1256,6 +1331,8 @@ RUNNERS = {
     "diff": cmd_diff,
     "doctor": cmd_doctor,
     "schema": cmd_schema,
+    # -- 5.5：风险评分 + 攻击面概览（纯读侧派生）--------------------------------
+    "risk": cmd_risk,
     # -- 4.4：时间线 / 导出（打包）----------------------------------------------
     "timeline": cmd_timeline,
     "export": cmd_export,

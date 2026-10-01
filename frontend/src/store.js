@@ -181,6 +181,9 @@ export const VIEWS = [
   { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段' },
   { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品' },
   { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）' },
+  // 5.5：风险评分 + 攻击面概览。**纯读侧派生**（GET /risk），与镜头平级 ——
+  // 它回答的是"这些事实合起来意味着什么"，不是又一个镜头。
+  { key: 'risk', label: '风险', hint: '风险评分 + 攻击面概览（零出站）' },
   { key: 'jobs', label: '作业历史', hint: '导入 / undo / redo' },
   { key: 'inbox', label: 'Inbox', hint: '待裁决' },
   { key: 'doctor', label: '数据体检', hint: '完整性 / 孤儿 / 未测' },

@@ -1,0 +1,112 @@
+{
+  "attack_surface_totals": {
+    "endpoints": 6,
+    "hosts": 7,
+    "open_vuln_total": 6,
+    "open_vulns": {
+      "critical": 2,
+      "high": 1,
+      "info": 1,
+      "low": 1,
+      "medium": 1,
+      "unknown": 0
+    },
+    "services": 10,
+    "unmapped_open_vulns": []
+  },
+  "factors": [
+    {
+      "contribution": 200,
+      "count": 2,
+      "id": "vuln_open.critical"
+    },
+    {
+      "contribution": 40,
+      "count": 1,
+      "id": "vuln_open.high"
+    },
+    {
+      "contribution": 15,
+      "count": 1,
+      "id": "vuln_open.medium"
+    },
+    {
+      "contribution": 5,
+      "count": 1,
+      "id": "vuln_open.low"
+    },
+    {
+      "contribution": 1,
+      "count": 1,
+      "id": "vuln_open.info"
+    },
+    {
+      "contribution": 0,
+      "count": 0,
+      "id": "vuln_open.unknown"
+    },
+    {
+      "contribution": 0,
+      "count": 0,
+      "id": "inbox_open.high"
+    },
+    {
+      "contribution": 0,
+      "count": 0,
+      "id": "inbox_open.medium"
+    },
+    {
+      "contribution": 2,
+      "count": 1,
+      "id": "inbox_open.low"
+    },
+    {
+      "contribution": 54,
+      "count": 18,
+      "id": "untested"
+    },
+    {
+      "contribution": 0,
+      "count": 0,
+      "id": "out_of_scope"
+    },
+    {
+      "contribution": 20,
+      "count": 10,
+      "id": "exposed_service"
+    },
+    {
+      "contribution": 6,
+      "count": 6,
+      "id": "exposed_endpoint"
+    },
+    {
+      "contribution": 0,
+      "count": 0,
+      "id": "secret"
+    }
+  ],
+  "facts": {
+    "endpoints": 6,
+    "inbox_open": 1,
+    "out_of_scope": 0,
+    "secrets": 0,
+    "services": 10,
+    "untested": 18,
+    "vuln_by_severity": {
+      "critical": 2,
+      "high": 1,
+      "info": 1,
+      "low": 1,
+      "medium": 1,
+      "unknown": 0
+    },
+    "vuln_by_state": {
+      "open": 6
+    },
+    "vuln_total": 6
+  },
+  "rule_version": "1",
+  "rules_digest": "sha256:84663cb026468901fc5033b5e17f3a5bf5b2bacd27fafa0200d6143d7388f90e",
+  "total": 343
+}

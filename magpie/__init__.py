@@ -14,6 +14,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.13.0"       # 与 pyproject.toml 的 version 保持一致（5.1：MCP 适配器）
+__version__ = "0.14.0"       # 与 pyproject.toml 的 version 保持一致（5.5：风险评分）
 
 __all__ = ["__version__"]
