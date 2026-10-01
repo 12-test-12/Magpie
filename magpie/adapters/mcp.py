@@ -111,12 +111,15 @@ READONLY_TOOLS = frozenset({
 #: 契约里 ``access == "read"`` 但**明确不进工具面**的命令 → 不进面的理由。
 #: 判据是任务书明文：导出落盘不进工具面；search 在 §8 之前永远
 #: ``E_NOT_IMPLEMENTED``，一个恒红的工具对 agent 是噪声（响亮失败属于 CLI 契约，
-#: 那边有退出码表要守）。清单被剔除这件事本身也受双向断言保护 —— 少剔一个、
-#: 多剔一个都会红。
+#: 那边有退出码表要守）；ask 是**出站**命令（5.4，R7 唯一白名单出站点）——
+#: MCP 只读，出站一律不进工具面。清单被剔除这件事本身也受双向断言保护 ——
+#: 少剔一个、多剔一个都会红。
 EXCLUDED_READ_COMMANDS: dict[str, str] = {
     "export": "导出落盘（写文件系统）—— 任务书明文不进工具面",
     "search": "计划书 §8 尚未实现（E_NOT_IMPLEMENTED 恒红对 agent 是噪声）；"
               "搜索式读取由 ls 的 --q 与具名查询承担",
+    "ask": "出站命令（5.4：唯一出站点，需 MAGPIE_ASK_ENABLE 显式开启）—— "
+           "MCP 只读，出站一律不进工具面（5.4 任务书明文）",
 }
 
 #: 参数名 → ``enums`` 契约键。argparse 只给 ``--lifecycle`` 设了 choices，``lens``

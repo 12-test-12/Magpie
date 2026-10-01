@@ -92,6 +92,9 @@ py -3.13 -m magpie.cli diff  --since last --json      # 自上次导入起，库
 py -3.13 -m magpie.cli doctor --json                  # 数据体检
 py -3.13 -m magpie.cli schema --json                  # 类型 / 关系动词 / 字段 / 查询语法
 py -3.13 -m magpie.cli risk --human                   # 风险评分 + 攻击面概览（零出站）
+py -3.13 -m magpie.cli ask "这台主机开了哪些端口？"      # 出站问答 —— 默认关闭，
+                                                       # 需 MAGPIE_ASK_ENABLE=1 +
+                                                       # MAGPIE_ASK_URL 显式开启
 ```
 
 默认**直连 core**，不需要服务在跑。`--json` 是默认输出（`--human` 才切人读表格），
@@ -134,7 +137,8 @@ MCP 客户端（Claude Desktop 等）的接线示例（`--help` 里也有）：
 工具面（`magpie/adapters/mcp.py` 的 `READONLY_TOOLS`）：`ls` / `lens` / `show` /
 `diff` / `doctor` / `schema` / `timeline` / `jobs` / `risk` / `agent_context` ——
 **全部只读**。清单不是手抄的：从 `magpie schema --json` 的 `commands` 键派生
-（`access == "read"` 的一半，明文剔除 `export` 与 `search`），描述 / 参数枚举 /
+（`access == "read"` 的一半，明文剔除 `export` / `search` / `ask` —— 最后这个是
+出站命令，MCP 只读、不进面），描述 / 参数枚举 /
 版本分别来自契约的 `query_syntax` / `enums` / `tool_version`。导入、undo/redo、
 合并、裁决 Inbox、管线、导出落盘等写操作**不在工具面**（G5 之后另议）。
 `tools/call` 的结果与 `--json` / `/api/v1` 逐字同形（成功带 `meta`、失败不带，

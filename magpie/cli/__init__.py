@@ -150,7 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = _Parse(
         prog="magpie",
         description="自用的资源统筹工具。仅用于自有资产与已获授权的目标；"
-                    "工具本身不主动发起任何网络请求。",
+                    "工具本身不主动发起任何网络请求 —— 唯一例外是默认关闭的 "
+                    "`magpie ask`（显式开启才出站，见 magpie ask --help）。",
         parents=[_LOCATION, _FORMAT],
     )
     parser.add_argument("--version", action="version", version=f"magpie {__version__}")
@@ -257,6 +258,32 @@ def build_parser() -> argparse.ArgumentParser:
                     "威胁情报 —— 分数保守是如实，不是缺陷）、不加表不落盘。"
                     "输出带 rule_version 与 rules_digest（规则表指纹）。")
 
+    # -- 5.4：出站问答（默认关闭 —— R7 的唯一白名单出站点） --------------------
+    ask = sub.add_parser(
+        "ask", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="把问题发给配置的 LLM 端点（默认关闭 —— 显式开启才出站）",
+        description="本工具**唯一被允许的出站点**（check.py 的 R7 红线把全仓出站"
+                    "收敛到这一个文件：magpie/cli/ask.py）。**默认关闭**：未开启"
+                    "时不发起任何网络调用，以可读错误（E_ASK_DISABLED，退出码 1）"
+                    "收场，说清这是什么、为什么默认关、如何开启。"
+                    "开启方式（两个环境变量，缺一不可）：MAGPIE_ASK_ENABLE=1"
+                    "（只认 1/true/yes/on，认不出的值按未开启）且 "
+                    "MAGPIE_ASK_URL=<http(s)://…>（出站目标）。开启后每次调用"
+                    "先在 stderr 打可见横幅（目标 host + 将发送的内容类别 + "
+                    "「唯一出站点」），stdout 信封不受污染。载荷出站前一律过 "
+                    "detect_secrets 值级掩码（与 export 默认模式同一道防线）——"
+                    "问题文本始终发送并掩码；上下文包（5.3 Markdown）只有 "
+                    "--entity 显式给出才附带。超时（--timeout，默认 30 秒）/"
+                    "非 2xx / DNS 失败 → 可读错误，退出码按冻结的表落 2，"
+                    "不给裸 traceback。不进 MCP 工具面（MCP 只读）。")
+    ask.add_argument("question", metavar="<问题>",
+                     help="要发送的问题文本（出站前必过值级掩码）")
+    ask.add_argument("--entity", type=int, metavar="<id>",
+                     help="附带该实体的上下文包（5.3 的 Markdown）—— 默认不带，"
+                          "只有显式给出才进载荷")
+    ask.add_argument("--timeout", type=float, default=30.0, metavar="<秒>",
+                     help="请求超时秒数（默认 30；超时 → 退出码 2）")
+
     schema = sub.add_parser(
         "schema", parents=[_LOCATION, _FORMAT, _PROJECT],
         help="一条命令吐出类型 / 关系动词 / 字段 / 查询语法",
@@ -358,6 +385,8 @@ def build_parser() -> argparse.ArgumentParser:
         "只读：init、ls、lens、show、diff、doctor、schema、timeline、export、risk。"
         "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
         "放在一起便于对照）。本地服务：app。"
+        "出站：ask —— 本工具唯一的出站点，**默认关闭**，"
+        "MAGPIE_ASK_ENABLE=1 + MAGPIE_ASK_URL=<http(s)://…> 显式开启才发请求。"
         "export 默认脱敏（不带原文正文），--full 才带 stored 归档原文并给可见告警。"
         "search 尚未实现 —— 它以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
         "契约与退出码表见 `magpie schema --json`；具名查询的清单也在那里。")

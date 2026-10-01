@@ -801,8 +801,9 @@ def _subparsers(parser) -> dict:
 #: 2.2 交付的只读命令。`schema` 的描述里这几条必须在（它们是最老的一批消费者
 #: 依赖的东西）。刻意不是"全集相等"：那条断言在 `test_schema_..._real_parser`
 #: 里已经逐项做过了，这里再钉一次是为了让"加命令时顺手删掉一条老的"也能红。
+#: 5.4 起含 `ask`（新命令按纪律进这张表 —— 5.4 任务书判据 4）。
 RUNNER_COMMANDS = {"init", "ls", "lens", "show", "search", "diff", "doctor", "schema",
-                   "project create", "import", "undo", "redo", "jobs", "risk"}
+                   "project create", "import", "undo", "redo", "jobs", "risk", "ask"}
 
 
 # ---------------------------------------------------------------------------
@@ -855,6 +856,10 @@ def test_every_registered_command_is_dispatchable(empty_db):
         "undo": ("undo", "1"),
         "redo": ("redo", "1"),
         "jobs": ("jobs",),
+        # 5.4：默认关闭（ENV 已剥掉 MAGPIE_ASK_*）→ E_ASK_DISABLED 信封。
+        # 那不是"没被分发"（argparse 用法错 / E_NOT_IMPLEMENTED）—— 它正是
+        # 这条命令被分发后**默认态的正确答案**，退出码与形状见 test_ask.py。
+        "ask": ("ask", "问题"),
     }
     assert set(invocations) == set(RUNNERS), "有命令没被这条测试覆盖到"
 

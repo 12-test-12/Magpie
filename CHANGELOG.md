@@ -12,6 +12,49 @@
 
 ---
 
+## 0.15.0 — 5.4 `magpie ask`：默认关闭的唯一出站点（R7 白名单化）
+
+`/api/v1` **一行未改**（openapi 快照只差 `info.version` 0.14.0 → 0.15.0，已重新
+生成）。没有新增迁移（R4 未动）—— ask 不写库，`--entity` 走既有只读查询。既有
+命令的键、退出码、信封一字未动；`WRITABLE` 未扩（ask 在 5.2 契约里是 `read`）。
+R7 从"全仓零出站"收成**四向白名单**：出站点恰好一个文件 `magpie/cli/ask.py`
+（`check.py lint` 仍 11 条，四向各有反例自检）。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**1 · 新增 CLI 命令 `magpie ask`（默认关闭；本工具唯一被允许的出站点）。**
+开启机制是两个环境变量（完整说明在 `magpie ask --help`）：`MAGPIE_ASK_ENABLE`
+（只认 `1/true/yes/on`，认不出的值按未开启）+ `MAGPIE_ASK_URL`（http(s) 端点，
+缺一不可）。
+
+* **默认态零调用**：未开启 / 配置不全 → 可读错误信封，退出码 **1**
+  （`E_ASK_DISABLED` / `E_ASK_CONFIG`），**一次网络调用都不发起**（socket 封死 +
+  attempts 记账的断言钉住，名单登记在 `test_ask.DEFAULT_NO_OUTBOUND`）。
+* **开启态可见告警**：发请求前 stderr 打横幅 —— 目标 host、将发送的内容类别
+  （问题文本 / 可选上下文包片段）、"这是本工具唯一被允许的出站点"；stdout 信封
+  不受污染。
+* **载荷先掩码**：问题文本与上下文包（仅 `--entity` 显式给出才附带，默认只发
+  问题文本）出站前一律过 `detect_secrets` 值级掩码 —— 与 `export` 默认模式同一
+  道防线（明文永不外传 ↔ 明文永不落库）。
+* **失败映射**（退出码只落冻结档位，不新增第 6 档）：超时 `E_ASK_TIMEOUT` /
+  DNS `E_ASK_DNS` / 连接失败 `E_ASK_CONNECT` / 非 2xx `E_ASK_UPSTREAM`（带
+  `http_status`）→ 一律退出码 **2**；可读错误，无裸 traceback。
+* 成功信封 `data` 新键：`target_host` / `http_status` / `context_pack` /
+  `masked` / `reply` / `reply_truncated`（回复截断上限 16384 字符）。
+
+**2 · `magpie schema --json` 的 `commands` 多一条 `ask`（`access: "read"`，由
+分发层事实算出，不是手抄）。** **MCP 工具面不收 ask** —— `EXCLUDED_READ_COMMANDS`
+明文剔除（MCP 只读，出站一律不进工具面），与 `export` / `search` 同一行断言：
+双向清单（实际 ≡ 声明）与"排除项必须是 read 半边的活命令"照旧全绿。
+
+**3 · R7 红线本体改造（本步唯一动 R7 的动作）。** 四向校验：声明文件之外零出站
+点（台架 import 豁免、socket 调用点、子进程禁令现状不放松）/ 实际 ⊆ 声明 /
+**声明 ⊆ 实际**（白名单文件被拔掉出站点 → 红）/ 白名单**恰好一个文件**（塞第二
+条路径 → 红）且子进程 curl-wget 禁令对它同样生效。三个方向的反例均实测变红、
+还原后 11 条全绿（实测输出见交付评论）。
+
+---
+
 ## 0.14.0 — 5.5 风险评分与攻击面概览：可解释（每个分数能答「为什么」），零出站
 
 `/api/v1` **纯新增一条** `GET /api/v1/risk`（openapi 快照已重新生成：新路径 +

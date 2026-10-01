@@ -49,6 +49,7 @@ from ..core import export, ingest, ops, query, risk, store
 from ..core import scope as scope_module
 from ..core.parsers.base import extras_install_hint
 from . import write
+from .ask import cmd_ask
 from .db import Database, resolve_project
 from .envelope import (
     EXIT_DATA,
@@ -1333,6 +1334,8 @@ RUNNERS = {
     "schema": cmd_schema,
     # -- 5.5：风险评分 + 攻击面概览（纯读侧派生）--------------------------------
     "risk": cmd_risk,
+    # -- 5.4：出站问答（默认关闭 —— 分类上是读（不改库），行为上是唯一出站点）----
+    "ask": cmd_ask,
     # -- 4.4：时间线 / 导出（打包）----------------------------------------------
     "timeline": cmd_timeline,
     "export": cmd_export,

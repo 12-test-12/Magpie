@@ -37,6 +37,7 @@
     C3        全仓不再出现顶级 `core` 包导入（坑 3 迁移后的防回流）
     R6        magpie/core/** 顶层 import ⊆ 标准库（core 只用标准库）
     R7        零出站：无 socket 连接点 / urllib.request / requests / Python httpx 库
+              （5.4 起四向白名单：出站点恰好一个文件 = magpie/cli/ask.py）
     R7-ASSETS api/web/** 静态资源不得引用外部域名（无 CDN、无外部字体）
     PARSE-RO  magpie/core/parsers/** 不得 import 写入口（解析器只读文件）
     PARSE-NORM 解析器只调用 normalize.py，不得内联自己的归一化
@@ -394,9 +395,9 @@ def _rule_r6() -> list:
 
 
 # ---------------------------------------------------------------------------
-# R7 · 零出站网络
+# R7 · 零出站网络（5.4 起：四向白名单，出站点恰好一个）
 # ---------------------------------------------------------------------------
-
+#
 # 出站客户端模块。**按 import 名判定，不按字符串** —— 这样 2.4 的解析器里出现
 # "httpx" 这个工具名（ProjectDiscovery 的 httpx，读它的 JSONL 输出）不会误报，
 # 只有 `import httpx`（Python 的 httpx 库）才报。
@@ -431,6 +432,26 @@ def _is_harness(rel: Path) -> bool:
     return bool(_HARNESS_PARTS & set(rel.parts))
 
 
+#: R7 的**文件级白名单**：全仓出站点收敛到的恰好一个声明文件（5.4 `magpie ask`）。
+#:
+#: 纪律照抄 READONLY-REVERSE 那份白名单的两条，外加第三条：
+#:
+#:   * **文件级，不是目录级** —— 目录级白名单等于把洞挖成一个房间，任何新文件
+#:     放进那个目录就自动免检。文件级让每一次扩张都必须改下面这一行，而那是一次
+#:     要过 review 的 diff。
+#:   * **恰好一个条目** —— 想扩到第二个文件？**停下来先问**，不许自行扩。
+#:     规则不是靠自觉守的：`len != 1` 当场红（`_r7_audit` 的方向 (a)）。
+#:   * **声明 ⊆ 实际** —— 白名单文件必须**真的有出站点**。一个"声明了却没用"
+#:     的条目是洞的预授权（同 `_EDITABLE_CANVAS` 的 unused 断言）：它让下一次
+#:     出站代码的落地变成"只是搬进了白名单"，而没有任何人再问一句为什么。
+#:
+#: 白名单文件里**子进程 curl/wget 照样报**（方向 (d)）：白名单豁免的是"用标准库
+#: `urllib.request` 出站"这一种被审过的形态，不是"在被豁免的文件里干什么都行"。
+#: 出站实现必须走标准库客户端 —— 拉一个 curl 子进程的形态，静态扫描再也看不清
+#: 它发了什么。
+_OUTBOUND_WHITELIST = frozenset({Path("magpie/cli/ask.py")})
+
+
 def _selftest_r7() -> list:
     """反例自检：豁免只对台架生效，行为检查对谁都生效。"""
     problems = []
@@ -447,60 +468,216 @@ def _selftest_r7() -> list:
     return problems
 
 
+def _r7_points(tree) -> list:
+    """一个文件里的全部**出站点**：`[(行号, 种类, 文案)]`，种类 ∈ {"import", "socket"}。
+
+    口径与 5.4 之前逐字一致，只是把"报不报"从这里挪去了 `_r7_audit`（这样
+    同一段判定既能对真文件跑，也能对自检的构造样本跑 —— 见 `_readonly_audit`
+    同款理由）：
+
+      * **import 种类** —— 出站客户端模块的 import（httpx / requests /
+        http.client / urllib.request / urllib3）、`from urllib import request`；
+      * **socket 种类** —— `socket.connect(…)` / `create_connection(…)` /
+        `socket.socket(…)` 的**调用点**（先登记 `import socket` 绑定的本地名，
+        再全文件扫调用 —— 拆开写也绕不过）。
+
+    **子进程 curl/wget 不是出站点**，它是无条件违规（`_r7_subprocess`）：
+    白名单与台架都不豁免它。
+    """
+    points: list = []
+    socket_names = set()      # 绑定到 socket 模块的本地名
+    socket_calls = {}         # 从 socket 直接 import 进来的连接函数
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "socket":
+                    socket_names.add(alias.asname or "socket")
+                elif _is_outbound_module(alias.name):
+                    points.append((node.lineno, "import",
+                                   f"import 了出站客户端模块 {alias.name!r} —— "
+                                   f"R7：零出站网络"))
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            module = node.module or ""
+            if module == "socket":
+                for alias in node.names:
+                    if alias.name in _SOCKET_CONNECT_ATTRS:
+                        socket_calls[alias.asname or alias.name] = alias.name
+            elif _is_outbound_module(module):
+                points.append((node.lineno, "import",
+                               f"from {module} import … —— R7：零出站网络"))
+            elif module == "urllib" and any(a.name == "request" for a in node.names):
+                points.append((node.lineno, "import",
+                               "from urllib import request —— R7：零出站网络"
+                               "（urllib.parse 不受限）"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                and func.value.id in socket_names \
+                and func.attr in _SOCKET_CONNECT_ATTRS:
+            points.append((node.lineno, "socket",
+                           f"{func.value.id}.{func.attr}(…) 是出站调用点 —— "
+                           f"R7：零出站网络"))
+        elif isinstance(func, ast.Name) and func.id in socket_calls:
+            points.append((node.lineno, "socket",
+                           f"{func.id}(…) 是出站调用点"
+                           f"（from socket import {socket_calls[func.id]}）—— "
+                           f"R7：零出站网络"))
+    return points
+
+
+def _r7_subprocess(tree) -> list:
+    """子进程形态的出站：`[(行号, 文案)]`。**对谁都不豁免**（含白名单与台架）。"""
+    out = []
+    for name, lineno in _command_head_literals(tree):
+        if Path(name).stem.lower() in _NET_CLIENT_COMMANDS:
+            out.append((lineno,
+                        f"以 {name!r} 起子进程拉取远端 —— R7：零出站网络"))
+    return out
+
+
+def _r7_audit(sources: dict, whitelist) -> dict:
+    """R7 的**四向校验**跑在一份给定源码上。**本函数不读盘**（自检喂构造样本）。
+
+    四个方向，各自红的含义不同（修的人要看懂是哪种才该动哪一半）：
+
+      (a) **白名单结构** —— 恰好一个条目，且条目真的在扫描集里。指向不存在
+          文件的条目是**静默的洞**：扫不到它，规则就靠"别的文件恰好干净"绿着；
+          第二条路径出现 = 扩洞 = 当场红（停下来先问）。
+      (b) **实际 ⊆ 声明** —— 白名单之外零出站点。台架的 import 豁免照旧
+          （现状不放松），socket 调用点与子进程对谁都不豁免（现状不放松）。
+      (c) **声明 ⊆ 实际** —— 白名单文件必须真的有出站点。声明了却没用 = 洞的
+          预授权，红。
+      (d) **子进程禁令** —— curl/wget/nc 子进程在白名单文件里照样红：白名单
+          豁免的是"标准库客户端出站"这一种形态，不是"这个文件干什么都行"。
+
+    返回三组发现：`violations`（(b)+(d)）、`whitelist_bad`（(a)）、
+    `no_outpoint`（(c)）。
+    """
+    report = {"violations": [], "whitelist_bad": [], "no_outpoint": []}
+    if len(whitelist) != 1:
+        report["whitelist_bad"].append(
+            f"白名单声明了 {len(whitelist)} 个文件："
+            f"{sorted(p.as_posix() for p in whitelist)} —— 必须**恰好一个**；"
+            f"想扩到第二个文件，停下来先问，不许自行扩")
+    for rel in sorted(whitelist, key=lambda p: p.as_posix()):
+        if rel not in sources:
+            report["whitelist_bad"].append(
+                f"白名单条目 {rel.as_posix()} 不在扫描集 —— 扫不到的白名单"
+                f"条目是静默的洞，规则会永远绿")
+    points_by_file: dict = {}
+    for rel, tree in sources.items():
+        points = _r7_points(tree)
+        if rel in whitelist:
+            points_by_file[rel] = len(points)
+        harness = _is_harness(rel)
+        for lineno, kind, text in points:
+            if rel in whitelist:
+                continue                       # 白名单内：这正是被声明的那个洞
+            if kind == "import" and harness:
+                continue                       # 台架的 import 豁免：现状不放松
+            report["violations"].append((rel, lineno, text))
+        for lineno, text in _r7_subprocess(tree):
+            report["violations"].append((rel, lineno, text))
+    if len(whitelist) == 1:
+        rel = next(iter(whitelist))
+        if rel in sources and points_by_file.get(rel, 0) == 0:
+            report["no_outpoint"].append(rel)
+    return report
+
+
+def _selftest_r7_scope() -> list:
+    """四向校验的**反例自检**（构造样本，不碰盘 —— 同 `_selftest_readonly_scope`
+    的理由：规则读盘的话，自检就得改真文件，某次跑挂会把仓库留在脏状态）。
+
+    | 反例 / 对照                                             | 期望 |
+    |---------------------------------------------------------|------|
+    | 白名单之外的产品文件写出站 import / socket 调用点        | 报   |
+    | 白名单文件里出现合法出站点（urllib.request）            | 不报 |
+    | 白名单文件被拔掉出站点（只剩 import socket）            | 报   |
+    | 白名单指向不存在的文件                                  | 报   |
+    | 白名单声明扩到第二个文件                                | 报   |
+    | 白名单文件里起 curl 子进程                              | 报   |
+    | 台架（bench/tests）的出站客户端 import                  | 不报 |
+    | 台架里的 socket 连接调用点                              | 报   |
+    """
+    problems = []
+    ask = Path("magpie/cli/ask.py")
+    other = Path("magpie/cli/db.py")
+    bench_file = Path("bench/test_perf.py")
+
+    def audit(sources, whitelist=frozenset({ask})):
+        return _r7_audit({rel: ast.parse(text) for rel, text in sources.items()},
+                         whitelist)
+
+    # (b) 反例：白名单之外的产品文件写出站 → 必须红
+    case = audit({ask: "import urllib.request\n", other: "import requests\n"})
+    if not case["violations"]:
+        problems.append("R7 自检失败：白名单外的出站 import 没被检出")
+
+    # (b) 对照：同一条 import 落在白名单文件里 → 不红，且算作出站点
+    case = audit({ask: "import urllib.request\n"})
+    if case["violations"] or case["no_outpoint"]:
+        problems.append("R7 自检失败：白名单文件的合法出站点被误报")
+
+    # (c) 反例：白名单文件的出站点被拔掉 → 必须红（声明 ⊆ 实际）
+    case = audit({ask: "import socket\ngaierror = socket.gaierror\n"})
+    if not case["no_outpoint"]:
+        problems.append("R7 自检失败：白名单声明了却没有出站点没被检出")
+
+    # (a) 反例①：白名单指向不存在的文件 → 必须红
+    case = audit({other: "import urllib.request\n"},
+                 frozenset({Path("magpie/cli/ghost.py")}))
+    if not case["whitelist_bad"]:
+        problems.append("R7 自检失败：白名单指向不存在的文件没被检出")
+
+    # (a) 反例②：白名单声明塞进第二条路径 → 必须红（只收一个文件）
+    case = audit({ask: "import urllib.request\n",
+                  other: "import urllib.request\n"},
+                 frozenset({ask, other}))
+    if not case["whitelist_bad"]:
+        problems.append("R7 自检失败：白名单扩到第二个文件没被检出")
+
+    # (d) 反例：白名单文件里起 curl 子进程 → 必须红（子进程禁令不豁免）
+    case = audit({ask: "import urllib.request\n"
+                       "subprocess.run(['curl', 'http://x'])\n"})
+    if not any("curl" in text for _, _, text in case["violations"]):
+        problems.append("R7 自检失败：白名单文件里的 curl 子进程没被检出")
+
+    # 台架的 import 豁免（现状不放松）：bench 里 import 出站客户端 → 不红
+    case = audit({bench_file: "import requests\n"})
+    if case["violations"]:
+        problems.append("R7 自检失败：台架的 import 豁免被误收")
+
+    # 台架里的 socket 连接调用点照旧红（豁免只免 import，不免行为）
+    case = audit({bench_file: "import socket\nsocket.create_connection(('x', 1))\n"})
+    if not case["violations"]:
+        problems.append("R7 自检失败：台架里的 socket 连接调用点被放行")
+
+    # 非白名单产品文件的 socket 调用点照旧红
+    case = audit({other: "import socket\nsocket.create_connection(('x', 1))\n"})
+    if not case["violations"]:
+        problems.append("R7 自检失败：产品文件里的 socket 连接调用点没被检出")
+    return problems
+
+
 def _rule_r7() -> list:
-    bad = _selftest_r7()
+    bad = _selftest_r7() + _selftest_r7_scope()
+    sources: dict = {}
     for path, rel in _iter_sources():
         tree, _ = _parse(path, rel)
-        if tree is None:
-            continue
-        harness = _is_harness(rel)
-
-        socket_names = set()      # 绑定到 socket 模块的本地名
-        socket_calls = {}         # 从 socket 直接 import 进来的连接函数
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == "socket":
-                        socket_names.add(alias.asname or "socket")
-                    elif _is_outbound_module(alias.name) and not harness:
-                        bad.append(_v(rel, node.lineno,
-                                      f"import 了出站客户端模块 {alias.name!r} —— "
-                                      f"R7：零出站网络"))
-            elif isinstance(node, ast.ImportFrom) and not node.level:
-                module = node.module or ""
-                if module == "socket":
-                    for alias in node.names:
-                        if alias.name in _SOCKET_CONNECT_ATTRS:
-                            socket_calls[alias.asname or alias.name] = alias.name
-                elif _is_outbound_module(module) and not harness:
-                    bad.append(_v(rel, node.lineno,
-                                  f"from {module} import … —— R7：零出站网络"))
-                elif module == "urllib" and any(a.name == "request" for a in node.names) \
-                        and not harness:
-                    bad.append(_v(rel, node.lineno,
-                                  "from urllib import request —— R7：零出站网络"
-                                  "（urllib.parse 不受限）"))
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
-                    and func.value.id in socket_names \
-                    and func.attr in _SOCKET_CONNECT_ATTRS:
-                bad.append(_v(rel, node.lineno,
-                              f"{func.value.id}.{func.attr}(…) 是出站调用点 —— "
-                              f"R7：零出站网络"))
-            elif isinstance(func, ast.Name) and func.id in socket_calls:
-                bad.append(_v(rel, node.lineno,
-                              f"{func.id}(…) 是出站调用点"
-                              f"（from socket import {socket_calls[func.id]}）—— "
-                              f"R7：零出站网络"))
-        for name, lineno in _command_head_literals(tree):
-            if Path(name).stem.lower() in _NET_CLIENT_COMMANDS:
-                bad.append(_v(rel, lineno,
-                              f"以 {name!r} 起子进程拉取远端 —— R7：零出站网络"))
+        if tree is not None:
+            sources[rel] = tree
+    audit = _r7_audit(sources, _OUTBOUND_WHITELIST)
+    for rel, lineno, text in audit["violations"]:
+        bad.append(_v(rel, lineno, text))
+    for why in audit["whitelist_bad"]:
+        bad.append(f"R7 白名单失败(a)：{why}")
+    for rel in audit["no_outpoint"]:
+        bad.append(f"R7 反向断言(c)失败：{rel.as_posix()} 在白名单里却一个出站点"
+                   f"都没有 —— 白名单不是提前挖洞：声明了却没用，就把声明删掉"
+                   f"（并确认出站真的没了）")
     return bad
 
 
@@ -1392,7 +1569,8 @@ RULES = (
     ("C2", "子进程一律 sys.executable（不得把字面量解释器名当可执行名）", _rule_c2),
     ("C3", "全仓不再出现顶级 `core` 包导入", _rule_c3),
     ("R6", "magpie/core/** 顶层 import ⊆ 标准库", _rule_r6),
-    ("R7", "零出站网络（socket 连接点 / urllib.request / requests / Python httpx 库）",
+    ("R7", "零出站网络（socket 连接点 / urllib.request / requests / Python httpx 库）"
+           "—— 四向白名单：出站点恰好一个（magpie/cli/ask.py）",
      _rule_r7),
     ("R7-ASSETS", "静态资源零出站（api/web/** 不得引用外部域名 / CDN / 外部字体）",
      _rule_r7_assets),

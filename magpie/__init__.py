@@ -1,6 +1,8 @@
 """Magpie · 喜鹊 —— 自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。
 
-仅用于自有资产与已获授权的目标。**工具本身不主动发起任何网络请求**（红线 R7）。
+仅用于自有资产与已获授权的目标。**工具本身不主动发起任何网络请求**（红线 R7）
+—— 唯一例外是默认关闭、显式开启才出站的 `magpie ask`（R7 的四向白名单把它
+收敛成恰好一个出站点文件，见 `check.py` 的 `_OUTBOUND_WHITELIST`）。
 
 包边界（见 `Magpie-开发实施计划.md` §2）:
     magpie.core   数据层。**只用标准库**（红线 R6），不含任何第三方依赖。
@@ -14,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.14.0"       # 与 pyproject.toml 的 version 保持一致（5.5：风险评分）
+__version__ = "0.15.0"       # 与 pyproject.toml 的 version 保持一致（5.4：magpie ask）
 
 __all__ = ["__version__"]

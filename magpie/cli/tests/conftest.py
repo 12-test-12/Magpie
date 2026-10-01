@@ -22,7 +22,13 @@ from magpie.core import store                                    # noqa: E402
 #: 子进程的公共环境。**`PYTHONIOENCODING` 是必须的**：Windows 上
 #: `sys.executable` 的 stdout 默认按 GBK 编码，`--human` 里的中文会当场
 #: UnicodeEncodeError。（`--json` 不靠它 —— 见 `test_readonly` 的那两条断言。）
-ENV = dict(os.environ, PYTHONIOENCODING="utf-8")
+#:
+#: **`MAGPIE_ASK_*` 一律剥掉**（5.4）：`magpie ask` 的默认关闭是对每条测试都
+#: 必须成立的性质，而环境变量会从跑测试的人的 shell 里渗进来 —— 一个
+#: `MAGPIE_ASK_ENABLE=1` 的开发环境会把契约测试从"默认关"变成"真出站"。
+#: 需要开启态的用例在自己的 env 里显式加回来（`test_ask.py`）。
+ENV = {k: v for k, v in os.environ.items() if not k.startswith("MAGPIE_ASK_")}
+ENV["PYTHONIOENCODING"] = "utf-8"
 
 
 @pytest.fixture()

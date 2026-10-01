@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.14.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.15.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -52,6 +52,11 @@ version = "0.14.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # `GET /api/v1/risk` + CLI 命令 `magpie risk`（同一段 `core/risk.overview`）。
 # openapi 快照重新生成（新路径 + `info.version`）。没有新增迁移（R4 未动）；
 # 既有路由 / 既有命令的形状一字未动。见 CHANGELOG 的 `0.14.0` 一节。
+# 0.14.0 → 0.15.0 对应 5.4：`magpie ask` —— **纯新增**一条 CLI 命令（默认关闭的
+# 唯一出站点，R7 四向白名单化）。`/api/v1` 一行未改 —— openapi 快照只差
+# `info.version`（已重新生成）。没有新增迁移（R4 未动）；既有命令的键、退出码、
+# 信封一字未动（ask 的失败只落冻结档位 1 与 2，不新增第 6 档）。
+# 见 CHANGELOG 的 `0.15.0` 一节。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"
