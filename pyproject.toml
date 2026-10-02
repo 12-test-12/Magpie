@@ -89,7 +89,12 @@ api-yaml = ["pyyaml"]
 # `magpie/core/parsers/tshark.py` 的 `ensure_available`。
 # （这一列是空的这件事本身也是对的：4.1 的解析走的是标准库的 `json`。）
 traffic = []
-dev = ["pytest"]
+# `httpx2` 不是运行时依赖，是**测试台架**依赖：api 测试的 TestClient 走
+# starlette.testclient，而 unpinned 装到的 starlette（1.6+）要求 httpx2 在场。
+# 本机与历轮环境里它恰好早被装上，所以这个洞只在**全新环境**暴露 —— LARI-48 的
+# WSL 全新 venv 实测：缺它时 api 测试 13 个文件收集期全红。与 EXTRAS_REGISTRY
+# 的 dev 条目逐项一致由 test_extras_registry_matches_pyproject 钉住。
+dev = ["pytest", "httpx2"]
 
 [project.scripts]
 # 2.5 的最小触发入口需要一个稳定的调用点，所以 CLI 虽已后置，这个入口先立住。

@@ -977,10 +977,11 @@ EXTRAS_REGISTRY: dict[str, dict[str, Any]] = {
                    "的 ensure_available）",
     },
     "dev": {
-        "packages": ["pytest"],
-        "modules": ("pytest",),
-        "purpose": "开发用（pytest）—— 跑 check.py / 单元测试，非运行时依赖；"
-                   "缺了测试起不来，不属于运行时报错的那类",
+        "packages": ["pytest", "httpx2"],
+        "modules": ("pytest", "httpx2"),
+        "purpose": "开发用（pytest + httpx2）—— 跑 check.py / 单元测试；httpx2 是"
+                   " starlette TestClient（api 测试）的台架依赖。两者都非运行时"
+                   "依赖，缺了测试起不来，不属于运行时报错的那类",
     },
 }
 
