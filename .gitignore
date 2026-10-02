@@ -64,3 +64,5 @@ sec27.txt
 # 两者都出现过在 `git status` 里并**两次**被误当成待提交内容，故显式忽略。
 .idea/
 _scratch/
+parent.json
+issues.json
