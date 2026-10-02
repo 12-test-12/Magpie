@@ -2,3 +2,11 @@
 # 'bad interpreter'，而本机 core.autocrlf=true 会在 checkout 时把 LF 换成 CRLF。
 # 钉死 .sh 一律 LF，与 checkout 配置无关。
 *.sh text eol=lf
+
+# 前端**构建输入**与**构建产物**一律 LF：源码的行尾会改变打包后的内容哈希
+# （实测：同一份代码，CRLF checkout 构建出 index-Bs50yiZ-.css，LF checkout
+# 构建出 index-ByWFeRb0.css —— Actions 的「产物逐字节一致」因此必红）。
+# eol=lf 覆盖 core.autocrlf，任何机器任何 checkout 配置下 vite 拿到的输入
+# 才是同一份字节，判据才立得住。
+frontend/** text eol=lf
+magpie/api/web/** text eol=lf

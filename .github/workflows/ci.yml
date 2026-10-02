@@ -73,9 +73,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # 钉 22：入库产物是本机 node v22 构建的（frontend/README.md 记录的
-          # nvm 版本）—— 构建环境与判据环境不同是"产物逐字节一致"最典型的红因。
-          node-version: '22'
+          # 钉**精确补丁号**（不是 '22'）：入库产物逐字节判据要求构建输入全等 ——
+          # 源码行尾已由 .gitattributes 钉 LF，node 也必须与产出这批产物的
+          # 本机版本（frontend/README.md 记录的 nvm 22.19.0）一个字不差。
+          node-version: '22.19.0'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: 装前端依赖（lockfile 钉死）
