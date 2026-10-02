@@ -1,0 +1,10 @@
+# 上下文白名单：只放行 `pip install .` 与入口脚本要的四样，其余一律不进
+# 上下文。仓库根躺着大量证据文件（*.txt）、打包产物（dist/ build/）、前端
+# 源码（frontend/ —— 构建产物已入库 magpie/api/web/，镜像不需要 node），
+# 全带进上下文既慢又没用。
+*
+!pyproject.toml
+!README.md
+!magpie
+!docker
+magpie/**/__pycache__

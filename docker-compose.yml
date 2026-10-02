@@ -1,0 +1,24 @@
+# 别人拿去就能跑的最小配置：
+#
+#   docker compose up -d
+#   docker compose logs -f magpie     # token 在 magpie app 打印的 URL 里
+#   浏览器打开 http://localhost:8000/?token=<token>
+#
+# 数据在 magpie-data 卷（容器内 /data）；删卷即清库。换端口改 "8000:8000"。
+# 健康状态：docker compose ps（HEALTHCHECK 探的是回环 /healthz，见 Dockerfile）。
+services:
+  magpie:
+    build: .
+    image: magpie:local
+    ports:
+      - "8000:8000"
+    environment:
+      # 固定 token（不设则每次启动随机生成，值看 docker compose logs）。
+      # MAGPIE_TOKEN: change-me
+      MAGPIE_LOG_LEVEL: warning
+    volumes:
+      - magpie-data:/data
+    restart: unless-stopped
+
+volumes:
+  magpie-data:

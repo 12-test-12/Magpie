@@ -174,12 +174,34 @@ PATH。`check.py` 会自己拦这件事：解释器低于 `pyproject.toml` 声�
    （`.tar.gz` / `.zip`），对**解压后**的产物跑 `packaging/smoke.sh`
    （`--version` 比对仓库版本 / schema 迁移 / 回环起服务 / GUI 资源零出站
    grep），再上传 artifact；
-4. **`v*` tag** 额外挂一个 draft GitHub Release（两个平台的包各一份）。
+4. **Release** —— 推送 `main` 把当次产物挂到滚动 prerelease **`edge`**
+   （Release 页面永远是最新的一份双平台包，不打 tag 也有产物可下）；
+   `v*` tag 照旧挂一个 draft 正式 Release（重跑只换资产，不会撞"已存在"）。
 
 `check.py bench`（严格性能契约）**不进 CI** —— 共享 runner 的负载会让计时契约
 整段漂移，红了不携带代码信息；本地 `py -3.13 check.py bench` 口径不变。打包
 形态与取舍见 `packaging/magpie.spec` 注释；产物用法见包内 `README.md`
 （源文件 `packaging/README-pack.md`）。
+
+## Docker 部署
+
+别人拿去就能跑（不需要 Python / node，数据落在卷里）：
+
+```bash
+docker compose up -d
+docker compose logs -f magpie        # token 在 magpie app 打印的 URL 里
+# 浏览器打开 http://localhost:8000/?token=<token>
+```
+
+不走 compose 也行：
+`docker build -t magpie . && docker run -d -p 8000:8000 -v magpie-data:/data magpie`。
+固定 token 用 `MAGPIE_TOKEN` 环境变量（不设则每次启动随机生成）。
+
+镜像里的产品仍**只绑回环** —— `magpie app` 拒绝非回环 host 是产品红线，镜像
+不去改它：容器内由 `socat` 把 `0.0.0.0:8000` 转发到 `127.0.0.1:8001`，对外
+暴露与否由 `-p` 这个显式决定承担，token 鉴权全链路照旧。前端产物已入库，镜像
+里没有 node；构建期的 apt / pip 属构建行为，运行时零外联不变。取舍与端口见
+`Dockerfile` 与 `docker/entrypoint.sh` 的文件头注释。
 
 ## 文档
 

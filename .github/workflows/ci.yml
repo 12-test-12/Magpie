@@ -8,7 +8,10 @@
 #   package   依赖上面两组全绿；PyInstaller **onedir** 打双平台可分发包，
 #             对**解压后**的产物跑 packaging/smoke.sh（只读命令 + schema 迁移 +
 #             回环起服务 + GUI 静态资源零出站 grep），再 upload-artifact。
-#   release   `v*` tag 触发：下载两个平台的包，挂一个 **draft** GitHub Release。
+#   release   把两个平台的包挂上 Release 页，两条路径：推 `main` → 滚动
+#             **prerelease `edge`**（每次推送整只重建，Release 页面永远是
+#             最新包 —— 不打 tag 也有产物可下）；`v*` tag → **draft** 正式
+#             Release（重跑时只 --clobber 换资产，不再撞"已存在"）。
 #
 # 关于 `check.py bench`（严格性能契约）**为什么不进 CI**：
 #   bench 的判据是计时（1M 行 ≤ 60s / 导入 10 万观测 < 60s / 冷启动 < 1s），
@@ -153,21 +156,46 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: v* tag → draft Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    name: 产物挂 Release（main → edge prerelease / v* tag → draft）
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: package
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # 挂 Release 是本 job 唯一的写权限
+      contents: write          # 挂 Release / 移动 edge 指向是本 job 唯一的写权限
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: 创建 draft Release 并挂上两个平台的包
+      - name: 挂产物（main → 滚动 prerelease `edge`；v* tag → draft 正式 Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           ls -l dist/
-          gh release create "$GITHUB_REF_NAME" \
-            --draft --generate-notes --title "$GITHUB_REF_NAME" dist/*
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            # 滚动 prerelease：整只重建（删 release → 挪 tag → 重建并挂包），
+            # 页面上永远是这次推送的产物。`edge` 不匹配 v*，即使 GITHUB_TOKEN
+            # 会触发的事件也回不成 CI（何况它不回触发），没有递归风险。
+            if gh release view edge >/dev/null 2>&1; then
+              gh release delete edge --yes
+            fi
+            # gh release delete 不删 tag；tag 不挪走，--target 就钉在旧提交上。
+            # 404（tag 本就不存在）当成功处理。
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/edge" \
+              >/dev/null 2>&1 || true
+            gh release create edge dist/* \
+              --prerelease --target "$GITHUB_SHA" \
+              --title "edge（main 最新构建）" \
+              --notes "main 分支最新构建的滚动预发布：每次推送整只重建，资产永远是当次 CI 的双平台包。"
+          else
+            # tag 路径：首次挂 draft（正式发布前留一道人工审阅）；重跑时
+            # release 已在，只 --clobber 换资产 —— 否则 gh release create 会
+            # 撞 "release already exists" 把重跑卡红。
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            else
+              gh release create "$GITHUB_REF_NAME" dist/* \
+                --draft --generate-notes --title "$GITHUB_REF_NAME"
+            fi
+          fi

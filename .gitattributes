@@ -3,6 +3,13 @@
 # 钉死 .sh 一律 LF，与 checkout 配置无关。
 *.sh text eol=lf
 
+# Docker 构建三件套钉 LF：`.dockerignore` 的白名单模式若带 \r 会整份匹配不上
+# （上下文从"四样"变成"整仓"），Dockerfile / compose 同理跟 `.sh` 一起进
+# 构建输入。entrypoint.sh 已由上面的 `*.sh` 覆盖。
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf
+
 # 前端**构建输入**与**构建产物**一律 LF：源码的行尾会改变打包后的内容哈希
 # （实测：同一份代码，CRLF checkout 构建出 index-Bs50yiZ-.css，LF checkout
 # 构建出 index-ByWFeRb0.css —— Actions 的「产物逐字节一致」因此必红）。
