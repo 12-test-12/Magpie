@@ -102,7 +102,7 @@ magpie = "magpie.cli:main"
 
 [tool.setuptools]
 # 显式列出，关掉 setuptools 的 flat-layout 自动发现：仓库根还躺着 check.py、
-# verify_*.py、generate_docx.py，自动发现会把它们也当成顶层模块并直接报错。
+# verify_*.py，自动发现会把它们也当成顶层模块并直接报错。
 # 三个 tests/ 目录刻意**不**打包 —— 它们是回归网，不是运行时的一部分。
 #
 # 2.2 起 `magpie/cli.py` 长成了 `magpie/cli/`：入口仍是 `magpie.cli:main`，
