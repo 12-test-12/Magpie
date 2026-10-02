@@ -1,6 +1,6 @@
 """一条命令跑全绿（阶段 0 的可重复入口；2.1 起把静态红线也收了进来）。
 
-    py -3.13 check.py          # 静态红线 + 单元测试 + 五个验收脚本
+    py -3.13 check.py          # 静态红线 + 单元测试 + 六个验收脚本
     py -3.13 check.py lint     # 只跑静态红线（秒级）
     py -3.13 check.py bench    # 严格性能契约（MAGPIE_PERF_STRICT=1）
     py -3.13 check.py all      # 上面全部
@@ -136,6 +136,14 @@ UNIT = [
     # MAGPIE_VERIFY_G4_BREAK=mask|pin（进程内改坏掩码或钉死规则版本 → 对应段必须红），
     # D 段另有 13 个进程内反例/对照（7 反例 + 6 对照），每次跑都验，不会锈。
     [sys.executable, "verify_g4.py"],
+    # G5 出口 Gate（阶段 5 的两条专项：MCP 默认只读 / 上下文包零出站）。
+    # 同一条纪律的第四次执行。工具清单从真注册表算（双向 + 改契约的牙齿）、
+    # 逐工具调用前后**逐表快照**不变（审计/作业表在场 + 写入口反例）、
+    # adapters 的 AST 断言（扫描器自写）、stdio 真子进程全链路；端到端那一半
+    # 是 socket 封死下走完整 HTTP 栈调 /agent/context，R7 四向跑 check.py 自己
+    # 的审计（真仓 + 构造样本牙齿），前端两处落点静态扫 + 复制按钮代码面审。
+    # 反例开关 MAGPIE_VERIFY_G5_BREAK=mcp|context|r7|assets（未知取值拒绝执行）。
+    [sys.executable, "verify_g5.py"],
 ]
 BENCH = [
     [sys.executable, "-m", "pytest", "bench/test_perf.py", "-q"],
