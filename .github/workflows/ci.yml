@@ -170,6 +170,10 @@ jobs:
       - name: 挂产物（main → 滚动 prerelease `edge`；v* tag → draft 正式 Release）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 本 job 没有 checkout，gh 找不到 git remote 就会退化成自己跑 git，
+          # 撞 "not a git repository"（gh 的解析链：--repo → GH_REPO → git
+          # remote）。显式给 GH_REPO，gh 全程走 API，与本地有没有仓库无关。
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           ls -l dist/
