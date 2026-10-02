@@ -19,6 +19,11 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# --- PyInstaller 打包产物（LARI-48）---
+# 可完全重建；分发包本身由 CI 的 artifact / Release 分发，不入库。
+build/
+dist/
+
 # --- 数据库与归档 ---
 # 绝不入库: 可能含真实资产数据与凭据哈希
 *.db

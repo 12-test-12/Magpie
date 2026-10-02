@@ -1,0 +1,4 @@
+# LARI-48：CI 与本地都用 bash 跑 packaging/smoke.sh —— CRLF 的 shebang 行会报
+# 'bad interpreter'，而本机 core.autocrlf=true 会在 checkout 时把 LF 换成 CRLF。
+# 钉死 .sh 一律 LF，与 checkout 配置无关。
+*.sh text eol=lf

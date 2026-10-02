@@ -104,7 +104,13 @@ magpie = "magpie.cli:main"
 # 外加 `__main__.py` 让 `-m magpie.cli` 照旧可用（bench 的两条性能契约靠它）。
 # 拆开不是为了好看 —— 契约（`envelope.py`）比命令活得久，分开之后"改命令时
 # 顺手改到契约"这件事才需要多走一步。
-packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api", "magpie.cli"]
+#
+# `magpie.adapters`（5.1 的 MCP 适配器）曾经漏在这份清单外：源码态测试一切
+# 照绿（pytest 从仓库根 import 源码），但 `pip install .` 出来的 wheel 里没有
+# 它 —— 一个只在"装了包才知道"的洞。LARI-48 打包时补上（构建产物同样要收它，
+# 见 packaging/magpie.spec 的 hiddenimports）。
+packages = ["magpie", "magpie.core", "magpie.core.parsers", "magpie.api", "magpie.cli",
+            "magpie.adapters"]
 
 [tool.setuptools.package-data]
 # 静态资源随包走。**本地打包**是零出站的前提（计划书 §7.6）：页面一旦引用

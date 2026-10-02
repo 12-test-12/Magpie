@@ -162,6 +162,25 @@ PATH。`check.py` 会自己拦这件事：解释器低于 `pyproject.toml` 声�
 `check.py` 的子进程一律用 `sys.executable`，所以你用哪个解释器跑它，测试就跑在
 哪个解释器上 —— 这也是所有"已在 3.13 上验证"结论成立的前提。
 
+## CI 与可分发包（LARI-48）
+
+推送 `main` 触发 GitHub Actions（`.github/workflows/ci.yml`），四个 job：
+
+1. **check.py × 双平台**（ubuntu-latest / windows-latest × Python 3.13）——
+   与本地同一个入口，exit 0 才算绿；
+2. **前端产物幂等** —— `npm ci && npm run build` 后 `git diff --exit-code
+   magpie/api/web/`（改了前端忘了提交产物会当场红），附带 `npm test`；
+3. **打包**（依赖 1、2 全绿）—— PyInstaller **onedir** 出双平台可分发包
+   （`.tar.gz` / `.zip`），对**解压后**的产物跑 `packaging/smoke.sh`
+   （`--version` 比对仓库版本 / schema 迁移 / 回环起服务 / GUI 资源零出站
+   grep），再上传 artifact；
+4. **`v*` tag** 额外挂一个 draft GitHub Release（两个平台的包各一份）。
+
+`check.py bench`（严格性能契约）**不进 CI** —— 共享 runner 的负载会让计时契约
+整段漂移，红了不携带代码信息；本地 `py -3.13 check.py bench` 口径不变。打包
+形态与取舍见 `packaging/magpie.spec` 注释；产物用法见包内 `README.md`
+（源文件 `packaging/README-pack.md`）。
+
 ## 文档
 
 | 文件 | 作用 |
