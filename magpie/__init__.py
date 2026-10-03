@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.15.0"       # 与 pyproject.toml 的 version 保持一致（5.4：magpie ask）
+__version__ = "0.16.0"       # 与 pyproject.toml 的 version 保持一致（目录浏览 /fs）
 
 __all__ = ["__version__"]

@@ -434,7 +434,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.15.0"
+    "version": "0.16.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1381,6 +1381,55 @@
           }
         },
         "summary": "导出（json|csv|domains|markdown）"
+      }
+    },
+    "/api/v1/fs": {
+      "get": {
+        "description": "列一个目录（不给 `path` 时列根）。\n\n返回的 `entries[].path` 一律是**绝对路径**，可直接填进 `POST /imports`。\n根视图的 `path` 是 `\"\"`（前端据此禁用「选择此文件夹」—— 没有可选的\"当前\n目录\"）；`parent` 为 `null` 表示已经在顶上（根视图与盘符根都算）。",
+        "operationId": "browse_fs_api_v1_fs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Browse Fs Api V1 Fs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "目录浏览（只列目录树，给导入对话框选绝对路径）"
       }
     },
     "/api/v1/graph": {

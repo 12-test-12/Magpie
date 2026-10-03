@@ -44,7 +44,9 @@ import csv
 import functools
 import io
 import json
+import os
 import sqlite3
+import string
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -763,6 +765,82 @@ def undo_import(import_id: str, request: Request) -> dict[str, Any]:
                        f"导入请求 {import_id} 还没有产生任何 job（state={record.state}）")
     ticket = ctx.imports.undo(import_id)
     return ok(ticket.result(timeout=120))
+
+
+# ---------------------------------------------------------------------------
+# 目录浏览（导入对话框的「浏览…」）
+# ---------------------------------------------------------------------------
+#
+# 为什么这条端点必须存在，而不是用浏览器的原生「选择文件夹」：网页出于安全
+# 拿不到绝对路径（`webkitdirectory` / `showDirectoryPicker` 只给相对路径与
+# 文件内容），而 `POST /imports` 要的是**服务进程**能解析的绝对路径。唯一
+# 不撒谎的做法是让服务端列目录 —— 浏览时看到的路径，与提交后读到的路径，
+# 出自同一个进程、同一台机器。
+#
+# 两条边界，都是刻意的：
+#
+#   1. **只列不读**。不打开文件、不返回文件内容 —— 它是"走"进目录用的，
+#      读文件是 `POST /imports` 的事。
+#   2. **鉴权在 router 上**（`app._require_token`）。列目录暴露的是这台机器
+#      的文件系统结构，token 是它的门 —— 与其余 40 条路由同一道门。
+
+
+def _fs_roots() -> list[Path]:
+    """根列表：Windows 是**存在的**盘符，POSIX 是 `/`。"""
+    if os.name != "nt":
+        return [Path("/")]
+    return [Path(f"{drive}:\\") for drive in string.ascii_uppercase
+            if Path(f"{drive}:\\").exists()]
+
+
+@router.get("/fs", summary="目录浏览（只列目录树，给导入对话框选绝对路径）")
+def browse_fs(path: str | None = None) -> dict[str, Any]:
+    """列一个目录（不给 `path` 时列根）。
+
+    返回的 `entries[].path` 一律是**绝对路径**，可直接填进 `POST /imports`。
+    根视图的 `path` 是 `""`（前端据此禁用「选择此文件夹」—— 没有可选的"当前
+    目录"）；`parent` 为 `null` 表示已经在顶上（根视图与盘符根都算）。
+    """
+    if not path:
+        return ok({"path": "", "parent": None, "entries": [
+            {"name": str(root), "path": str(root), "is_dir": True}
+            for root in _fs_roots()]})
+
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        # 相对路径按**服务进程**的工作目录解析 —— 与 POST /imports 同一台机器
+        # 上的同一个进程，两边才不会给出两种答案。
+        target = Path.cwd() / target
+    if not target.exists():
+        raise ApiError(404, "E_DIR_NOT_FOUND", f"路径不存在：{path}",
+                       hint="路径按服务进程的工作目录解析；GUI 里请从根开始点选")
+    if not target.is_dir():
+        raise ApiError(400, "E_NOT_A_DIR", f"不是目录：{path}",
+                       hint="文件直接选中即可（导入本来就收文件路径），"
+                            "能「进去」的只有目录")
+
+    entries: list[dict[str, Any]] = []
+    try:
+        with os.scandir(target) as it:
+            for entry in it:
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:               # 断链 / 竞态消失：跳过，不整页失败
+                    continue
+                entries.append({"name": entry.name,
+                                "path": str(target / entry.name),
+                                "is_dir": is_dir})
+    except OSError as exc:
+        raise ApiError(400, "E_DIR_UNREADABLE",
+                       f"读不了目录 {target}：{exc.strerror or exc}",
+                       hint="通常是权限问题；换一个目录试试") from exc
+
+    # 目录在前、名字不分大小写 —— 浏览框里"先看到能进去的"是肌肉记忆。
+    entries.sort(key=lambda item: (not item["is_dir"], item["name"].casefold()))
+    parent = target.parent
+    return ok({"path": str(target),
+               "parent": None if parent == target else str(parent),
+               "entries": entries})
 
 
 # ---------------------------------------------------------------------------

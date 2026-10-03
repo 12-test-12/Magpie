@@ -21,6 +21,7 @@
 import { computed, ref } from 'vue'
 import { watchImport } from '../api.js'
 import { store } from '../store.js'
+import FsPicker from '../components/FsPicker.vue'
 
 const emit = defineEmits(['close'])
 
@@ -31,9 +32,21 @@ const dryRun = ref(false)
 const busy = ref(false)
 const error = ref('')
 const phases = ref([])
+const picker = ref(false)
 
 const pathList = computed(() =>
   paths.value.split('\n').map((line) => line.trim()).filter(Boolean))
+
+/**
+ * 从浏览框选中一个路径：**追加**，不覆盖 —— 手填的与点选的可以混着来。
+ * 已经在表单里的不加第二行（同一个文件导两遍是纯粹的坏行来源）。
+ */
+function addPath(picked) {
+  if (!pathList.value.includes(picked)) {
+    paths.value = [...pathList.value, picked].join('\n')
+  }
+  picker.value = false
+}
 
 function append(text, level = 'info') {
   phases.value = phases.value.concat([{ text, level }])
@@ -107,14 +120,19 @@ function onBatch(payload) {
     <div class="dialog panel">
       <h1>导入</h1>
       <p class="dim small">
-        把 subfinder / httpx 的输出收进来。**路径按服务进程的工作目录解析**，
-        所以请填绝对路径 —— 写错会在提交之前就被拒（而不是变成一个"没有匹配到
-        文件"的作业）。
+        把 subfinder / httpx 的输出收进来。点「浏览…」在服务端目录树里点选
+        （拿到的直接就是绝对路径），或者手填 —— 手填时**路径按服务进程的工作
+        目录解析**，写错会在提交之前就被拒（而不是变成一个「没有匹配到文件」
+        的作业）。
       </p>
 
-      <label>文件或目录（每行一个）</label>
+      <div class="labelrow">
+        <label>文件或目录（每行一个）</label>
+        <button type="button" class="ghost" @click="picker = true">浏览…</button>
+      </div>
       <textarea v-model="paths" rows="5"
         placeholder="D:\recon\subfinder.txt&#10;D:\recon\httpx.jsonl" />
+      <FsPicker v-if="picker" @pick="addPath" @close="picker = false" />
 
       <div class="grid2">
         <div>
@@ -164,6 +182,9 @@ function onBatch(payload) {
 .dialog { width: 560px; padding: 18px 20px; background: var(--panel-2); }
 h1 { font-size: 16px; margin: 0 0 8px; }
 label { display: block; margin: 10px 0 4px; color: var(--faint); font-size: 11px; }
+.labelrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.labelrow label { margin: 10px 0 4px; }
+.labelrow button { margin-top: 10px; }
 label.check { display: flex; align-items: center; gap: 7px; margin-top: 12px;
               color: var(--dim); font-size: 12px; }
 label.check input { width: auto; }
