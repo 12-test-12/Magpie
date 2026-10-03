@@ -111,7 +111,7 @@ function onNodeClick({ node }) {
   padding: 4px 10px;
   border: 1px solid var(--accent);
   border-radius: 999px;
-  background: rgba(26, 26, 31, .88);
+  background: var(--overlay);
   color: var(--accent);
   font-size: 11px;
   pointer-events: none;
@@ -126,7 +126,7 @@ function onNodeClick({ node }) {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: rgba(14, 14, 17, .86);
+  background: var(--scrim-heavy);
   padding: 24px;
   text-align: center;
 }

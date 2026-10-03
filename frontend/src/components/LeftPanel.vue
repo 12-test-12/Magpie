@@ -70,22 +70,26 @@ function openPipeline(id) {
 
     <section>
       <h2 class="section">类型（点击筛选画布）</h2>
-      <ul class="list">
+      <!-- 胶囊 Tag 平铺：原来一列带彩色圆点的行列表在 11 个 kind 时显得
+           琐碎杂乱 —— 换成自动换行的小胶囊，彩点弱化成点缀（5px），
+           选中态用强调色描边。点击行为一个字没变（仍走 toggleKind）。 -->
+      <div class="tags">
         <template v-for="row in lensRows" :key="'k' + row.key">
-          <li
+          <button
             v-for="kind in (row.data ? row.data.kinds : [])"
             :key="kind.kind"
-            class="kind"
+            type="button"
+            class="tag"
             :class="{ active: kindFilter(kind.kind) }"
             @click="store.toggleKind(kind.kind)"
           >
             <span class="swatch" :style="{ background: kindColor(kind.kind) }" />
             <span class="name mono">{{ kind.kind }}</span>
-            <span class="badge">{{ kind.count }}</span>
-          </li>
+            <span class="count">{{ kind.count }}</span>
+          </button>
         </template>
-        <li v-if="noKinds" class="dim empty">还没有登记的类型</li>
-      </ul>
+      </div>
+      <p v-if="noKinds" class="dim empty">还没有登记的类型</p>
       <button v-if="store.filter.kinds.length" class="ghost clear"
               @click="store.clearFilter()">
         清除筛选（{{ store.filter.kinds.length }}）
@@ -118,7 +122,9 @@ function openPipeline(id) {
   width: 216px;
   flex: none;
   border-right: 1px solid var(--line);
-  background: var(--panel);
+  /* --chrome：与顶栏同一层，比画布略亮 —— 左栏从此读作「框架/导航」，
+     不再和内容区黏在一起。真正的层级靠"底色差 + 右侧分割线"两件事。 */
+  background: var(--chrome);
   padding: 12px;
   overflow-y: auto;
 }
@@ -133,17 +139,51 @@ section + section { margin-top: 16px; }
   cursor: pointer;
   font-size: 12px;
 }
-.list li:hover { background: #202530; }
-.list li.active { background: #1D2733; color: var(--accent); }
+.list li:hover { background: var(--tint-hover); }
+.list li.active { background: var(--tint-active); color: var(--accent); }
 .list li .name { flex: 1; }
-.swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.empty { cursor: default; }
+
+/* 类型胶囊 Tag（平铺、自动换行） */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 18px;
+}
+.tag:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
+.tag.active {
+  background: var(--tint-accent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.tag .swatch { width: 5px; height: 5px; border-radius: 50%; flex: none; opacity: .85; }
+.tag .name { letter-spacing: .01em; }
+.tag .count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--faint);
+  font-size: 10px;
+  text-align: center;
+  line-height: 14px;
+}
+.tag.active .count { background: var(--tint-accent); color: var(--accent); }
+
+.empty { cursor: default; font-size: 12px; margin: 6px 0 0; }
 .clear { margin-top: 8px; width: 100%; }
 .new { margin-top: 8px; width: 100%; }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notimpl {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--faint);
 }

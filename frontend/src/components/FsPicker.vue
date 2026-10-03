@@ -95,9 +95,10 @@ onMounted(() => load(''))
 </template>
 
 <style scoped>
-.scrim { position: fixed; inset: 0; z-index: 60; background: rgba(14,14,17,.66);
+.scrim { position: fixed; inset: 0; z-index: 60; background: var(--scrim);
          display: flex; align-items: center; justify-content: center; padding: 24px; }
-.dialog { width: 560px; padding: 18px 20px; background: var(--panel-2); }
+.dialog { width: 560px; padding: 18px 20px; background: var(--panel-2);
+          box-shadow: var(--raise); }
 h1 { font-size: 16px; margin: 0 0 8px; }
 .bar { display: flex; align-items: center; gap: 8px; margin: 10px 0 8px; }
 .where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
@@ -111,7 +112,7 @@ h1 { font-size: 16px; margin: 0 0 8px; }
 .row { display: flex; gap: 10px; width: 100%; padding: 4px 8px; text-align: left;
        background: none; border: 0; border-radius: 4px; cursor: pointer;
        color: var(--dim); font: inherit; }
-.row:hover { background: var(--panel-2); color: var(--fg); }
+.row:hover { background: var(--tint-hover); color: var(--fg); }
 .kind { flex: 0 0 3em; color: var(--faint); font-size: 11px; }
 .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

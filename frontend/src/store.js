@@ -172,21 +172,25 @@ const _visible = computed(() => {
 // 导出
 // ---------------------------------------------------------------------------
 
+// `group` 是**导航分组的展示元数据**（顶栏按它加分隔线：模式 / 镜头 / 治理），
+// 只有 TopBar 消费。它不参与任何路由或状态判断 —— 分组乱了顶栏难读，
+// 但页面该开还是开；写在这里而不是让 TopBar 自己维护一份 key 清单，
+// 是因为两份清单迟早分叉，而症状会是某个页签静默掉组。
 export const VIEWS = [
-  { key: 'explore', label: '画布', hint: '探索模式（只读）' },
+  { key: 'explore', label: '画布', hint: '探索模式（只读）', group: 'mode' },
   // 编排模式只是 `store.view` 的**一个新取值**（冻结 F5）—— 不新增第二套路由
   // 状态。第二套路由状态的表现是"刷新之后回到另一个页面"，而那在本地工具里
   // 会被当成"偶发"。
-  { key: 'pipeline', label: '编排', hint: '管线编排（可编辑）' },
-  { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段' },
-  { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品' },
-  { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）' },
+  { key: 'pipeline', label: '编排', hint: '管线编排（可编辑）', group: 'mode' },
+  { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段', group: 'lens' },
+  { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品', group: 'lens' },
+  { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）', group: 'lens' },
   // 5.5：风险评分 + 攻击面概览。**纯读侧派生**（GET /risk），与镜头平级 ——
   // 它回答的是"这些事实合起来意味着什么"，不是又一个镜头。
-  { key: 'risk', label: '风险', hint: '风险评分 + 攻击面概览（零出站）' },
-  { key: 'jobs', label: '作业历史', hint: '导入 / undo / redo' },
-  { key: 'inbox', label: 'Inbox', hint: '待裁决' },
-  { key: 'doctor', label: '数据体检', hint: '完整性 / 孤儿 / 未测' },
+  { key: 'risk', label: '风险', hint: '风险评分 + 攻击面概览（零出站）', group: 'gov' },
+  { key: 'jobs', label: '作业历史', hint: '导入 / undo / redo', group: 'gov' },
+  { key: 'inbox', label: 'Inbox', hint: '待裁决', group: 'gov' },
+  { key: 'doctor', label: '数据体检', hint: '完整性 / 孤儿 / 未测', group: 'gov' },
 ]
 
 //: 镜头的人读名字与**展示顺序**（计划书 §3.5 的六个）。两者都是**界面**的事：

@@ -21,7 +21,11 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import VirtualTable from '../components/VirtualTable.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { store } from '../store.js'
+
+/** 空态 CTA「导入一个文件」冒给外壳开导入对话框。 */
+const emit = defineEmits(['import'])
 
 const rows = ref([])
 const selected = ref(null)
@@ -142,9 +146,17 @@ watch(() => store.view, (value) => {
           :rows="rows"
           :columns="COLUMNS"
           :selected-key="selected ? selected.id : null"
-          empty-text="还没有作业。先导入一个文件 —— 每次导入每个文件产生一条作业。"
+          empty-text="还没有作业。"
           @row-click="pick"
         >
+          <template #empty>
+            <EmptyState
+              title="还没有作业"
+              desc="每次导入每个文件产生一条作业 —— 先导入一个文件，这里就有了。"
+            >
+              <button class="primary" @click="emit('import')">导入一个文件</button>
+            </EmptyState>
+          </template>
           <template #appliedLabel="{ row }">
             <span :class="row.applied ? 'ok' : 'warn'">{{ row.appliedLabel }}</span>
           </template>

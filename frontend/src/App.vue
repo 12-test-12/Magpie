@@ -110,11 +110,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              （`showDetail`）只跟着 `explore` 出现，所以这里不用改它 ——
              它已经是对的。 -->
         <PipelineView v-else-if="store.view === 'pipeline'" />
-        <LensView v-else-if="store.view === 'assets'" lens="assets" label="资产" />
+        <LensView v-else-if="store.view === 'assets'" lens="assets" label="资产"
+                  @import="importOpen = true" />
         <LensView v-else-if="store.view === 'services'" lens="services"
-                  label="服务与中间件" />
-        <LensView v-else-if="store.view === 'vuln'" lens="vuln" label="漏洞" />
-        <JobsView v-else-if="store.view === 'jobs'" />
+                  label="服务与中间件" @import="importOpen = true" />
+        <LensView v-else-if="store.view === 'vuln'" lens="vuln" label="漏洞"
+                  @import="importOpen = true" />
+        <JobsView v-else-if="store.view === 'jobs'" @import="importOpen = true" />
         <InboxView v-else-if="store.view === 'inbox'" />
         <RiskView v-else-if="store.view === 'risk'" />
         <DoctorView v-else-if="store.view === 'doctor'" />

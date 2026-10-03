@@ -74,8 +74,7 @@ function stamp(at) {
           <span class="at faint">{{ stamp(line.at) }}</span>{{ line.text }}
         </div>
         <p v-if="!importLines.length" class="dim pad">
-          还没有导入。顶部「导入」按钮把 subfinder / httpx 的输出收进来，
-          进度会在这里实时出现（SSE，每 100ms 一批）。
+          还没有导入。顶部「导入」把 subfinder / httpx 的输出收进来，进度在这里实时出现。
         </p>
       </template>
 
@@ -85,16 +84,13 @@ function stamp(at) {
           <span class="at faint">{{ stamp(line.at) }}</span>{{ line.text }}
         </div>
         <p v-if="!activityLines.length" class="dim pad">
-          还没有记录。点画布上的一条连线，它的关系与置信度会在这里留一行 ——
-          这只是本地的操作日志，落库的那份在「作业历史」页。
+          还没有记录。点画布上的一条连线，它的关系与置信度会在这里留一行。
         </p>
       </template>
 
       <template v-else>
         <p class="dim pad">
-          坏行明细来自导入报告（`report.files[].bad_lines`）。请到「作业历史」
-          选一次导入的 job，在报告里看逐行明细 —— 那里是**落库**的那一份，
-          抽屉里的这份只是本次会话的实时流，刷新就没了。
+          坏行明细在「作业历史」的导入报告里 —— 那是落库的那一份。
         </p>
       </template>
     </div>

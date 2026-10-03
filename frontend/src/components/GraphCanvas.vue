@@ -244,7 +244,7 @@ defineExpose({ fitView })
   padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: rgba(26, 26, 31, .88);
+  background: var(--overlay);
   color: var(--dim);
   font-size: 11px;
   pointer-events: none;
@@ -261,7 +261,7 @@ defineExpose({ fitView })
   padding: 5px 8px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-ui);
-  background: rgba(26, 26, 31, .94);
+  background: var(--overlay);
   font-size: 11px;
 }
 .batch-bar .count { color: var(--accent); }
@@ -275,7 +275,7 @@ defineExpose({ fitView })
   padding: 5px 10px;
   border: 1px solid var(--warn);
   border-radius: var(--radius-ui);
-  background: rgba(26, 26, 31, .92);
+  background: var(--overlay);
   color: var(--warn);
   font-size: 11px;
 }
@@ -288,7 +288,7 @@ defineExpose({ fitView })
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: rgba(14, 14, 17, .86);
+  background: var(--scrim-heavy);
   padding: 24px;
   text-align: center;
 }

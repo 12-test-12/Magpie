@@ -17,6 +17,7 @@
  */
 import { computed, ref } from 'vue'
 import { store } from '../store.js'
+import EmptyState from './EmptyState.vue'
 
 const emit = defineEmits(['import'])
 
@@ -49,68 +50,80 @@ async function createProject() {
 </script>
 
 <template>
+  <!-- 外壳换成 EmptyState（插画 + 层级 + CTA），三分支逻辑与全部
+       钉死文案（从这里开始 / 建项目 / 还没有数据 / 开始导入）原样保留。 -->
   <div class="guide panel">
     <template v-if="!hasProjects">
-      <h1>从这里开始</h1>
-      <p class="dim">
-        Magpie 不主动扫描任何东西 —— 它把你已有的工具输出（subfinder / httpx…）
-        收进来，整理成一张能看的图。**打开画布就能看见手上有什么、它们怎么连起来。**
-      </p>
-      <ol class="steps">
-        <li><b>建一个项目</b>：项目 = 一次评估的范围，数据按项目隔离。</li>
-        <li><b>导入文件</b>：`subfinder.txt` / `httpx.jsonl`，一次可以选多个。</li>
-        <li><b>回画布</b>：`domain → ip`、`service → product` 会连起来。</li>
-      </ol>
-      <div class="row">
-        <input v-model="name" placeholder="项目名，例如 acme-2026q3"
-               @keydown.enter="createProject" />
-        <button class="primary" :disabled="busy" @click="createProject">
-          {{ busy ? '建立中…' : '建项目' }}
-        </button>
-      </div>
-      <p v-if="error" class="bad small">{{ error }}</p>
+      <EmptyState
+        title="从这里开始"
+        desc="Magpie 不主动扫描任何东西 —— 它把你已有的工具输出（subfinder / httpx…）收进来，整理成一张能看的图。打开画布就能看见手上有什么、它们怎么连起来。"
+      >
+        <ol class="steps">
+          <li><b>建一个项目</b>：项目 = 一次评估的范围，数据按项目隔离。</li>
+          <li><b>导入文件</b>：`subfinder.txt` / `httpx.jsonl`，一次可以选多个。</li>
+          <li><b>回画布</b>：`domain → ip`、`service → product` 会连起来。</li>
+        </ol>
+        <div class="row">
+          <input v-model="name" placeholder="项目名，例如 acme-2026q3"
+                 @keydown.enter="createProject" />
+          <button class="primary" :disabled="busy" @click="createProject">
+            {{ busy ? '建立中…' : '建项目' }}
+          </button>
+        </div>
+        <p v-if="error" class="bad small">{{ error }}</p>
+      </EmptyState>
     </template>
 
     <template v-else-if="!hasEntities">
-      <h1>项目建好了，还没有数据</h1>
-      <p class="dim">
-        导入一份真实输出就能看到画布动起来。路径填**绝对路径**（服务进程按它
-        自己的工作目录解析相对路径）。导入会在底部日志抽屉里实时显示进度、阶段
-        与坏行 —— 那些是数据层的真实计数，不是界面上估的。
-      </p>
-      <ol class="steps">
-        <li>`subfinder -d example.com -o subfinder.txt`</li>
-        <li>`httpx -json -l subfinder.txt -o httpx.jsonl`</li>
-        <li>把这两个文件一起导进来</li>
-      </ol>
-      <button class="primary" @click="emit('import')">开始导入</button>
+      <EmptyState
+        title="项目建好了，还没有数据"
+        desc="导入一份真实输出就能看到画布动起来。路径填绝对路径（服务进程按它自己的工作目录解析相对路径）。导入会在底部日志抽屉里实时显示进度、阶段与坏行 —— 那些是数据层的真实计数，不是界面上估的。"
+      >
+        <ol class="steps">
+          <li>`subfinder -d example.com -o subfinder.txt`</li>
+          <li>`httpx -json -l subfinder.txt -o httpx.jsonl`</li>
+          <li>把这两个文件一起导进来</li>
+        </ol>
+        <button class="primary" @click="emit('import')">开始导入</button>
+      </EmptyState>
     </template>
 
     <template v-else>
-      <h1>当前筛选没有匹配的实体</h1>
-      <p class="dim">
-        库里有 {{ store.counts.entities }} 个实体，只是被筛掉了。
-      </p>
-      <button class="ghost" @click="store.clearFilter()">
-        清除筛选{{ filtered ? '' : '（本来就没有）' }}
-      </button>
+      <EmptyState
+        title="当前筛选没有匹配的实体"
+        :desc="`库里有 ${store.counts.entities} 个实体，只是被筛掉了。`"
+        tone="clean"
+      >
+        <button class="ghost" @click="store.clearFilter()">
+          清除筛选{{ filtered ? '' : '（本来就没有）' }}
+        </button>
+      </EmptyState>
     </template>
   </div>
 </template>
 
 <style scoped>
 .guide {
-  max-width: 520px;
-  padding: 22px 24px;
-  text-align: left;
+  max-width: 540px;
   background: var(--panel-2);
+  border: 1px solid var(--line);
+  box-shadow: var(--raise);
 }
-h1 { font-size: 17px; margin: 0 0 10px; font-weight: 600; }
-.guide p { margin: 0 0 12px; font-size: 12px; line-height: 1.7; }
-.steps { margin: 0 0 14px; padding-left: 20px; font-size: 12px; line-height: 1.9; }
+/* 步骤与表单是 EmptyState actions 插槽里的内容：居中排版改成左对齐宽块，
+   保证输入框有足够宽度、步骤文字不被 460px 的居中列挤断。 */
+.guide :deep(.empty-state) { max-width: 100%; padding: 26px 28px; }
+/* 插槽里是多段块级内容（步骤 ol + 表单行），纵向排 */
+.guide :deep(.actions) { flex-direction: column; align-items: stretch; width: 100%; }
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.9;
+  text-align: left;
+  color: var(--dim);
+}
 .steps b { color: var(--accent); font-weight: 600; }
-.row { display: flex; gap: 8px; }
+.row { display: flex; gap: 8px; margin-top: 12px; }
 .row input { flex: 1; }
-.small { font-size: 11px; }
-button + button { margin-left: 8px; }
+.small { font-size: 12px; margin: 8px 0 0; }
 </style>

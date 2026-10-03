@@ -30,6 +30,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import VirtualTable from '../components/VirtualTable.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { get } from '../api.js'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
@@ -38,6 +39,9 @@ const props = defineProps({
   lens: { type: String, required: true },
   label: { type: String, default: '' },
 })
+
+/** 空态上的「立即导入数据」冒给外壳开导入对话框（与画布引导卡同一条路）。 */
+const emit = defineEmits(['import'])
 
 const PAGE = 500
 
@@ -234,9 +238,23 @@ watch(() => kinds.value.length, (now, before) => {
         :rows="tableRows"
         :columns="columns"
         :selected-key="selected ? selected.id : null"
-        :empty-text="loading ? '载入中…' : '这个镜头下还没有实体 —— 先导入一份 httpx 或 nuclei 输出试试。'"
+        empty-text="载入中…"
         @row-click="pick"
       >
+        <template #empty>
+          <EmptyState
+            v-if="loading"
+            title="载入中…"
+            desc="正在按类型逐个查询这个镜头。"
+          />
+          <EmptyState
+            v-else
+            title="暂无数据"
+            :desc="`这个镜头下还没有${label || lens}实体 —— 导入一份 httpx 或 nuclei 输出就会出现。`"
+          >
+            <button class="primary" @click="emit('import')">立即导入数据</button>
+          </EmptyState>
+        </template>
         <template #entity_key="{ row }">
           <span class="swatch inline" :style="{ background: kindColor(row.kind) }" />
           {{ row.entity_key }}
@@ -244,19 +262,24 @@ watch(() => kinds.value.length, (now, before) => {
       </VirtualTable>
     </div>
 
-    <footer class="foot faint">
-      <span v-if="truncated.length" class="warn">
+    <footer class="foot">
+      <!-- 数据边界（500 条上限）是**警告**，保持可见；实现细节是**说明**，
+           折叠 —— 页脚不再一排密麻小字。 -->
+      <span v-if="truncated.length" class="warn small">
         ⚠ {{ truncated.join(' / ') }} 已达 {{ PAGE }} 条上限，本页只显示前 {{ PAGE }} 条。
       </span>
-      <span>
-        点一行会在画布上打开它的详情。过滤走 SQL（逐个 kind 查询），
-        不是在浏览器里筛全库 —— 计划书 §7.5 的"排序过滤在 SQL"。
-      </span>
-      <span v-if="facetFields.length">
-        严重度 / 状态是这两个实体上的观测：本页只对已载入的这 {{ rows.length }} 条
-        补齐它们（走详情面板用的同一个 `GET /entities/{id}`），服务端筛选是 3.5
-        的 `core/query.py` 的事。
-      </span>
+      <details class="tip">
+        <summary>这一页怎么查的 / 补齐了什么</summary>
+        <div class="body">
+          点一行会在画布上打开它的详情。过滤走 SQL（逐个 kind 查询），不是在浏览器里
+          筛全库 —— 计划书 §7.5 的「排序过滤在 SQL」。
+          <template v-if="facetFields.length">
+            严重度 / 状态是这两个实体上的观测：本页只对已载入的这 {{ rows.length }} 条
+            补齐它们（走详情面板用的同一个 <span class="mono">GET /entities/{id}</span>），
+            服务端筛选是 3.5 的 <span class="mono">core/query.py</span> 的事。
+          </template>
+        </div>
+      </details>
     </footer>
   </div>
 </template>
@@ -276,8 +299,9 @@ watch(() => kinds.value.length, (now, before) => {
 }
 .spacer { flex: 1; }
 .table-wrap { flex: 1; min-height: 0; }
-.small { font-size: 11px; }
-.foot { font-size: 11px; display: flex; gap: 12px; flex-wrap: wrap; }
+.small { font-size: 12px; }
+.foot { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
+.foot .tip { flex: 1; min-width: 260px; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .swatch.inline { margin-right: 6px; vertical-align: middle; }
 </style>

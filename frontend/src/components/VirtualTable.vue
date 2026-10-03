@@ -69,7 +69,13 @@ function cell(row, column) {
         </tr>
       </thead>
     </table>
-    <div v-if="!rows.length" class="empty dim">{{ emptyText }}</div>
+    <!-- 空态优先走插槽（富空态：插画+标题+CTA）；没插内容的调用方
+         回退到 emptyText 纯文本 —— 兼容零改动的旧用法。 -->
+    <div v-if="!rows.length" class="empty">
+      <slot name="empty">
+        <span class="dim">{{ emptyText }}</span>
+      </slot>
+    </div>
     <div v-else class="body" :style="{ height: totalHeight + 'px' }">
       <table class="grid rows" :style="{ transform: `translateY(${offsetY}px)` }">
         <!-- 与表头分开两张表（表头要 sticky），列宽必须用同一份 colgroup 对齐 -->
@@ -108,4 +114,5 @@ function cell(row, column) {
 .body { position: relative; }
 .rows { position: absolute; top: 0; left: 0; width: 100%; }
 .empty { padding: 18px; text-align: center; font-size: 12px; }
+.empty:deep(.empty-state) { padding-top: 44px; padding-bottom: 44px; }
 </style>

@@ -8,8 +8,9 @@
  * 裁决走 `POST /inbox/{id}/resolve`（2.7 就有的端点，写者唯一）。默认只看
  * `state=open` —— 已裁决的项属于历史，不占这个页面的注意力。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import VirtualTable from '../components/VirtualTable.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { get, post } from '../api.js'
 import { store } from '../store.js'
 
@@ -49,7 +50,6 @@ const COLUMNS = [
   { key: 'actions', label: '', width: '132px' },
 ]
 
-const empty = computed(() => !loading.value && !rows.value.length)
 
 async function load() {
   loading.value = true
@@ -110,9 +110,20 @@ watch(() => store.view, (value) => {
       <VirtualTable
         :rows="rows"
         :columns="COLUMNS"
-        empty-text="没有待裁决的项。数据层在嗅探拿不准、字段多值、合并后多值、出现未知字段、资产越界时才会往这里放东西。"
+        empty-text="没有待裁决的项。"
         @row-click="() => {}"
       >
+        <template #empty>
+          <!-- 「空 Inbox」是好消息：数据层没有需要人拿主意的地方。
+               所以用 clean 对勾、不放 CTA —— 空态不等于故障。 -->
+          <EmptyState
+            v-if="!loading"
+            tone="clean"
+            title="干净 —— 没有待裁决的项"
+            desc="嗅探拿不准、字段多值、合并后多值、出现未知字段、资产越界时，数据层才会往这里放东西。空 Inbox 不是「没有数据」，而是没有需要人拿主意的地方。"
+          />
+          <EmptyState v-else title="载入中…" />
+        </template>
         <template #subject="{ row }">
           {{ row.subject }}
         </template>
@@ -126,12 +137,15 @@ watch(() => store.view, (value) => {
       </VirtualTable>
     </div>
 
-    <footer class="foot faint">
-      「裁决」= `POST /inbox/{id}/resolve {state:"resolved"}`。被裁决的项不再出现在
-      这个列表里（默认只看 open）。批量裁决与"裁决时顺带改数据"属于后续步骤 ——
-      <p v-if="empty" class="dim" style="margin:6px 0 0">
-        空 Inbox 不是"没有数据"，而是"数据层没有需要人拿主意的地方"。
-      </p>
+    <footer class="foot">
+      <details class="tip">
+        <summary>「裁决」是什么 / 被裁决的项去哪了</summary>
+        <div class="body">
+          「裁决」= <span class="mono">POST /inbox/{id}/resolve {state:"resolved"}</span>。
+          被裁决的项不再出现在这个列表里（默认只看 open）。批量裁决与「裁决时顺带
+          改数据」属于后续步骤。
+        </div>
+      </details>
     </footer>
   </div>
 </template>

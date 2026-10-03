@@ -74,11 +74,14 @@ function choose(node) {
         </li>
         <li v-if="!results.length" class="dim none">没有匹配的实体</li>
       </ul>
-      <footer class="foot faint">
-        只在已载入的 {{ store.counts.entities }} 个实体里搜。
-        `GET /api/v1/search`（计划书 §8 的结构化过滤 + FTS5 + 查询语法）目前返回
-        <b>501</b>，尚未开工。
-      </footer>
+      <details class="tip foot">
+        <summary>搜索范围：只在已载入的 {{ store.counts.entities }} 个实体里</summary>
+        <div class="body">
+          <span class="mono">GET /api/v1/search</span>（计划书 §8 的结构化过滤 +
+          FTS5 + 查询语法）目前返回 <b>501</b>，尚未开工 —— 所以这里搜的是画布上
+          已载入的实体，不是整库。
+        </div>
+      </details>
     </div>
   </div>
 </template>
@@ -88,13 +91,13 @@ function choose(node) {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(14, 14, 17, .6);
+  background: var(--scrim);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
 }
-.palette { width: 520px; padding: 10px; }
+.palette { width: 520px; padding: 10px; box-shadow: var(--raise); }
 .results { list-style: none; margin: 8px 0 0; padding: 0; max-height: 46vh; overflow-y: auto; }
 .results li {
   display: flex;
@@ -105,10 +108,9 @@ function choose(node) {
   cursor: pointer;
   font-size: 12px;
 }
-.results li.active { background: #1D2733; }
+.results li.active { background: var(--tint-active); }
 .results .key { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results .none { cursor: default; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.foot { font-size: 11px; line-height: 1.5; margin-top: 8px; padding-top: 8px;
-        border-top: 1px solid var(--line-soft); }
+.foot { margin-top: 8px; }
 </style>

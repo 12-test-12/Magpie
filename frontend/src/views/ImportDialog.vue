@@ -177,9 +177,10 @@ function onBatch(payload) {
 </template>
 
 <style scoped>
-.scrim { position: fixed; inset: 0; z-index: 50; background: rgba(14,14,17,.66);
+.scrim { position: fixed; inset: 0; z-index: 50; background: var(--scrim);
          display: flex; align-items: center; justify-content: center; padding: 24px; }
-.dialog { width: 560px; padding: 18px 20px; background: var(--panel-2); }
+.dialog { width: 560px; padding: 18px 20px; background: var(--panel-2);
+          box-shadow: var(--raise); }
 h1 { font-size: 16px; margin: 0 0 8px; }
 label { display: block; margin: 10px 0 4px; color: var(--faint); font-size: 11px; }
 .labelrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

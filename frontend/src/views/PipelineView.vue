@@ -308,7 +308,7 @@ async function redo(runId) {
   padding: 4px 10px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-ui);
-  background: rgba(26, 26, 31, .9);
+  background: var(--overlay);
   font-size: 11px;
 }
 .side {
@@ -330,8 +330,8 @@ section + section { margin-top: 16px; }
   font-size: 12px;
   cursor: pointer;
 }
-.steps li:hover { background: #202530; }
-.steps li.active { background: #1D2733; color: var(--accent); }
+.steps li:hover { background: var(--tint-hover); }
+.steps li.active { background: var(--tint-active); color: var(--accent); }
 .steps .ell { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .steps .x, .deps .x, .runs .x { padding: 0 5px; line-height: 1.4; }
 .empty { cursor: default; font-size: 11px; }
