@@ -328,6 +328,78 @@ def test_entities_with_domain_annotates_without_filtering(loaded):
             assert row["id"] in scoped_ids, f"{row['entity_key']} 注解与筛选分叉"
 
 
+def test_domains_summary_counts_match_with_domain_grouping(loaded):
+    """0.20.0 `/domains/summary`：**单真相** —— 与 `with_domain=1` 分组逐域名相等。
+
+    下拉里的 `key (N)`、镜头页分段行、详情面板的名下计数必须是同一个数 ——
+    所以这里拿注解结果当基准做相等断言，而不是只看形状（形状对、数分叉，
+    正是截图里三个口径互相打架的那种病）。
+    """
+    body = loaded.get("/api/v1/domains/summary", headers=HEADERS).json()
+    rows = body["data"]
+    assert rows, "夹具里有域名与名下资产"
+    assert body["meta"]["count"] == len(rows)
+    totals = [row["total"] for row in rows]
+    assert totals == sorted(totals, reverse=True), "按 total 降序（同数按名字典序）"
+    for row in rows:
+        assert row["domain"] and row["total"] >= 1
+        assert sum(row["kinds"].values()) == row["total"], "kinds 加和必须等于 total"
+        assert list(row["kinds"].values()) == sorted(
+            row["kinds"].values(), reverse=True), "kinds 计数降序"
+
+    annotated = loaded.get("/api/v1/entities?limit=500&with_domain=1",
+                           headers=HEADERS).json()["data"]
+    grouped: dict[str, int] = {}
+    for row in annotated:
+        if row.get("domain"):
+            grouped[row["domain"]] = grouped.get(row["domain"], 0) + 1
+    assert grouped, "夹具里有可归域的实体"
+    assert {r["domain"]: r["total"] for r in rows} == grouped, \
+        "summary 与 with_domain 分组必须同一套推导"
+
+
+def test_domains_summary_self_attribution_and_domain_filter(loaded):
+    """域名行归自己（host==key 首选自己）；`domain=` 只回一行且口径不变。"""
+    rows = loaded.get("/api/v1/domains/summary",
+                      headers=HEADERS).json()["data"]
+    by_key = {row["domain"]: row for row in rows}
+    assert "app.example.com" in by_key, "域名实体自己必在行里"
+    own = by_key["app.example.com"]
+    assert own["kinds"].get("domain", 0) >= 1, "自己至少给自己算一个"
+
+    one = loaded.get("/api/v1/domains/summary?domain=app.example.com",
+                     headers=HEADERS).json()
+    assert [r["domain"] for r in one["data"]] == ["app.example.com"]
+    assert one["data"][0] == own, "过滤不改口径：同一行、同一个数"
+
+
+def test_domains_summary_empty_and_bad_usage(loaded):
+    """两种空分开 + 问法错响亮（与 `under_domain=` 同一条纪律）。"""
+    # 域名实体还没写进库 → 200 空 + 为什么空
+    ghost = loaded.get("/api/v1/domains/summary?domain=ghost.example.com",
+                       headers=HEADERS)
+    assert ghost.status_code == 200
+    body = ghost.json()
+    assert body["data"] == []
+    assert any("还没被任何来源写进来" in note for note in body["meta"]["notes"])
+
+    # key 被非 domain 实体占用（夹具里 httpx 的 a 记录产出 ip）→ 400
+    ips = [row["entity_key"] for row in loaded.get(
+        "/api/v1/entities?limit=500&kind=ip", headers=HEADERS).json()["data"]]
+    assert ips, "夹具前提：httpx 的 a 记录该产出 ip 实体"
+    wrong = loaded.get(f"/api/v1/domains/summary?domain={ips[0]}",
+                       headers=HEADERS)
+    assert wrong.status_code == 400
+    error = wrong.json()["error"]
+    assert error["code"] == "E_NOT_A_DOMAIN"
+    assert error.get("actual_kind") == "ip"
+
+    # 根本不是域名 → 400
+    bad = loaded.get("/api/v1/domains/summary?domain=nonsense", headers=HEADERS)
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "E_NOT_A_DOMAIN"
+
+
 # ---------------------------------------------------------------------------
 # 写入路径
 # ---------------------------------------------------------------------------

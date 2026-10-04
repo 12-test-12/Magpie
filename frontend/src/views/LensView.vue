@@ -34,6 +34,7 @@ import EmptyState from '../components/EmptyState.vue'
 import { get } from '../api.js'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
+import { fmtInt } from '../format.js'
 
 const props = defineProps({
   lens: { type: String, required: true },
@@ -71,8 +72,13 @@ const facetFilter = ref({ severity: '', state: '' })
 //: 全部时带 `with_domain=1` 让行带上归属 —— 分段与筛选共用同一套推导原语，
 //: 所以"分段看到的"与"筛出来的"不会分叉（后端单真相测试钉住）。
 const domainChoice = ref('')
+//: 选项带计数（0.20.0「每个域名名下有什么」）：`key（N）` 的 N 与详情面板的
+//: 名下计数、分段行同源（`/domains/summary`，分组口径）—— 按名字典序排：下拉
+//: 是找名字的地方，不是排行。
 const domainOptions = computed(
-  () => (store.domains?.rows || []).map((row) => row.entity_key).sort())
+  () => (store.domainSummary?.rows || [])
+    .map((row) => ({ key: row.domain, total: Number(row.total) || 0 }))
+    .sort((a, b) => a.key.localeCompare(b.key)))
 
 const COLUMNS = [
   { key: 'entity_key', label: '实体', mono: true },
@@ -259,15 +265,16 @@ watch(() => kinds.value.length, (now, before) => {
         <span class="mono">{{ entry.kind }}</span>
         <b>{{ entry.count }}</b>
       </span>
-      <!-- 域名下拉（0.19.0）：选项**懒加载**（第一次聚焦才拉，按项目缓存），
-           「全部」= 按域名分段看，选中一个 = 服务端 under_domain= 裁剪。 -->
+      <!-- 域名下拉（0.19.0 起懒加载，0.20.0 带计数）：选项**第一次聚焦才拉**
+           （按项目缓存），`key（N）` 的 N 与详情面板同源；「全部」= 按域名分段
+           看，选中一个 = 服务端 under_domain= 裁剪。 -->
       <label class="domain-pick">
         <span class="faint">域名</span>
-        <select :value="domainChoice" @focus="store.loadDomains()"
+        <select :value="domainChoice" @focus="store.loadDomainSummary()"
                 @change="onDomainChange">
           <option value="">全部</option>
-          <option v-for="key in domainOptions" :key="key" :value="key">
-            {{ key }}
+          <option v-for="opt in domainOptions" :key="opt.key" :value="opt.key">
+            {{ opt.key }}（{{ fmtInt(opt.total) }}）
           </option>
         </select>
       </label>

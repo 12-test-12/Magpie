@@ -87,6 +87,28 @@ const kindSummary = computed(() => {
   }
   return rows.sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind))
 })
+
+/**
+ * 名下资产计数（0.20.0 ·「每个域名名下有什么」）。
+ *
+ * 只读 `store.domainSummary`（`selectEntity` 点开域名时按项目拉一次，镜头页
+ * 下拉同吃这一份）—— **组件自己不发请求**：这里的自动请求会打爆「复制给 AI」
+ * 行为测试钉死的 get ×1，而那条断言守的是"复制不附带别的请求"，与名下计数
+ * 毫无关系。缓存还没到位时返回 null，模板给一句占位，数据到了自动补上。
+ */
+const domainAssets = computed(() => {
+  const entity = detail.value?.entity
+  if (!entity || entity.kind !== 'domain') return null
+  const row = (store.domainSummary?.rows || [])
+    .find((entry) => entry.domain === entity.entity_key)
+  if (!row) return null
+  return {
+    total: Number(row.total) || 0,
+    kinds: Object.entries(row.kinds || {})
+      .map(([kind, count]) => ({ kind, count: Number(count) || 0 }))
+      .sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind)),
+  }
+})
 /** 这个实体参与过的、仍然生效的合并事件。**单独一条读**
  *  （`GET /entities/{id}/merges`）而不是塞进 `/entities/{id}` —— 后者的形状
  *  是对外契约，3.8 不动它。 */
@@ -339,6 +361,22 @@ function goTo(rel) {
             退出域名视图
           </button>
         </div>
+
+        <!-- 名下资产（0.20.0 ·「每个域名名下有什么」）：计数与镜头页下拉的
+             `key (N)`、`with_domain` 分段行**同源**（store.domainSummary，分组
+             取首选的口径）—— 三处显示的 N 必须是同一个数，所以这里不再自己数
+             一遍。选中态一个请求都不发（见 domainAssets 的注释）。 -->
+        <ul v-if="domainAssets" class="dist">
+          <li v-for="row in domainAssets.kinds" :key="row.kind">
+            <span class="swatch" :style="{ background: kindColor(row.kind) }" />
+            <span class="mono name">{{ row.kind }}</span>
+            <span class="num">{{ fmtInt(row.count) }}</span>
+          </li>
+        </ul>
+        <p v-if="domainAssets" class="faint small">
+          名下共 {{ fmtInt(domainAssets.total) }} 个实体（含它自己）。
+        </p>
+        <p v-else class="faint small">（名下计数未载入）</p>
         <p class="faint small">
           归属是推导的（域名后缀 + 解析反查 + 漏洞落点），不是一条存着的边。
         </p>

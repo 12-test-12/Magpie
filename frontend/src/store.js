@@ -68,10 +68,12 @@ const _aggLayout = reactive({})
 //: "还没读到"于是是同一种显示 —— 而那正是想要的：本地工具里没有"加载中"的
 //: 那一格，也不该有。
 const _tags = ref([])
-//: 镜头页域名下拉的选项（0.19.0）。**按项目缓存**：读时比对 `project`，对
-//: 不上就重取（换项目 = 换了一个库的事实）。取失败缓存空列表而不是每次重试
-//: —— 下拉少几个选项是降级，每翻一页镜头打一次失败请求是拖累。
-const _domains = ref({ project: undefined, rows: [] })
+//: 域名名下资产计数（0.20.0 · `GET /domains/summary`）。**按项目缓存**：读时
+//: 比对 `project`，对不上就重取（换项目 = 换了一个库的事实）。取失败缓存空列表
+//: 而不是每次重试 —— 下拉少几个选项是降级，每翻一页镜头打一次失败请求是拖累。
+//: 下拉的 `key (N)` 与详情面板的名下计数**同吃这一份** —— 各拉各的迟早出现
+//: 同一个域名两个不同的 N，而那正是这次要修的病。
+const _domainSummary = ref({ project: undefined, rows: [] })
 //: 批量选中的实体 id。批量改状态的操作对象就是它。
 const _selection = ref([])
 const _loading = ref(false)
@@ -282,7 +284,7 @@ export const store = reactive({
   importReport: _importReport,
   pipeline: _pipeline,
   tags: _tags,
-  domains: _domains,
+  domainSummary: _domainSummary,
   selection: _selection,
 
   // -- 派生 --
@@ -320,7 +322,7 @@ export const store = reactive({
   tagEntity,
   setEntityTags,
   loadTags,
-  loadDomains,
+  loadDomainSummary,
   // 合并 / 拆开 / 批量改状态（3.8，全部落在探索模式）
   loadMerges,
   mergeEntities,
@@ -515,6 +517,12 @@ export async function selectEntity(id) {
       get(`/entities/${id}`), loadMerges(id)])
     _selectedDetail.value = detail
     _selectedMerges.value = merges || []
+    //: 点开的是域名 → 顺手把名下计数拉回来（按项目缓存，整个项目只拉一次）。
+    //: 触发点放在 store 而不是 DetailPanel 里：组件的 watch/挂载发请求会打爆
+    //: 「复制给 AI」行为测试钉死的 get ×1 —— 那条断言守的是"复制这个动作不附带
+    //: 别的请求"，而直接往 `selectedDetail` 塞值的测试不经过这里，互不相扰。
+    //: 不 await：详情立刻打开，计数行是随缓存到位**补上**的，不是前置门槛。
+    if (detail?.entity?.kind === 'domain') loadDomainSummary()
     return _selectedDetail.value
   } catch (err) {
     pushLog(`读取实体 ${id} 失败：${err.message}`, 'import', 'error')
@@ -764,22 +772,25 @@ export async function loadTags() {
 }
 
 /**
- * 镜头页域名下拉的选项（0.19.0）：**懒加载**，带项目级缓存（见 `_domains`）。
+ * 域名名下资产计数（0.20.0 · `GET /domains/summary`）：**懒加载**，按项目缓存
+ * （见 `_domainSummary`）。第一次聚焦域名下拉、或点开一个域名实体时才拉，
+ * 之后整个项目内复用 —— 镜头页下拉的 `key (N)` 与详情面板的名下计数同吃
+ * 这一份（同源才同数）。
+ *
  * 静默失败 —— 下拉只剩「全部」是降级，整页报错是事故。
  */
-export async function loadDomains() {
-  if (_domains.value.project !== _project.value) {
+export async function loadDomainSummary() {
+  if (_domainSummary.value.project !== _project.value) {
     try {
       const query = await _projectQuery()
-      const data = await get(
-        `/entities?kind=domain&limit=500${query ? `&${query}` : ''}`)
-      _domains.value = { project: _project.value, rows: data }
+      const data = await get(`/domains/summary${query ? `?${query}` : ''}`)
+      _domainSummary.value = { project: _project.value, rows: data || [] }
     } catch (err) {
-      pushLog(`读取域名清单失败：${err.message}`, 'import', 'warn')
-      _domains.value = { project: _project.value, rows: [] }
+      pushLog(`读取域名资产计数失败：${err.message}`, 'import', 'warn')
+      _domainSummary.value = { project: _project.value, rows: [] }
     }
   }
-  return _domains.value.rows
+  return _domainSummary.value.rows
 }
 
 // ---------------------------------------------------------------------------

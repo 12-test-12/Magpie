@@ -93,6 +93,11 @@ const IP_ROWS = [
   { id: 9, kind: 'ip', entity_key: '203.0.113.10', lifecycle: 'active',
     domain: null },
 ]
+//: 下拉与详情面板的名下计数同吃这一份（0.20.0 `/domains/summary`，分组口径）
+const SUMMARY_ROWS = [
+  { domain: 'app.example.com', total: 3, kinds: { domain: 1, host: 2 } },
+  { domain: 'other.com', total: 1, kinds: { domain: 1 } },
+]
 
 async function mountLens() {
   const { store } = await import('../src/store.js')
@@ -145,6 +150,7 @@ describe('镜头页按域名分段', () => {
     global.fetch = vi.fn(async (url) => {
       const href = String(url)
       calls.push(href)
+      if (href.includes('/domains/summary')) return jsonResponse(SUMMARY_ROWS)
       if (href.includes('kind=domain')) return jsonResponse(scoped(DOMAIN_ROWS, href))
       if (href.includes('kind=host')) return jsonResponse(scoped(HOST_ROWS, href))
       if (href.includes('kind=ip')) return jsonResponse(scoped(IP_ROWS, href))
@@ -170,11 +176,12 @@ describe('镜头页按域名分段', () => {
     expect(keys.some((text) => text.includes('www.app.example.com'))).toBe(true)
   })
 
-  it('域名下拉懒加载：第一次聚焦才拉清单，按项目缓存', async () => {
+  it('域名下拉懒加载：第一次聚焦才拉计数，按项目缓存，选项带 N', async () => {
     const calls = []
     global.fetch = vi.fn(async (url) => {
       const href = String(url)
       calls.push(href)
+      if (href.includes('/domains/summary')) return jsonResponse(SUMMARY_ROWS)
       if (href.includes('kind=domain')) return jsonResponse(DOMAIN_ROWS)
       if (href.includes('kind=host')) return jsonResponse(HOST_ROWS)
       if (href.includes('kind=ip')) return jsonResponse(IP_ROWS)
@@ -182,24 +189,25 @@ describe('镜头页按域名分段', () => {
     })
     const { wrapper, store } = await mountLens()
 
-    // 挂载时只查镜头行，不查域名清单（懒）
-    const domainListCalls = () => calls.filter(
-      (href) => href.includes('kind=domain') && !href.includes('with_domain'))
-    expect(domainListCalls()).toHaveLength(0)
+    // 挂载时只查镜头行，不查域名计数（懒 —— 0.20.0 仍是 `/domains/summary` 首聚焦才拉）
+    const summaryCalls = () => calls.filter(
+      (href) => href.includes('/domains/summary'))
+    expect(summaryCalls()).toHaveLength(0)
     expect(wrapper.findAll('.domain-pick option')).toHaveLength(1)  // 只有「全部」
 
     await wrapper.find('.domain-pick select').trigger('focus')
     await flushPromises()
-    expect(domainListCalls()).toHaveLength(1)
-    expect(store.domains.rows.map((row) => row.entity_key))
+    expect(summaryCalls()).toHaveLength(1)
+    expect(store.domainSummary.rows.map((row) => row.domain))
       .toEqual(['app.example.com', 'other.com'])
     const options = wrapper.findAll('.domain-pick option').map((o) => o.text())
-    expect(options).toEqual(['全部', 'app.example.com', 'other.com'])
+    // 选项带计数（分组口径的 N）—— 与详情面板的名下计数同源
+    expect(options).toEqual(['全部', 'app.example.com（3）', 'other.com（1）'])
 
     // 再聚焦一次不重取（项目没变）
     await wrapper.find('.domain-pick select').trigger('focus')
     await flushPromises()
-    expect(domainListCalls()).toHaveLength(1)
+    expect(summaryCalls()).toHaveLength(1)
   })
 })
 

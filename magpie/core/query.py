@@ -1171,6 +1171,86 @@ def _found_on_targets(conn: sqlite3.Connection, project_id: int,
     return out
 
 
+def domain_summary(conn: sqlite3.Connection, project_id: int,
+                   *, domain: str | None = None) -> dict:
+    """**按域名聚合的名下资产计数**（`GET /domains/summary`，0.20.0）。
+
+    归属走 `annotate_domains` —— 与 `with_domain=1` 分组**同一套推导**（单真相）：
+    镜头页下拉里的 `app.example.com (153)`、分段行、详情面板的名下计数必须是
+    同一个数，所以取数只有这一份。口径写死：**分组取首选**（一行只进一个域名的
+    分组，0.19.0 定的分工）；`under_domain=` 筛选才取全集 —— 两者只在多归属
+    实体上差（被多个无关域名解析的 ip 等），分组计数 ≤ 筛选计数。
+
+    聚合形状 `{domain, total, kinds: {kind: 计数}}`，按 total 降序、同数按域名
+    字典序；`kinds` 也排（计数降序、同数按名）—— 每次打开顺序一样，不是"按
+    碰到的顺序"。`domain=` 只是过滤（先规范域名、后取一行），不改口径；问法错
+    （不是合法域名 / key 被非 domain 实体占用）→ `E_NOT_A_DOMAIN`，与
+    `under_domain=` 同一条纪律；域名实体不存在 → 空列表 + 说明"它还没被写进来"
+    的 note（两种空分开，product 先例）。
+
+    **不归域的实体（product / cidr / 没解析过的 ip …）不在任何行里** —— 各行
+    total 之和因此小于项目实体总数。这是 0.19.0 的取舍（产品被多个域名共享，
+    归给谁都是撒谎），不是漏计。
+    """
+    canonical: str | None = None
+    missing_note: list[str] = []
+    if domain is not None:
+        try:
+            canonical = normalize.normalize_domain(str(domain))
+        except normalize.NormalizeError as exc:
+            raise QueryError(
+                "E_NOT_A_DOMAIN", f"{domain!r} 不是一个合法域名",
+                hint="domain 要的是域名（example.com），不是 IP / URL / 网段。",
+                requested=str(domain)) from exc
+        row = conn.execute(
+            "SELECT e.kind FROM entities e"
+            " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+            "  AND k.canonical=1 AND k.entity_key=?"
+            " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
+            " ORDER BY e.id LIMIT 1", (canonical, project_id)).fetchone()
+        if row is None:
+            missing_note = [
+                f"库里没有 {canonical!r} 这个域名实体 —— 空结果的意思是**它还没"
+                f"被任何来源写进来**，不是「名下没有资产」。"]
+        elif str(row["kind"]) != "domain":
+            raise QueryError(
+                "E_NOT_A_DOMAIN", f"{canonical!r} 是 {row['kind']} 实体，不是域名",
+                hint="domain 要的是 kind=domain 的实体；IP 用 in_cidr，"
+                     "产品用 product。",
+                requested=canonical, actual_kind=str(row["kind"]))
+
+    items = [dict(r) for r in conn.execute(
+        "SELECT e.id, e.kind, k.entity_key FROM entities e"
+        " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+        "  AND k.canonical=1"
+        " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
+        " ORDER BY e.id", (project_id,))]
+    annotate_domains(conn, project_id, items)
+
+    groups: dict[str, dict] = {}
+    for item in items:
+        key = item.get("domain")
+        if not key:
+            continue   # 不归域的实体不进任何行（见 docstring 的取舍）
+        bucket = groups.setdefault(str(key), {"domain": str(key), "total": 0,
+                                              "kinds": {}})
+        bucket["total"] += 1
+        kind = str(item["kind"])
+        bucket["kinds"][kind] = bucket["kinds"].get(kind, 0) + 1
+
+    rows = sorted(groups.values(),
+                  key=lambda r: (-int(r["total"]), str(r["domain"])))
+    for row in rows:
+        row["kinds"] = dict(sorted(row["kinds"].items(),
+                                   key=lambda kv: (-kv[1], kv[0])))
+    notes = list(missing_note)
+    if canonical is not None:
+        # 存在的域名实体自己必在其中（host==key，后缀匹配首选自己），所以
+        # 这里为空只剩"实体还没写进库"一种解释 —— 那条 note 已经在上面。
+        rows = [r for r in rows if r["domain"] == canonical]
+    return {"rows": rows, "notes": notes}
+
+
 def assets_under_domain(conn: sqlite3.Connection, project_id: int,
                         under_domain: str, **page: Any) -> dict:
     """**落在某个域名名下的资产**。归属是推导的（见 `under_domain_ids`）。

@@ -1219,6 +1219,31 @@ def list_activity(limit: int = 100, action: str | None = None, job_id: int | Non
 
 
 # ---------------------------------------------------------------------------
+# 域名名下资产（0.20.0 ·「每个域名名下有什么」）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/domains/summary", summary="域名名下资产计数（分组口径）")
+@_translating
+def domains_summary(project: str | None = None, domain: str | None = None,
+                    conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """每个域名名下有多少资产 —— 只读、零出站、不写一个字节。
+
+    计数口径 = `with_domain=1` 的分组（**首选归属**；与 `under_domain=` 全集的
+    差异写在 `query.domain_summary` 的 docstring 里）—— 镜头页下拉、详情面板的
+    名下计数、这里的数字必须是同一个数，所以取数只有这一份。
+
+    `domain=` 只回一行（给"单个域名问数"的调用方）。问法错（不是域名 / 不是
+    domain 实体）→ 400 `E_NOT_A_DOMAIN`，与 `under_domain=` 同一条纪律；域名
+    实体还没写进库 → 200 空列表 + 说明为什么空的 note（两种空分开）。
+    """
+    project_id = _resolve_project(conn, project)
+    result = query.domain_summary(conn, project_id, domain=domain)
+    return ok(result["rows"], count=len(result["rows"]),
+              project_id=project_id, notes=result["notes"])
+
+
+# ---------------------------------------------------------------------------
 # 导出 / agent 上下文
 # ---------------------------------------------------------------------------
 

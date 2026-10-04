@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from conftest import ENV                                             # noqa: E402
 from magpie.cli.envelope import EXIT_TO_HTTP, EXIT_USAGE             # noqa: E402
 from magpie.core import ops, store                                   # noqa: E402
+from magpie.core.migrate import MIGRATIONS as ALL_MIGRATIONS         # noqa: E402
 
 # schema/ 下已应用的迁移数（`migrate.MIGRATIONS` 的长度）。
 # 3.2 加了 `005_kind_vuln.sql`（登记 `vuln` kind 与 `found_on` 动词，并把
@@ -50,9 +51,11 @@ from magpie.core import ops, store                                   # noqa: E40
 # 整张表，详见该文件头）；4.2 加了 `012_kind_secret.sql`（登记 `secret` kind）；
 # 4.3 加了 `013_kind_fingerprint.sql`（product / service 的产出者追加
 # `fingerprint@1` + `fingerprint` 观测字段的多值声明，详见该文件头）。
-# 新增迁移必须同步改这一行，否则 `schema --json` 的契约数字会与真实库对不上，
-# 而那条断言正是为"迁移与描述分叉"准备的。
-MIGRATIONS = 13
+# 新增迁移**不再手写这个数**：0.20.0 起从 `migrate.MIGRATIONS` 派生 —— 014
+# 漏改过一次（迁移加了、这里还是 13，init / dry-run / schema 三条契约当场红），
+# 而手写快照本来就与「迁移与描述不许分叉」的本意相反：版本只有 migrate.py
+# 一处说了算，这里跟着它走。
+MIGRATIONS = len(ALL_MIGRATIONS)
 
 #: 子进程的公共环境（定义在 `conftest.py`，两个测试文件共用一份）。
 ENV = ENV

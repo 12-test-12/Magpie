@@ -692,6 +692,71 @@
         "summary": "数据体检"
       }
     },
+    "/api/v1/domains/summary": {
+      "get": {
+        "description": "每个域名名下有多少资产 —— 只读、零出站、不写一个字节。\n\n计数口径 = `with_domain=1` 的分组（**首选归属**；与 `under_domain=` 全集的\n差异写在 `query.domain_summary` 的 docstring 里）—— 镜头页下拉、详情面板的\n名下计数、这里的数字必须是同一个数，所以取数只有这一份。\n\n`domain=` 只回一行（给\"单个域名问数\"的调用方）。问法错（不是域名 / 不是\ndomain 实体）→ 400 `E_NOT_A_DOMAIN`，与 `under_domain=` 同一条纪律；域名\n实体还没写进库 → 200 空列表 + 说明为什么空的 note（两种空分开）。",
+        "operationId": "domains_summary_api_v1_domains_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Domains Summary Api V1 Domains Summary Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "域名名下资产计数（分组口径）"
+      }
+    },
     "/api/v1/entities": {
       "get": {
         "description": "实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` /\n`under_domain` 是 §3.5 的**具名查询**（`query.dispatch` 决定这组条件在问\n哪一问）—— 与 `magpie ls` 的同名 flag 一字不差，两边走同一段实现。\n\n`with_domain=1`（0.19.0）是**呈现参数**：给每行补一个 `domain` 字段供\n分组展示，**不筛选、不进 `ENTITY_FILTERS`** —— 它与 `under_domain` 共用\n同一组推导原语（`query.annotate_domains`），所以\"分组看到的归属\"与\n\"筛出来的集合\"是同一套判定。\n\n`meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来\n的而不是连出来的…… 一个空列表必须带着\"为什么是空的\"，否则它会被读成\n\"筛过了，就是没有\"（这正是 `review_status` 那条纪律的同一个理由）。",
