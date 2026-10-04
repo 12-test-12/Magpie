@@ -74,11 +74,17 @@ def resolve_project(conn: sqlite3.Connection, spec: str | None) -> int:
     比让他某天发现数据进了另一个项目要好。（这条与 2.7 的 `_resolve_project`
     逐字同义，退出码 1 ↔ HTTP 400。）
 
+    只数 **active**（0.20.0 归档）：1 个 active + 1 个 archived 时"只有一个
+    项目"指的是活着的那个；候选名单同理不列归档。归档不是锁定 —— 下面的显式
+    查询不筛，按名字/id 点名归档项目照样解析得开。
+
     住在 `db.py` 而不是某个命令模块里: "库在哪"（`resolve_db`）与"项目是哪个"
     是同一个问题的两半，而**读命令与写命令都要问它** —— 放在任何一侧的命令
     模块里，另一侧就得反向 import，那是循环依赖的入口。
     """
-    rows = conn.execute("SELECT id, name FROM projects ORDER BY id").fetchall()
+    rows = conn.execute(
+        "SELECT id, name FROM projects WHERE status != 'archived' ORDER BY id"
+    ).fetchall()
     if spec is None:
         if len(rows) == 1:
             return int(rows[0]["id"])

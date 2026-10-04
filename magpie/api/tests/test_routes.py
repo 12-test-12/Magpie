@@ -135,6 +135,69 @@ def test_duplicate_project_rejected(client):
     assert response.json()["error"]["code"] == "E_PROJECT_EXISTS"
 
 
+def test_archive_restore_and_include_archived(client):
+    """归档的三件事：清单里消失、隐式解析落到剩下的 active、include_archived
+    看得见（恢复的前提）—— 外加幂等与 404（0.20.0 项目管理）。"""
+    ids = {}
+    for name in ("aa", "bb"):
+        ids[name] = client.post("/api/v1/projects", headers=HEADERS,
+                                json={"name": name}).json()["data"]["id"]
+
+    archived = client.post(f"/api/v1/projects/{ids['aa']}/archive",
+                           headers=HEADERS).json()["data"]
+    assert (archived["status"], archived["changed"]) == ("archived", True)
+    again = client.post(f"/api/v1/projects/{ids['aa']}/archive",
+                        headers=HEADERS).json()["data"]
+    assert again["changed"] is False                     # 重复点不是错误
+
+    names = client.get("/api/v1/projects", headers=HEADERS).json()["data"]
+    assert [row["name"] for row in names] == ["bb"]      # 默认列表不含归档
+    rows = client.get("/api/v1/projects?include_archived=1",
+                      headers=HEADERS).json()["data"]
+    assert [row["name"] for row in rows] == ["aa", "bb"]
+    assert {row["name"]: row["status"] for row in rows}["aa"] == "archived"
+
+    # 两个项目归档掉一个 → 恰好一个 active，隐式解析成立（不必带 ?project=）
+    assert client.get("/api/v1/entities", headers=HEADERS).status_code == 200
+
+    restored = client.post(f"/api/v1/projects/{ids['aa']}/restore",
+                           headers=HEADERS).json()["data"]
+    assert restored["changed"] is True
+    names = client.get("/api/v1/projects", headers=HEADERS).json()["data"]
+    assert [row["name"] for row in names] == ["aa", "bb"]
+
+    assert client.post("/api/v1/projects/9999/archive",
+                       headers=HEADERS).status_code == 404
+
+
+def test_delete_project_needs_exact_confirm(client):
+    """删除是不可恢复的硬删：confirm 必须逐字等于项目名；删完清单只剩邻居，
+    再删一次是 404（0.20.0 项目管理）。"""
+    doomed = client.post("/api/v1/projects", headers=HEADERS,
+                         json={"name": "doomed"}).json()["data"]["id"]
+    client.post("/api/v1/projects", headers=HEADERS, json={"name": "keeper"})
+
+    for url in (f"/api/v1/projects/{doomed}",
+                f"/api/v1/projects/{doomed}?confirm=doomed-typo",
+                f"/api/v1/projects/{doomed}?confirm="):
+        response = client.delete(url, headers=HEADERS)
+        assert response.status_code == 400, url
+        assert response.json()["error"]["code"] == "E_CONFIRM"
+
+    response = client.delete(f"/api/v1/projects/{doomed}?confirm=doomed",
+                             headers=HEADERS)
+    assert response.status_code == 200
+    removed = response.json()["data"]["removed"]
+    # 空项目：回执里有根与它的 scope 历史，没有实体行（逐表对账，不多不少）
+    assert removed["projects"] == 1 and "entities" not in removed
+
+    names = client.get("/api/v1/projects", headers=HEADERS).json()["data"]
+    assert [row["name"] for row in names] == ["keeper"]
+    response = client.delete(f"/api/v1/projects/{doomed}?confirm=doomed",
+                             headers=HEADERS)
+    assert response.status_code == 404                  # 已经不在了
+
+
 # ---------------------------------------------------------------------------
 # 实体 / 图
 # ---------------------------------------------------------------------------

@@ -226,6 +226,37 @@ def test_ls_requires_project_when_ambiguous(loaded_db):
     assert len(error["projects"]) == 2
 
 
+def test_archived_project_is_hidden_from_implicit_resolution(loaded_db):
+    """归档项目（0.20.0）：缺省解析与候选名单都不列它，按名字点名照样解析得开
+    —— 归档是隐藏不是锁定；CLI 与 API 的 `_resolve_project` 逐字同义。"""
+    conn = store.connect(loaded_db)
+    try:
+        pid = ops.create_project(conn, "归档我", {"include": [], "exclude": []})
+        conn.execute("UPDATE projects SET status='archived' WHERE id=?", (pid,))
+    finally:
+        conn.close()
+
+    # 1 active（demo）+ 1 archived → 缺省解析仍成立（active 那个）
+    code, payload = envelope("ls", "--db", str(loaded_db), "--json")
+    assert_ok(payload)
+
+    conn = store.connect(loaded_db)
+    try:
+        ops.create_project(conn, "活跃我", {"include": [], "exclude": []})
+    finally:
+        conn.close()
+    # 2 active + 1 archived → 必须显式，但候选只列 2 个 active
+    code, payload = envelope("ls", "--db", str(loaded_db), "--json")
+    error = assert_err(payload, "E_PROJECT_REQUIRED")
+    assert code == 1
+    assert {row["name"] for row in error["projects"]} == {"demo", "活跃我"}
+
+    # 点名归档项目：解析得开
+    code, payload = envelope("ls", "--project", "归档我", "--db", str(loaded_db),
+                             "--json")
+    assert_ok(payload)
+
+
 # ---------------------------------------------------------------------------
 # show
 # ---------------------------------------------------------------------------

@@ -29,10 +29,12 @@ import InboxView from './views/InboxView.vue'
 import DoctorView from './views/DoctorView.vue'
 import RiskView from './views/RiskView.vue'
 import ImportDialog from './views/ImportDialog.vue'
+import ProjectManager from './components/ProjectManager.vue'
 import { store } from './store.js'
 import { hasToken } from './api.js'
 
 const importOpen = ref(false)
+const manageOpen = ref(false)
 const booted = ref(false)
 const fatal = ref('')
 
@@ -70,6 +72,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       :version="store.meta ? 'v' + store.meta.magpie_version : ''"
       @import="importOpen = true"
       @palette="store.paletteOpen = true"
+      @manage="manageOpen = true"
     />
 
     <div v-if="!hasToken()" class="token-missing">
@@ -128,6 +131,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     <LogDrawer />
     <CommandPalette />
     <ImportDialog v-if="importOpen" @close="importOpen = false" />
+    <ProjectManager v-if="manageOpen" @close="manageOpen = false" />
 
     <div v-if="!booted && !fatal" class="booting dim">载入中…</div>
   </div>

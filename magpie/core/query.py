@@ -385,10 +385,19 @@ def entity_id_for_key(conn: sqlite3.Connection, project_id: int,
 # ---------------------------------------------------------------------------
 
 
-def projects(conn: sqlite3.Connection) -> list[dict]:
-    """id + 名字，按 id 排。**"库里有哪些项目"的唯一次查询处。**"""
+def projects(conn: sqlite3.Connection, *,
+             include_archived: bool = False) -> list[dict]:
+    """id + 名字，按 id 排。**"库里有哪些项目"的唯一次查询处。**
+
+    默认不含归档（0.20.0 项目管理）：隐式解析（`?project=` 缺省 / `--project`
+    缺省）该只在**活着的**项目之间做选择 —— 1 个 active + 1 个 archived 时
+    "只有一个项目"指的是 active 那个。归档不是锁定：按名字显式引用仍走
+    `project_id_for`（不筛），隐藏只发生在**列清单**的地方。
+    """
+    where = "" if include_archived else " WHERE status != 'archived'"
     return [{"id": int(r["id"]), "name": str(r["name"])}
-            for r in conn.execute("SELECT id, name FROM projects ORDER BY id")]
+            for r in conn.execute("SELECT id, name FROM projects"
+                                  + where + " ORDER BY id")]
 
 
 def project_named(conn: sqlite3.Connection, name: str) -> int | None:
@@ -398,9 +407,15 @@ def project_named(conn: sqlite3.Connection, name: str) -> int | None:
     return None if row is None else int(row["id"])
 
 
-def projects_detail(conn: sqlite3.Connection) -> list[dict]:
+def projects_detail(conn: sqlite3.Connection, *,
+                    include_archived: bool = False) -> list[dict]:
     """项目列表（含 scope 与三项计数）。`GET /projects` 的形状在这里定死：
-    每个项目的计数**一次查完**，而不是"先列项目再逐个问它有多大"。"""
+    每个项目的计数**一次查完**，而不是"先列项目再逐个问它有多大"。
+
+    默认不含归档（与 `projects` 同一条纪律，0.20.0）—— 归档了还出现在切换
+    下拉里等于没归档；`?include_archived=1` 给项目管理页，恢复归档项目要先
+    看得见它。归档项目的**计数照算**：隐藏列表不等于数据没了。
+    """
     counts: dict[int, dict[str, int]] = {}
     for row in conn.execute(
             "SELECT project_id,"
@@ -419,7 +434,9 @@ def projects_detail(conn: sqlite3.Connection) -> list[dict]:
     items = []
     for row in conn.execute(
             "SELECT id, name, status, scope_version, scope_hash, parser_fingerprint,"
-            " scope FROM projects ORDER BY id"):
+            " scope FROM projects"
+            + ("" if include_archived else " WHERE status != 'archived'")
+            + " ORDER BY id"):
         item = dict(row)
         item["scope"] = json_or_none(item["scope"])
         item["counts"] = counts.get(int(row["id"]),

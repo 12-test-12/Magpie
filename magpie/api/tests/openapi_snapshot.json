@@ -2946,7 +2946,20 @@
     },
     "/api/v1/projects": {
       "get": {
+        "description": "默认**不列归档项目**（0.20.0）：归档的语义就是\"从日常工作里收起来\"，\n还出现在切换下拉里等于没归档。`?include_archived=1` 给项目管理页看全部 ——\n恢复归档项目要先看得见它。计数照常（隐藏列表 ≠ 数据没了）。",
         "operationId": "list_projects_api_v1_projects_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Archived",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2959,9 +2972,19 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "项目列表"
+        "summary": "项目列表（默认不含归档）"
       },
       "post": {
         "description": "**§6.2 的草案里没有这条**，但没有它，第一次打开 GUI 的人什么都导不进去\n（`POST /imports` 要求项目已存在，而空库里一个项目都没有）—— 一个\"要先在\n别处做点什么\"的空界面，是最容易被误读成故障的那种界面。\n\n真正建项目的入口仍然是 `ops.create_project`（写者唯一）。",
@@ -3001,6 +3024,148 @@
           }
         },
         "summary": "建项目（空库的第一件事）"
+      }
+    },
+    "/api/v1/projects/{project_id}": {
+      "delete": {
+        "description": "**不可恢复的硬删**：项目名下的一切（实体 / 观测 / 关系 / 作业 / 导入副本）\n按外键反拓扑一次删干净，全局词表一行不动；任何一步失败整事务回滚。\n\n`confirm` 必须**逐字**等于项目名 —— 手滑的 DELETE 指向的是一整个评估的\n数据，一行输入是这里唯一合理的代价。归档项目同样可删（\"彻底不要了\"是\n归档之后的常见下一步）。",
+        "operationId": "delete_project_api_v1_projects__project_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "confirm",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Confirm"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Api V1 Projects  Project Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "删除项目（硬删，需 confirm=项目名）"
+      }
+    },
+    "/api/v1/projects/{project_id}/archive": {
+      "post": {
+        "description": "**归档是\"收起来\"**：项目从 `GET /projects` 默认列表与 CLI 的隐式解析里\n消失，数据一行没动、按名字显式引用仍可读。后悔了用 restore 拉回来 —— 归档\n可逆，删除不可逆（那是 DELETE 的事，要输项目名确认）。幂等：已在归档态则\n原样返回 `changed: false`。",
+        "operationId": "archive_project_api_v1_projects__project_id__archive_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Archive Project Api V1 Projects  Project Id  Archive Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "归档项目（收起，可恢复）"
+      }
+    },
+    "/api/v1/projects/{project_id}/restore": {
+      "post": {
+        "description": "`archive_project` 的逆操作。已在 active 态则原样返回 `changed: false`\n（幂等规则逐字同义：重复点不是错误，是把状态说了一遍）。",
+        "operationId": "restore_project_api_v1_projects__project_id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restore Project Api V1 Projects  Project Id  Restore Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "恢复归档的项目"
       }
     },
     "/api/v1/risk": {

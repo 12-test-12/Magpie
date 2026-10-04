@@ -31,7 +31,7 @@ const viewGroups = computed(() => {
   return order.map((name) => ({ name, items: byGroup[name] }))
 })
 
-const emit = defineEmits(['import', 'palette'])
+const emit = defineEmits(['import', 'palette', 'manage'])
 </script>
 
 <template>
@@ -53,6 +53,12 @@ const emit = defineEmits(['import', 'palette'])
         </option>
       </select>
     </label>
+
+    <!-- 项目管理（0.20.0 · Yakit 式）：建 / 归档↔恢复 / 删除收在这一个对话框里。
+         下拉只管"切"这一个高频动作 —— 四个动作摊在顶栏上，每个都要人先想
+         "这是不是我要的那个"。 -->
+    <button class="ghost manage" title="项目管理：新建 / 归档 / 恢复 / 删除"
+            @click="emit('manage')">管理</button>
 
     <!-- 按 `item.group` 分组、组间加分隔线：模式 / 镜头 / 治理。
          左栏是"当前上下文的二级导航"，顶栏是全局页 —— 分隔线让这层

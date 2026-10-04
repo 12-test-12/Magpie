@@ -90,6 +90,9 @@ export const put = (path, payload) => call(path, {
   body: JSON.stringify(payload === undefined ? {} : payload),
 })
 
+/** DELETE —— 只有 `DELETE /projects/{id}` 在用（硬删，`confirm` 进查询串）。 */
+export const del = (path) => call(path, { method: 'DELETE' })
+
 /**
  * 上传文件到暂存区（multipart，`POST /uploads`）—— 返回信封里的 data
  * （`{files: [{name, path, bytes}], count}`，path 可直接喂 `POST /imports`）。

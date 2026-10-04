@@ -250,10 +250,82 @@ def create_project(body: ProjectBody, request: Request,
     return ok(ctx.writer.submit(f"create project {name}", task).result(timeout=30))
 
 
-@router.get("/projects", summary="项目列表")
-def list_projects(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    items = query.projects_detail(conn)
+@router.get("/projects", summary="项目列表（默认不含归档）")
+def list_projects(include_archived: bool = False,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """默认**不列归档项目**（0.20.0）：归档的语义就是"从日常工作里收起来"，
+    还出现在切换下拉里等于没归档。`?include_archived=1` 给项目管理页看全部 ——
+    恢复归档项目要先看得见它。计数照常（隐藏列表 ≠ 数据没了）。"""
+    items = query.projects_detail(conn, include_archived=include_archived)
     return ok(items, count=len(items))
+
+
+def _require_project(conn: sqlite3.Connection, project_id: int) -> int:
+    """路径参数里的项目必须存在 —— 找不到在**这里** 404，而不是让它进写者队列
+    再以 `InvariantError` 的形式 500（500 说的是"我们坏了"，404 说的是"你指的
+    东西不在"，这两句不能互换）。"""
+    found = query.project_id_for(conn, str(int(project_id)))
+    if found is None:
+        raise ApiError(404, "E_PROJECT_NOT_FOUND", f"项目 {project_id} 不存在")
+    return int(found)
+
+
+@router.post("/projects/{project_id}/archive", summary="归档项目（收起，可恢复）")
+def archive_project(project_id: int, request: Request,
+                    conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """**归档是"收起来"**：项目从 `GET /projects` 默认列表与 CLI 的隐式解析里
+    消失，数据一行没动、按名字显式引用仍可读。后悔了用 restore 拉回来 —— 归档
+    可逆，删除不可逆（那是 DELETE 的事，要输项目名确认）。幂等：已在归档态则
+    原样返回 `changed: false`。"""
+    _require_project(conn, project_id)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.archive_project(conn_, project_id)
+
+    return ok(ctx.writer.submit(f"archive project {project_id}",
+                                task).result(timeout=30))
+
+
+@router.post("/projects/{project_id}/restore", summary="恢复归档的项目")
+def restore_project(project_id: int, request: Request,
+                    conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """`archive_project` 的逆操作。已在 active 态则原样返回 `changed: false`
+    （幂等规则逐字同义：重复点不是错误，是把状态说了一遍）。"""
+    _require_project(conn, project_id)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.restore_project(conn_, project_id)
+
+    return ok(ctx.writer.submit(f"restore project {project_id}",
+                                task).result(timeout=30))
+
+
+@router.delete("/projects/{project_id}", summary="删除项目（硬删，需 confirm=项目名）")
+def delete_project(project_id: int, request: Request, confirm: str | None = None,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """**不可恢复的硬删**：项目名下的一切（实体 / 观测 / 关系 / 作业 / 导入副本）
+    按外键反拓扑一次删干净，全局词表一行不动；任何一步失败整事务回滚。
+
+    `confirm` 必须**逐字**等于项目名 —— 手滑的 DELETE 指向的是一整个评估的
+    数据，一行输入是这里唯一合理的代价。归档项目同样可删（"彻底不要了"是
+    归档之后的常见下一步）。"""
+    _require_project(conn, project_id)
+    name = query.project_name(conn, project_id)
+    if not confirm or str(confirm) != name:
+        raise ApiError(400, "E_CONFIRM",
+                       f"删除项目需要 confirm=<项目名>，且与 {name!r} 逐字相等",
+                       hint=f"例如 DELETE {API_PREFIX}/projects/{project_id}"
+                            f"?confirm={name}",
+                       expected=name)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.delete_project(conn_, project_id)
+
+    return ok(ctx.writer.submit(f"delete project {project_id}",
+                                task).result(timeout=30))
 
 
 # ---------------------------------------------------------------------------
@@ -1431,10 +1503,12 @@ def _normalize_body(conn: sqlite3.Connection, project_id: int, body: dict[str, A
     不把它显式化的话，"同一份定义从 YAML 跑和从库跑会扫两个不同的目录"，而
     这种分歧没有任何症状。
     """
-    rows = query.projects(conn)
-    name = next((r["name"] for r in rows if int(r["id"]) == int(project_id)), None)
-    if name is None:
+    # 找名字走 `project_name`（按 id，不筛归档）—— 原来这里扫 `query.projects`
+    # 的全量清单，0.20.0 起那份清单默认**不含归档**，接着扫会把"归档项目上的
+    # 管线操作"错报成 404（项目明明还在，只是被收起来了）。
+    if query.project_id_for(conn, str(int(project_id))) is None:
         raise ApiError(404, "E_PROJECT_NOT_FOUND", f"项目 {project_id} 不存在")
+    name = query.project_name(conn, project_id)
     try:
         definition = pipeline.normalize_definition(body, project=name,
                                                    base_dir=_ctx(request).data_dir)

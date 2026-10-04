@@ -302,6 +302,140 @@ def create_project(conn: sqlite3.Connection, name: str, scope: dict[str, Any]) -
     return pid
 
 
+def _project_row(conn: sqlite3.Connection, project_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT id, name, status FROM projects WHERE id=?",
+                       (int(project_id),)).fetchone()
+    if row is None:
+        raise InvariantError(f"project {project_id} not found")
+    return row
+
+
+def archive_project(conn: sqlite3.Connection, project_id: int) -> dict[str, Any]:
+    """归档 = **收起来，不是删掉**（`projects.status` 的 CHECK 里 'archived'
+    一直躺着，0.20.0 第一次用它）。
+
+    归档项目从默认列表里消失（`GET /projects`、CLI 的隐式解析都只看 active），
+    但按名字显式引用仍完全可读 —— 归档是**列表层面的隐藏**，数据一行没动；
+    删除才是终结，所以删除要输项目名确认。幂等：已在归档态 → 不写、`changed` 回
+    False（重复点归档不是错误，是把状态说了一遍）。
+    """
+    row = _project_row(conn, project_id)
+    changed = str(row["status"]) != "archived"
+    if changed:
+        conn.execute("UPDATE projects SET status='archived' WHERE id=?",
+                     (int(project_id),))
+    return {"id": int(project_id), "name": str(row["name"]),
+            "status": "archived", "changed": changed}
+
+
+def restore_project(conn: sqlite3.Connection, project_id: int) -> dict[str, Any]:
+    """归档的逆操作（`archive_project` 的镜像，语义与幂等规则逐字同义）。"""
+    row = _project_row(conn, project_id)
+    changed = str(row["status"]) != "active"
+    if changed:
+        conn.execute("UPDATE projects SET status='active' WHERE id=?",
+                     (int(project_id),))
+    return {"id": int(project_id), "name": str(row["name"]),
+            "status": "active", "changed": changed}
+
+
+def _delete_order(conn: sqlite3.Connection) -> list[str]:
+    """硬删的表序 —— 从**现场**的 `PRAGMA foreign_key_list` 算反拓扑，不手写。
+
+    手写清单的症状是"新迁移加了一张表，第一次删除时才炸在 RESTRICT 上" ——
+    而那正是这份代码最不能出错的时候（0.20.0 交付时清单已经 24 张带 project_id
+    的表，人肉维护不起）。`projects` 是根，排在最后由调用方单独删；环（不该
+    存在 —— 本库除自引用外无环）不猜顺序，响亮地失败。
+    """
+    tables = [str(r[0]) for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+        " AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    referrers: dict[str, set[str]] = {table: set() for table in tables}
+    for table in tables:
+        for fk in conn.execute(f"PRAGMA foreign_key_list({table})"):
+            parent = str(fk[2])
+            if parent != table and parent in referrers:
+                # 子引用父 → 删的时候子先行。自引用（inbox_items.reopened_from）
+                # 不进图：同一条 DELETE 里 SQLite 在语句收尾时才查它（实测通过）。
+                referrers[parent].add(table)
+    order: list[str] = []
+    remaining = set(tables)
+    while remaining:
+        ready = sorted(t for t in remaining if not (referrers[t] & remaining))
+        if not ready:
+            raise InvariantError(
+                "foreign_key_list 里有环，算不出删除顺序："
+                + ", ".join(sorted(remaining)))
+        order.extend(ready)
+        remaining -= set(ready)
+    return order
+
+
+def delete_project(conn: sqlite3.Connection, project_id: int) -> dict[str, Any]:
+    """**硬删**一个项目与它名下的一切 —— 不可恢复（要可恢复的那条路是归档）。
+
+    行的范围按表分两类，没有第三类：
+      * 带 `project_id` 列的表按它删（项目自己的行，24 张）；
+      * 不带的只删**经外键挂在本项目行上**的那几行（`entity_identity` ← entities、
+        `activity_log` ← jobs）；纯全局词表（kind_registry / relation_vocabulary /
+        multivalue_fields / parser_profiles / sources / schema_migrations）一行不碰。
+
+    顺序由 `_delete_order` 现场算（子先行），整个过程包在 `store.transaction`
+    里 —— 任何一步失败整棵树回滚成原样，写者队列把异常原样带回路由；
+    「删了一半的库」在这套设计里没有立足点。收尾断言 `PRAGMA foreign_key_check`
+    为空：顺序算错、哪张表的约束没看见，在**这里**被抓，而不是在下一次读时。
+    返回逐表行数（removed）—— 删除的回执要能对账，"应该删了"不算回执。
+    """
+    project_id = int(project_id)
+    row = _project_row(conn, project_id)
+    name = str(row["name"])
+    removed: dict[str, int] = {}
+    with store.transaction(conn):
+        tables = {str(r[0]) for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name NOT LIKE 'sqlite_%'")}
+        columns = {table: {str(c[1]) for c in conn.execute(f"PRAGMA table_info({table})")}
+                   for table in tables}
+        for table in _delete_order(conn):
+            if table == "projects":
+                continue                        # 根，最后单独删
+            if "project_id" in columns[table]:
+                sql, params = f"DELETE FROM {table} WHERE project_id=?", (project_id,)
+            else:
+                # 全局表：按"哪张父表带 project_id"逐个外键组拼 IN 子查询。
+                groups: dict[int, dict[str, Any]] = {}
+                for fk in conn.execute(f"PRAGMA foreign_key_list({table})"):
+                    entry = groups.setdefault(int(fk[0]),
+                                              {"parent": str(fk[2]), "pairs": []})
+                    entry["pairs"].append((str(fk[3]), str(fk[4])))
+                clauses: list[str] = []
+                parts: list[Any] = []
+                for entry in groups.values():
+                    parent = entry["parent"]
+                    if parent == table or "project_id" not in columns.get(parent, set()):
+                        continue                # 指向全局表 / 自引用 → 不是本项目的
+                    pairs = entry["pairs"]
+                    clauses.append("(" + " AND ".join(
+                        f"{col} IN (SELECT {pt} FROM {parent} WHERE project_id=?)"
+                        for col, pt in pairs) + ")")
+                    parts.extend([project_id] * len(pairs))
+                if not clauses:
+                    continue                    # 纯全局行，不碰
+                sql = f"DELETE FROM {table} WHERE " + " OR ".join(clauses)
+                params = tuple(parts)
+            count = int(conn.execute(sql, params).rowcount)
+            if count:
+                removed[table] = count
+        conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        removed["projects"] = 1
+        violations = list(conn.execute("PRAGMA foreign_key_check"))
+        if violations:
+            raise InvariantError(
+                f"删除项目 {name!r} 后 foreign_key_check 不干净（前 5 条）："
+                f"{violations[:5]}")
+    return {"id": project_id, "name": name, "removed": removed}
+
+
 def update_scope(conn: sqlite3.Connection, project_id: int, scope: dict[str, Any],
                  actor: str = "cli", reason: str = "manual") -> tuple[int, str]:
     """改 scope 必须 bump version（审阅点 7），否则 coverage 判定会撒谎。

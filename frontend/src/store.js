@@ -35,7 +35,7 @@
  */
 
 import { computed, reactive, ref, shallowRef } from 'vue'
-import { get, patch, post, put, watchRun } from './api.js'
+import { del, get, patch, post, put, watchRun } from './api.js'
 import { buildAggregate, filterGraph, shouldAggregate, toFlow } from './graph.js'
 import {
   canonical, definitionToFlow, emptyDefinition, withAddedStep, withConnection,
@@ -48,6 +48,11 @@ import {
 
 const _projects = ref([])
 const _project = ref('')
+//: `loadProjects` 跑过没有 —— 图 / 镜头 / 标签三个加载器的"空项目守卫"只在
+//: **知道**库里是 0 个活跃项目之后才生效（有活跃项目就会被自动选上，所以
+//: "loadProjects 跑过 且 还没选中"⟺ 0 个）。不带这个标记时直接调加载器照常
+//: 请求 —— 服务端在恰好一个项目时会隐式解析，"不带 project"本身不是错误。
+let _projectsLoaded = false
 const _meta = ref(null)
 //: 镜头载荷，键是镜头 id。**空对象起步**：有哪几个镜头由库里的
 //: `kind_registry.lens` 决定（`/meta` 把它带回来），不在这里写死。
@@ -308,6 +313,9 @@ export const store = reactive({
   reload,
   selectProject,
   createProject,
+  archiveProject,
+  restoreProject,
+  deleteProject,
   selectEntity,
   ensureVisible,
   moveEntity,
@@ -385,8 +393,14 @@ export async function loadMeta() {
 }
 
 export async function loadProjects() {
+  // 默认列表**不含归档**（0.20.0，服务端 `GET /projects` 的纪律）。
   _projects.value = await get('/projects')
-  if (!_project.value && _projects.value.length === 1) {
+  _projectsLoaded = true
+  if (!_project.value && _projects.value.length) {
+    // 有活跃项目就选第一个（0.20.0）：原来 `=== 1`，两个项目启动时谁都不选 →
+    // 画布直接吃一个 E_PROJECT_REQUIRED 红错 —— 多项目是项目管理的常态，
+    // 不是错误态。CLI 的隐式解析仍要求显式 `--project`（行序 ≠ 意图）；界面
+    // 上的"第一个"随时可换，选错的代价只是看错一眼。
     _project.value = _projects.value[0].name
   }
   return _projects.value
@@ -396,6 +410,37 @@ export async function createProject(name) {
   const created = await post('/projects', { name, scope: {} })
   await loadProjects()
   return created
+}
+
+/**
+ * 归档 / 删除之后的**指针维护**：当前项目若从活跃列表里消失（被归档或删掉），
+ * 指到剩下的第一个；一个不剩就置空 —— 空项目时 `loadGraph` 的守卫把画布清空，
+ * EmptyGuide 的"建项目"分支接管（而不是把"没有项目"渲染成红色错误）。
+ */
+async function _reseatProject() {
+  if (_project.value && !_projects.value.some((p) => p.name === _project.value)) {
+    await selectProject(_projects.value[0] ? _projects.value[0].name : '')
+  }
+}
+
+export async function archiveProject(id) {
+  const data = await post(`/projects/${id}/archive`, {})
+  await loadProjects()
+  await _reseatProject()
+  return data
+}
+
+export async function restoreProject(id) {
+  const data = await post(`/projects/${id}/restore`, {})
+  await loadProjects()          // 当前指针不受伤（当前项目本来就 active）；
+  return data                   // 若当前为空，loadProjects 顺手选回第一个
+}
+
+export async function deleteProject(id, confirm) {
+  const data = await del(`/projects/${id}?confirm=${encodeURIComponent(confirm)}`)
+  await loadProjects()
+  await _reseatProject()
+  return data
 }
 
 /**
@@ -421,6 +466,15 @@ export async function loadLenses() {
       return rank(a) - rank(b) || String(a).localeCompare(String(b))
     })
   _lensKeys.value = keys
+  if (!_project.value && _projectsLoaded) {
+    // loadProjects 之后仍没选中 = 0 个活跃项目：镜头内容按项目才有意义，
+    // 那些必然 400 的请求不发 —— missing 与 404 同义，页面显示"这个镜头
+    // 还是空的"。
+    for (const lens of keys) {
+      _lenses[lens] = { lens, kinds: [], total: 0, missing: true }
+    }
+    return
+  }
   for (const lens of keys) {
     try {
       _lenses[lens] = await get(`/lenses/${lens}`)
@@ -431,6 +485,19 @@ export async function loadLenses() {
 }
 
 export async function loadGraph() {
+  if (!_project.value && _projectsLoaded) {
+    // loadProjects 之后仍没选中 = 0 个活跃项目（空库 / 全部归档）：**别问
+    // 服务端要图** —— 不带 project 的 `/graph` 在这种库里是 400
+    // E_PROJECT_REQUIRED，把"还没建项目"渲染成红色错误是错的，它其实是
+    // 引导卡的第一步。清空画布，EmptyGuide 的建项目分支接管。
+    _raw.nodes = []
+    _raw.edges = []
+    _raw.layout = {}
+    _raw.total = 0
+    _loadError.value = ''
+    _loading.value = false
+    return
+  }
   _loading.value = true
   _loadError.value = ''
   try {
@@ -762,6 +829,13 @@ export async function setEntityTags(id, { add = [], remove = [], reason = null }
 
 /** 标签词表（项目里已经用过的词 + 计数）。**显示的是库里的数。** */
 export async function loadTags() {
+  if (!_project.value && _projectsLoaded) {
+    // 0 个活跃项目（loadProjects 之后仍没选中）：词表按项目才有意义。不发
+    // 那条必然 400 的请求，也就不往日志里塞一条"读取标签词表失败"——
+    // 空库启动的控制台该是安静的。
+    _tags.value = []
+    return _tags.value
+  }
   try {
     const query = await _projectQuery()
     _tags.value = await get(`/tags${query ? `?${query}` : ''}`)
