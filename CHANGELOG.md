@@ -12,6 +12,32 @@
 
 ---
 
+## 0.18.0 — 多文件导入报告可见：`GET /jobs` 行加 `source_files`
+
+**既有响应加键**（照 0.6.0 的先例登记），既有键一字未删（openapi 快照重新
+生成：`info.version` 0.17.0 → 0.18.0）。没有新增迁移（R4 未动）。`magpie jobs
+--json` 的列不受影响（CLI 有自己的 `_JOB_COLUMNS` 副本，本步没碰）。前端的
+报告渲染（导入对话框完成态表、坏行页签真渲染）是纯界面消费 `GET /imports/{id}`
+**早已返回**的 `report`，不占契约篇幅。
+
+### 对外契约（既有形状的变化，按本节开头的规矩登记）
+
+**`GET /api/v1/jobs` 与 `GET /api/v1/jobs/{id}` 的作业行各加一个
+`source_files: [{name, path}]` 键。** 每个作业（= 每个导入文件）列出它的原文
+定位 —— 一次导入多个文件时，作业历史从此认得出哪条作业是哪个文件：
+
+* **name**：原始文件名，优先 `jobs.coverage_scope.file`（ingest 开工时登记）。
+  这不是装饰：`archive=archived`（默认档）的 `locator_uri` 是内容寻址的
+  `raw/<sha256>` —— 拿它当文件名，三个源文件会显示成三个看不出区别的哈希。
+  没有 coverage_scope 时回落 URI 的 basename。
+* **path**：`raw_files.locator_uri` **原样**（external 档 = 原文 `file://` URI，
+  archived 档 = 归档副本 URI，各档如实各说各的，不做"看起来像原路径"的翻译）。
+* **来源是一条批量 SQL**：`contributions → evidence → raw_files`（复合外键都带
+  project_id，两道 JOIN 各自校验）；**零贡献的作业缺席由调用方补 `[]`** ——
+  空列表是事实（这作业没有原文贡献），不是缺数据。
+
+---
+
 ## 0.17.0 — 导入对话框：原生选择器 + 拖拽上传 `POST /api/v1/uploads`
 
 **纯新增**一条路由，既有端点的形状一字未动（openapi 快照重新生成：新路径 +

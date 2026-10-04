@@ -127,6 +127,24 @@ async function submit() {
   }
 }
 
+/**
+ * SSE 批事件 → 界面（0.18.0 重写为**多文件**口径）。
+ *
+ * 多文件导入原来有三处"看起来内容丢了"的病，这里逐条对着治：
+ *
+ *   1. `progress` 的 records/line 是**逐文件**的 —— 直接覆盖会让第二个文件
+ *      一开跑进度条归零。现在显示 `baseRecords + 当前文件进度`，而 base 只在
+ *      `file_done` 里用数据层的 `counts.records` 累加 —— 界面仍然一个数都不
+ *      自己数（2.7 那条纪律原样保留，只是"数"的口径从单文件换成整批）。
+ *   2. `file_start` / `file_done` 原来落进 else，渲染成截断的 JSON —— 现在是
+ *      显式的「[i/n] 文件名 状态」行。
+ *   3. `done` 之后补拉 `GET /imports/{id}` 的报告（后端一直有，前端首次消费），
+ *      逐文件 path/state/counts/job_id 渲染成完成态表 —— "哪个文件没成"从此
+ *      看得见。
+ *
+ * else 兜底从「整段 JSON 截断 160 字符」改成「事件名 + 关键键」——兜底事件
+ * （started / job_start 这些）本来就没有需要倒出来的载荷。
+ */
 function onBatch(payload) {
   if (payload.dropped) {
     store.importProgress.dropped += payload.dropped
@@ -135,30 +153,60 @@ function onBatch(payload) {
   }
   for (const event of payload.events || []) {
     const data = event.data || {}
-    if (event.type === 'progress') {
-      // 进度**只**来自数据层的计数，界面一个数都不自己加
-      store.importProgress.records = data.records ?? store.importProgress.records
-      store.importProgress.line = data.line ?? store.importProgress.line
-      store.importProgress.badLines =
-        (data.counts && data.counts.bad_lines) ?? store.importProgress.badLines
-      store.importProgress.stage = data.stage || store.importProgress.stage
-      append(`进度 ${data.file || ''}：${data.records} 条记录 / ${data.line} 行` +
-        `，坏行 ${data.counts ? data.counts.bad_lines : 0}`)
+    const p = store.importProgress
+    if (event.type === 'file_start') {
+      p.fileIndex = (data.index ?? p.fileIndex - 1) + 1
+      p.fileTotal = data.total ?? p.fileTotal
+      append(`开始文件 [${p.fileIndex}/${p.fileTotal}] ${data.file || data.path || ''}`)
+    } else if (event.type === 'progress') {
+      // 进度**只**来自数据层的计数；累计 = 已完成文件的 base + 本文件进度
+      p.records = p.baseRecords + (data.records ?? 0)
+      p.line = data.line ?? p.line
+      p.badLines = p.baseBadLines + ((data.counts && data.counts.bad_lines) ?? 0)
+      p.stage = data.stage || p.stage
+      // 坏行明细（流式、部分 —— 全量在数据区 reports/<job>.badlines.txt）
+      for (const bad of (Array.isArray(data.bad_lines) ? data.bad_lines : [])) {
+        if (p.badLinesDetail.length >= 1000) break
+        p.badLinesDetail.push({ file: data.file || '', ...bad })
+      }
+      append(`进度 [${p.fileIndex}/${p.fileTotal}] ${data.file || ''}：` +
+        `累计 ${p.records} 条记录，本文件 ${data.line} 行，坏行 ${p.badLines}`)
+    } else if (event.type === 'file_done') {
+      const counts = data.counts || {}
+      p.baseRecords += Number(counts.records) || 0
+      p.baseBadLines += Number(counts.bad_lines) || 0
+      p.records = p.baseRecords           // 本文件已收尾，进度至此并入 base
+      p.badLines = p.baseBadLines
+      p.files.push({
+        name: data.file || '', path: data.path || '', state: data.state || '',
+        job_id: data.job_id ?? null, counts,
+      })
+      append(`文件完成 [${(data.index ?? 0) + 1}/${data.total ?? p.fileTotal}] ` +
+        `${data.file || ''}：${data.state || ''} · ` +
+        `${Number(counts.records) || 0} 条记录` +
+        (counts.bad_lines ? ` · 坏行 ${counts.bad_lines}` : ''),
+        data.state === 'done' ? 'info' : 'warn')
     } else if (event.type === 'job_done') {
       append(`作业 ${data.job_id} 结束：${data.state} ${JSON.stringify(data.counts || {})}`,
         data.state === 'done' ? 'info' : 'warn')
     } else if (event.type === 'done') {
-      store.importProgress.state = data.state
+      p.state = data.state
       append(`导入结束：${data.state}，job ${JSON.stringify(data.job_ids || [])}`,
         data.state === 'done' ? 'info' : 'warn')
+      // 报告是补看的：拉不到只留一条 warn，进度与日志已经把这轮说完了
+      store.loadImportReport(data.import_id)
       store.reload()
       store.loadMeta()
     } else if (event.type === 'error') {
-      store.importProgress.state = 'failed'
+      p.state = 'failed'
       append(`出错：${data.error}`, 'error')
     } else {
-      store.importProgress.stage = store.importProgress.stage || event.type
-      append(`${event.type} ${JSON.stringify(data).slice(0, 160)}`)
+      p.stage = p.stage || event.type
+      const KEYS = ['file', 'path', 'stage', 'job_id', 'parser', 'state']
+      const bits = KEYS.filter((key) => data[key] !== undefined && data[key] !== null)
+        .map((key) => `${key}=${data[key]}`)
+      append(bits.length ? `${event.type} ${bits.join(' ')}` :
+        `${event.type}（${Object.keys(data).join(', ') || '无参数'}）`)
     }
   }
 }
@@ -226,6 +274,39 @@ function onBatch(payload) {
         </li>
       </ol>
 
+      <!--
+        完成态报告（0.18.0）：`done` 之后拉 `GET /imports/{id}` 的 report ——
+        逐文件 path/state/counts/job_id。"三个文件哪个没成"只能看这里：
+        事件流是一条时间线，报告才是按文件归档的那份。
+      -->
+      <div v-if="store.importReport && store.importReport.report" class="report">
+        <div class="labelrow">
+          <label>导入报告 · {{ store.importReport.state }}</label>
+        </div>
+        <table class="rpt">
+          <thead>
+            <tr><th>文件</th><th>状态</th><th>记录</th><th>坏行</th><th>job</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(f, i) in store.importReport.report.files || []" :key="i"
+                :class="{ bad: f.state === 'failed' || f.state === 'cancelled',
+                          warn: f.state === 'partial' }">
+              <td class="mono" :title="f.path">{{ f.path }}</td>
+              <td>{{ f.state }}</td>
+              <td class="mono">{{ (f.counts || {}).records ?? '—' }}</td>
+              <td class="mono">{{ (f.counts || {}).bad_lines ?? '—' }}</td>
+              <td class="mono">{{ f.job_id ?? '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="(store.importReport.problems || []).length" class="warn small">
+          提示：{{ store.importReport.problems.join('；') }}
+        </p>
+        <p v-if="(store.importReport.error || '').length" class="bad small">
+          {{ store.importReport.error }}
+        </p>
+      </div>
+
       <div class="actions">
         <span class="dim small">
           {{ pathList.length }} 个路径
@@ -267,6 +348,16 @@ textarea, input, select { width: 100%; }
 .phases { margin: 10px 0 0; padding: 8px 10px 8px 26px; max-height: 150px; overflow-y: auto;
           background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
           font-size: 11px; }
+.report { margin-top: 10px; }
+.rpt { width: 100%; border-collapse: collapse; font-size: 11px; }
+.rpt th { text-align: left; color: var(--faint); font-weight: 500;
+          padding: 3px 6px; border-bottom: 1px solid var(--line);
+          font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.rpt td { padding: 3px 6px; border-bottom: 1px solid var(--line-soft);
+          word-break: break-all; }
+.rpt td:first-child { max-width: 240px; }
+.rpt tr.bad td { color: var(--bad); }
+.rpt tr.warn td { color: var(--warn); }
 .actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .spacer { flex: 1; }
 </style>

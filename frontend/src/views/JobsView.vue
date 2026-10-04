@@ -39,9 +39,10 @@ const COLUMNS = [
   { key: 'kind', label: '类型', width: '64px' },
   { key: 'state', label: '状态', width: '68px' },
   { key: 'appliedLabel', label: '生效', width: '56px' },
+  { key: 'sourceLabel', label: '源文件' },
   { key: 'contributions', label: '贡献', mono: true, width: '60px' },
   { key: 'retracted', label: '已撤回', mono: true, width: '66px' },
-  { key: 'started_at', label: '开始', mono: true },
+  { key: 'started_at', label: '开始', mono: true, width: '128px' },
   { key: 'actor', label: 'actor', width: '56px' },
 ]
 
@@ -54,11 +55,20 @@ async function load() {
   error.value = ''
   try {
     const data = await store.listJobs(200)
-    rows.value = data.map((item) => Object.assign({}, item, {
-      __key: item.id,
-      appliedLabel: item.applied ? '生效中' : '已撤销',
-      state: STATE_LABEL[item.state] || item.state,
-    }))
+    rows.value = data.map((item) => {
+      // 0.18.0：源文件列 —— basename + `+N`（一个作业按设计就是一个文件，
+      // `+N` 只在数据说"不止一条"时出现，界面不替数据做假设）。
+      const sources = item.source_files || []
+      const sourceLabel = sources.length
+        ? sources[0].name + (sources.length > 1 ? ` +${sources.length - 1}` : '')
+        : '—'
+      return Object.assign({}, item, {
+        __key: item.id,
+        appliedLabel: item.applied ? '生效中' : '已撤销',
+        state: STATE_LABEL[item.state] || item.state,
+        sourceLabel,
+      })
+    })
     if (selected.value) {
       const still = rows.value.find((r) => r.id === selected.value.id)
       if (still) await pick(still, { keepPreview: true })
@@ -175,6 +185,14 @@ watch(() => store.view, (value) => {
             <dt>状态</dt><dd>{{ selected.state }} · {{ selected.appliedLabel }}</dd>
             <dt>贡献</dt><dd class="mono">{{ selected.contributions }} 条，已撤回
               {{ selected.retracted }} 条</dd>
+            <dt>源文件</dt>
+            <dd v-if="(selected.source_files || []).length">
+              <div v-for="(file, i) in selected.source_files" :key="i">
+                {{ file.name }}
+                <div class="mono tiny faint" :title="file.path">{{ file.path }}</div>
+              </div>
+            </dd>
+            <dd v-else class="dim">（无原文贡献）</dd>
             <dt>覆盖</dt><dd class="mono">{{ selected.coverage }}
               · scope v{{ selected.scope_version }}</dd>
             <dt>actor</dt><dd class="mono">{{ selected.actor }}</dd>

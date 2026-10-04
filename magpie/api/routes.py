@@ -994,16 +994,28 @@ async def post_upload(request: Request,
 DEFAULT_JOB_LIMIT = query.DEFAULT_JOB_LIMIT
 
 
-def _decorate_job(conn: sqlite3.Connection, item: dict[str, Any]) -> dict[str, Any]:
-    """给一行作业补上"现在能不能 undo/redo"与计数。
+def _decorate_job(conn: sqlite3.Connection, item: dict[str, Any],
+                  source_files: list[dict[str, str]] | None = None
+                  ) -> dict[str, Any]:
+    """给一行作业补上"现在能不能 undo/redo"、计数与源文件。
 
     `applied` 是 SQLite 里的 0/1，出信封前折成布尔 —— JSON 的消费者不该
     自己记得"1 是真"。
+
+    `source_files`（0.18.0）：列表那条路**批量预查**后从这里传进来（N 行一条
+    SQL，不做 N+1）；单条详情（`GET /jobs/{id}`）才在这儿现查。缺席的作业
+    （零贡献，例如解析完但一条事实都没产出）补 `[]` —— 空列表是事实，
+    `undefined` 才是要消费者自己防的东西。
     """
     item["applied"] = bool(item["applied"])
     item["counts"] = query.job_counts(conn, [int(item["id"])])[int(item["id"])]
     item["can_undo"] = bool(item["applied"])
     item["can_redo"] = not bool(item["applied"])
+    if source_files is None:
+        source_files = query.job_source_files(
+            conn, int(item["project_id"]), [int(item["id"])]
+        ).get(int(item["id"]), [])
+    item["source_files"] = list(source_files)
     return item
 
 
@@ -1020,7 +1032,11 @@ def list_jobs(project: str | None = None, state: str | None = None,
         applied = 1 if applied else 0
     rows = query.list_jobs(conn, project_id=project_id, state=state,
                            applied=applied, limit=limit)
-    items = [_decorate_job(conn, row) for row in rows]
+    # 0.18.0：源文件一次查完再逐行分发 —— 列表页 200 行不做 200 条 SQL。
+    sources = query.job_source_files(
+        conn, project_id, [int(row["id"]) for row in rows])
+    items = [_decorate_job(conn, row,
+                           sources.get(int(row["id"]), [])) for row in rows]
     return ok(items, count=len(items))
 
 

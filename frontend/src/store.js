@@ -82,8 +82,21 @@ const _view = ref('explore')
 const _paletteOpen = ref(false)
 const _drawerOpen = ref(true)
 const _activeImportId = ref(null)
-const _importProgress = reactive({ state: '', records: 0, line: 0, badLines: 0,
-                                   stage: '', dropped: 0 })
+//: 进度数字的口径（0.18.0 多文件）：
+//:   `records` / `badLines` 是**跨文件累计**（= baseRecords/baseBadLines +
+//:   当前文件已推进的部分）—— 逐文件的数会"完成一个文件进度条归零"，那正是
+//:   多文件导入看起来"内容丢了"的一半原因。base* 只在 `file_done` 里加，
+//:   加的仍是**数据层给的数**（counts.records），界面不自己数数。
+//:   `line` 是**当前文件**的行号（数据层逐文件重置，累计行没有任何权威来源）。
+const _importProgress = reactive({
+  state: '', records: 0, line: 0, badLines: 0, stage: '', dropped: 0,
+  fileIndex: 0, fileTotal: 0, baseRecords: 0, baseBadLines: 0,
+  files: [],            // 每个 file_done 一行：{name, path, state, job_id, counts}
+  badLinesDetail: [],   // 流式坏行明细 {file, line, reason, raw}（部分，见 LogDrawer）
+})
+//: 一次导入的完整报告（`GET /imports/{id}`）。后端**从 0.2.0 起就返回它**，
+//: 前端一直没消费 —— "多文件导入后内容无法查看"缺的就是这一段接线。
+const _importReport = ref(null)
 
 // ---------------------------------------------------------------------------
 // 编排模式的草稿（`view === 'pipeline'`）
@@ -235,6 +248,7 @@ export const store = reactive({
   drawerOpen: _drawerOpen,
   activeImportId: _activeImportId,
   importProgress: _importProgress,
+  importReport: _importReport,
   pipeline: _pipeline,
   tags: _tags,
   selection: _selection,
@@ -284,6 +298,7 @@ export const store = reactive({
   undoJob,
   redoJob,
   undoImport,
+  loadImportReport,
   setView,
   // 编排模式（可编辑只在这里）
   loadPipelines,
@@ -726,6 +741,31 @@ export function resetImportProgress() {
   _importProgress.badLines = 0
   _importProgress.stage = ''
   _importProgress.dropped = 0
+  _importProgress.fileIndex = 0
+  _importProgress.fileTotal = 0
+  _importProgress.baseRecords = 0
+  _importProgress.baseBadLines = 0
+  _importProgress.files = []
+  _importProgress.badLinesDetail = []
+  _importReport.value = null
+}
+
+/**
+ * 拉一次导入的完整报告（0.18.0：前端**首次**消费 `GET /imports/{id}` 的
+ * `report.files[]`）。`done` 事件只带 job_ids 与 totals —— 逐文件的
+ * path/state/counts 只在报告里，而"三个文件导完哪个没成"恰恰只能看它。
+ * 报告拉不到（登记表把记录 prune 了）不报错：报告是**补看**的，
+ * 进度与日志已经在事件流里说完了。
+ */
+export async function loadImportReport(importId) {
+  try {
+    const record = await get(`/imports/${encodeURIComponent(importId)}`)
+    _importReport.value = record && record.report ? record : null
+  } catch (err) {
+    pushLog(`导入报告拉取失败：${err.message}`, 'import', 'warn')
+    _importReport.value = null
+  }
+  return _importReport.value
 }
 
 export async function submitImport({ paths, parser, dryRun, archive }) {

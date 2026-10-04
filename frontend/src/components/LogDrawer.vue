@@ -23,6 +23,17 @@ const activityLines = computed(() =>
 
 const LEVEL_CLASS = { error: 'bad', warn: 'warn', info: '' }
 
+//: 流式坏行明细（0.18.0）：`badLinesDetail` 是事件流推来的**部分**明细
+//: （每批最多 50 条 + 明细表 1000 条上限），`badLines` 才是全数计数 ——
+//: 两者不等时必须说出来，否则明细列表看起来就是"全部坏行"。
+const badDetail = computed(() => store.importProgress.badLinesDetail)
+const badlinesFiles = computed(() => {
+  const report = store.importReport && store.importReport.report
+  return (report && report.files || [])
+    .filter((file) => file.badlines_report)
+    .map((file) => file.badlines_report)
+})
+
 function stamp(at) {
   const date = new Date(at)
   return `${String(date.getHours()).padStart(2, '0')}:` +
@@ -64,10 +75,15 @@ function stamp(at) {
     <div v-show="store.drawerOpen" class="body">
       <template v-if="tab === 'import'">
         <div v-if="store.importProgress.state" class="progress">
-          阶段 {{ store.importProgress.stage || '—' }} ·
-          {{ store.importProgress.records }} 条记录 /
-          {{ store.importProgress.line }} 行 ·
+          阶段 {{ store.importProgress.stage || '—' }}
+          <template v-if="store.importProgress.fileTotal">
+            · 文件 {{ store.importProgress.fileIndex }}/{{ store.importProgress.fileTotal }}
+          </template>
+          · 累计 {{ store.importProgress.records }} 条记录 /
+          本文件 {{ store.importProgress.line }} 行 ·
           坏行 {{ store.importProgress.badLines }}
+          <span v-if="store.importProgress.files.length">
+            · 已完成 {{ store.importProgress.files.length }} 个文件</span>
         </div>
         <div v-for="(line, i) in importLines" :key="i" class="line"
              :class="LEVEL_CLASS[line.level]">
@@ -88,9 +104,27 @@ function stamp(at) {
         </p>
       </template>
 
-      <template v-else>
-        <p class="dim pad">
-          坏行明细在「作业历史」的导入报告里 —— 那是落库的那一份。
+      <!-- 坏行明细（0.18.0 起真渲染）：流式明细 + 计数 + 全量落盘路径。 -->
+      <template v-else-if="tab === 'badlines'">
+        <div v-for="(bad, i) in badDetail" :key="i" class="line">
+          <span class="at faint">{{ bad.file }}:{{ bad.line }}</span>
+          {{ bad.reason }}
+          <span v-if="bad.raw" class="faint"> — {{ bad.raw }}</span>
+        </div>
+        <p v-if="badDetail.length && store.importProgress.badLines > badDetail.length"
+           class="dim pad">
+          明细是流式推送的一部分（{{ badDetail.length }} /
+          {{ store.importProgress.badLines }} 条）—— 全量与行原文在数据区落盘，
+          路径在下面。
+        </p>
+        <ul v-if="badlinesFiles.length" class="files">
+          <li v-for="(path, i) in badlinesFiles" :key="'f' + i" class="mono">
+            {{ path }}
+          </li>
+        </ul>
+        <p v-if="!badDetail.length" class="dim pad">
+          还没有坏行。解析器把格式漂移的原文行拦在这里 —— 导入时会逐条实时列出，
+          全量另存在数据区的 reports/&lt;job&gt;.badlines.txt。
         </p>
       </template>
     </div>
@@ -127,4 +161,7 @@ function stamp(at) {
   border-bottom: 1px solid var(--line-soft);
   margin-bottom: 5px;
 }
+.files { list-style: none; margin: 4px 0 0; padding: 0; font-size: 10px;
+         word-break: break-all; color: var(--faint); }
+.files li { padding: 1px 0; }
 </style>

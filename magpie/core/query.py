@@ -1074,6 +1074,57 @@ def job_counts(conn: sqlite3.Connection,
     return out
 
 
+def job_source_files(conn: sqlite3.Connection, project_id: int | None,
+                     job_ids: list[int]) -> dict[int, list[dict[str, str]]]:
+    """每个作业从哪些原文文件来（`{name, path}`）。**一次查完，不做 N+1。**
+
+    链条是 `contributions.job_id → evidence → raw_files`（复合外键都带
+    project_id，两道 JOIN 各自校验一次）。一个作业按设计**就是一个文件**
+    （`ingest_paths` 的循环边界），但这里照关系算 —— 不把"永远恰好一条"
+    写进查询。
+
+    `name` 优先取 `jobs.coverage_scope.file`（ingest 开工时登记的**原始文件名**）。
+    这一步不是装饰：`archive=archived`（默认档）的 `locator_uri` 是内容寻址的
+    `raw/<sha256>`，拿它的 basename 当"源文件"是一句假话 —— 三个文件的源都会
+    显示成三个看不出区别的哈希。没有 coverage_scope（老作业 / 非 ingest 作业）
+    才回落到 URI 的 basename，至少那还是可读的。
+
+    `path` 是 `locator_uri` **原样**：external 档是原文的 `file://` URI，
+    archived 档是归档副本的 URI —— 各档如实各说各的，不做"看起来像原路径"
+    的翻译。零贡献的作业在返回里**缺席**（与 `job_counts` 同一约定），由调用方
+    补 `[]` —— 这里不猜缺席意味着"还在跑"还是"真的没有"。
+    """
+    out: dict[int, list[dict[str, str]]] = {}
+    if not job_ids:
+        return out
+    marks = ",".join("?" * len(job_ids))
+    clause = f"c.job_id IN ({marks})"
+    params: list[Any] = [*job_ids]
+    if project_id is not None:
+        clause += " AND c.project_id=?"
+        params.append(int(project_id))
+    for row in conn.execute(
+            "SELECT c.job_id AS job_id, rf.locator_uri AS uri,"
+            "       j.coverage_scope AS scope"
+            " FROM contributions c"
+            " JOIN evidence ev ON ev.id=c.evidence_id"
+            "              AND ev.project_id=c.project_id"
+            " JOIN raw_files rf ON rf.id=ev.raw_file_id"
+            "              AND rf.project_id=c.project_id"
+            " JOIN jobs j ON j.id=c.job_id"
+            f" WHERE {clause}"
+            " GROUP BY c.job_id, rf.locator_uri"
+            " ORDER BY c.job_id, MIN(c.id)", tuple(params)):
+        uri = str(row["uri"])
+        scope = json_or_none(row["scope"])
+        name = scope.get("file") if isinstance(scope, dict) else None
+        if not name:
+            name = Path(uri).name or uri
+        out.setdefault(int(row["job_id"]), []).append(
+            {"name": str(name), "path": uri})
+    return out
+
+
 #: 作业列表的列。与 `SELECT *` 的区别是**顺序稳定**：列表的字段顺序会原样进
 #: 输出，而 `*` 的顺序跟着 schema 走 —— 加一列就会让每个消费者的字段顺序变一次。
 JOB_COLUMNS = ("id, project_id, kind, state, applied, coverage, scope_version,"

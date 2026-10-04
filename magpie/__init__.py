@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.17.0"       # 与 pyproject.toml 的 version 保持一致（上传 /uploads）
+__version__ = "0.18.0"       # 与 pyproject.toml 的 version 保持一致（GET /jobs 加 source_files）
 
 __all__ = ["__version__"]

@@ -93,6 +93,38 @@ def test_jobs_list_is_newest_first_with_counts(loaded):
         assert item["counts"]["retracted"] == 0
 
 
+def test_jobs_rows_carry_source_files_per_job(loaded):
+    """0.18.0：作业行加 `source_files` —— 多文件导入后认得出哪行是哪个文件。
+
+    夹具一次导入 subfinder.txt + httpx.jsonl 两个文件（每个文件一个作业）。
+    name 必须是**原始文件名**：`loaded` 走默认 archived 档，locator_uri 是
+    内容寻址的 `raw/<sha256>` —— 拿它当文件名，这里就会断言出两个哈希。
+    """
+    body = loaded.get("/api/v1/jobs", headers=HEADERS).json()
+    items = body["data"]
+    assert items, "导入之后一条作业都没有"
+    # 既有键一个都不许丢（加键是 0.6.0 先例，删键不是）
+    for item in items:
+        assert {"id", "kind", "state", "applied", "coverage", "counts",
+                "can_undo", "can_redo", "started_at", "actor"} <= set(item)
+        assert isinstance(item["source_files"], list)
+        for entry in item["source_files"]:
+            assert set(entry) == {"name", "path"}
+            assert entry["path"].startswith("file://")
+
+    with_files = [item for item in items if item["source_files"]]
+    assert with_files, "导入过的作业一条都没带 source_files"
+    names = {entry["name"]
+             for item in items for entry in item["source_files"]}
+    assert {"subfinder.txt", "httpx.jsonl"} <= names
+
+    # 列表与详情两个入口说同一件事（都过 _decorate_job，但批量/单查是两条路）
+    target = with_files[0]
+    detail = loaded.get(f"/api/v1/jobs/{target['id']}",
+                        headers=HEADERS).json()["data"]["job"]
+    assert detail["source_files"] == target["source_files"]
+
+
 def test_job_detail_carries_explain_job_scope(loaded):
     """旧 job 必须用**当时的** scope 解释 —— 界面不自己拿当前 scope 去算。"""
     job_id = _job_ids(loaded)[0]

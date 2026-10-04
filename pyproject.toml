@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.17.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.18.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -61,6 +61,14 @@ version = "0.17.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 目录浏览，只列不读）。openapi 快照重新生成（新路径 + `info.version`）。
 # 没有新增迁移（R4 未动）；既有路由的形状一字未动，GUI 手填路径那条路不变。
 # 见 CHANGELOG 的 `0.16.0` 一节。
+# 0.16.0 → 0.17.0：**纯新增**一条 `POST /api/v1/uploads`（原生选择器 / 拖拽上传
+# 的暂存区，multipart `files` → `{files:[{name,path,bytes}],count}`）+ extras
+# `api` 补 `python-multipart`。openapi 快照重新生成。见 CHANGELOG 的 `0.17.0` 一节。
+# 0.17.0 → 0.18.0：**既有响应加键**（照 0.6.0 先例登记）—— `GET /jobs` 与
+# `GET /jobs/{id}` 的作业行各加 `source_files: [{name, path}]`（原文定位，取自
+# contributions→evidence→raw_files，name 优先 coverage_scope.file）。既有键
+# 一字未删；`magpie jobs --json` 的列不受影响（CLI 有自己的 _JOB_COLUMNS 副本）。
+# 没有新增迁移（R4 未动）。openapi 快照重新生成（info.version）。见 CHANGELOG。
 description = "自用的资源统筹工具（SRC / 渗透测试场景的资产与情报整合工作台）。仅用于自有资产与已获授权的目标。"
 readme = "README.md"
 requires-python = ">=3.11"

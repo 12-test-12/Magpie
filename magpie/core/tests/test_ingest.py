@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, ops, pipeline, store
+from magpie.core import ingest, ops, pipeline, query, store
 from magpie.core.store import connect, effective_equivalent, init_db, snapshot_effective
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -697,3 +697,52 @@ def test_bridge_parsers_retire_once_the_official_package_exists(monkeypatch):
     parsers, source = ingest.load_parsers()
     assert source == "magpie.core.parsers"
     assert [p.tool for p in parsers] == ["official"]
+
+
+# ---------------------------------------------------------------------------
+# 0.18.0 · 作业 → 源文件（`query.job_source_files`）
+# ---------------------------------------------------------------------------
+
+
+def test_job_source_files_one_job_its_own_file(db, tmp_path):
+    """两个文件两个作业，各归各的原文 —— 作业历史从此认得出哪行是哪个文件。
+
+    `name` 必须是**原始文件名**（来自 `coverage_scope.file`），`path` 是
+    locator 原样。这条用例特意走 `archive="archived"`（GUI 的默认档）：
+    那一档的 locator_uri 是内容寻址的 `raw/<sha256>` —— 拿它当文件名，
+    两个源文件就会显示成两个看不出区别的哈希，而"显示成哈希"正是这条
+    功能要防的那种假话。
+    """
+    project_id = make_project(db)
+    options = opts(db, project_id, tmp_path, archive="archived")
+    report = ingest.ingest_paths(db, options, [SUBFINDER, HTTPX])
+    job_ids = [f["job_id"] for f in report["files"] if f.get("job_id")]
+    assert len(job_ids) == 2, report["files"]
+
+    sources = query.job_source_files(db, project_id, job_ids)
+    assert set(sources) == set(job_ids)
+    names = set()
+    for job_id in job_ids:
+        entries = sources[job_id]
+        assert len(entries) == 1                    # 一个作业按设计就是一个文件
+        entry = entries[0]
+        assert set(entry) == {"name", "path"}
+        assert entry["path"].startswith("file://")
+        # archived 档：path 是归档副本（如实各说各的），name 是原始文件名
+        assert "/raw/" in entry["path"]
+        assert not entry["path"].endswith((".txt", ".jsonl"))
+        names.add(entry["name"])
+    assert names == {"subfinder.txt", "httpx.jsonl"}
+
+    # 批量语义：空批次什么都不问
+    assert query.job_source_files(db, project_id, []) == {}
+
+
+def test_job_source_files_zero_contribution_job_is_absent(db, tmp_path):
+    """零贡献的作业在返回里**缺席** —— 调用方补 `[]`，这里不编一个来源。"""
+    project_id = make_project(db)
+    empty_job = ops.start_job(db, project_id=project_id, kind="ingest",
+                              coverage="unknown", actor="test")
+    sources = query.job_source_files(db, project_id, [empty_job])
+    assert sources == {}                            # 不是 {job: [假路径]}
+    assert sources.get(empty_job, []) == []         # 调用方约定的补法
