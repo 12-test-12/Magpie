@@ -14,15 +14,24 @@
 defineProps({
   title: { type: String, required: true },
   desc: { type: String, default: '' },
-  /** 插画语气：scan（探测，带 CTA 的场景）/ clean（干净，无须行动）。 */
+  /** 插画语气：scan（探测，带 CTA）/ clean（干净，无须行动）/ compact（轻量）。 */
   tone: { type: String, default: 'scan' },
 })
 </script>
 
 <template>
-  <div class="empty-state">
+  <div class="empty-state" :class="{ compact: tone === 'compact' }">
+    <!-- 放大镜（compact）：小图标，没有大插画也没有大绿勾 —— "筛选没匹配"是
+         中性状态，不是好消息（clean）也不是探索场景（scan），GPT ① 要的
+         轻量化就落在这个 tone 上。 -->
+    <svg v-if="tone === 'compact'" class="art" viewBox="0 0 96 96"
+         fill="none" aria-hidden="true">
+      <circle cx="42" cy="42" r="24" stroke="var(--dim)" stroke-width="5" />
+      <path d="M60 60 L80 80" stroke="var(--accent)" stroke-width="7"
+            stroke-linecap="round" />
+    </svg>
     <!-- 望远镜：单色线性，accent 只点在镜片上 -->
-    <svg v-if="tone === 'scan'" class="art" viewBox="0 0 96 96"
+    <svg v-else-if="tone === 'scan'" class="art" viewBox="0 0 96 96"
          fill="none" aria-hidden="true">
       <circle cx="48" cy="48" r="43" stroke="var(--line)" stroke-dasharray="3 5" />
       <path d="M20 66 L44 44 L56 54 L34 74 Z" stroke="var(--dim)"
@@ -69,4 +78,11 @@ defineProps({
 .title { font-size: 17px; font-weight: 600; margin: 4px 0 0; }
 .desc { font-size: 12px; line-height: 1.7; color: var(--dim); margin: 0; }
 .actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* compact（GPT ①）：小图标、收窄留白、字号降一档 —— 筛选空态不该长成
+   一屏的欢迎页。 */
+.compact { padding: 16px 20px; gap: 6px; }
+.compact .art { width: 34px; height: 34px; opacity: .85; }
+.compact .title { font-size: 14px; }
+.compact .desc { font-size: 11.5px; line-height: 1.6; }
 </style>

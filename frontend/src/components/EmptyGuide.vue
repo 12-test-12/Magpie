@@ -95,13 +95,15 @@ async function createProject() {
 
     <template v-else>
       <!-- 三个口径并排（0.20.0）：库中共 / 符合当前筛选 / 画布已载入 —— 原来
-           只写"库里有 500 个实体"，500 是载入数（/graph 的 limit），不是库。 -->
+           只写"库里有 500 个实体"，500 是载入数（/graph 的 limit），不是库。
+           tone 用 compact（GPT ①）：筛选没匹配是中性状态，不是"干净"的好消息
+           （大绿勾）—— 小图标 + 收窄留白就够。 -->
       <EmptyState
         title="当前筛选没有匹配的实体"
         :desc="`库中共 ${fmtInt(store.projectTotal)} 个实体；符合当前筛选的 ` +
                `${fmtInt(store.graphTotal)} 个，画布已加载 ` +
                `${fmtInt(store.counts.entities)} 个。`"
-        tone="clean"
+        tone="compact"
       >
         <button class="ghost" @click="store.clearFilter()">
           清除筛选{{ filtered ? '' : '（本来就没有）' }}

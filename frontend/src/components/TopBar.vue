@@ -10,6 +10,7 @@
  */
 import { computed } from 'vue'
 import { store } from '../store.js'
+import { fmtInt } from '../format.js'
 
 defineProps({
   version: { type: String, default: '' },
@@ -48,7 +49,7 @@ const emit = defineEmits(['import', 'palette'])
       >
         <option v-if="!store.projects.length" value="">（还没有项目）</option>
         <option v-for="p in store.projects" :key="p.id" :value="p.name">
-          {{ p.name }}（{{ p.counts.entities }} 实体）
+          {{ p.name }}（{{ fmtInt(p.counts.entities) }} 实体）
         </option>
       </select>
     </label>

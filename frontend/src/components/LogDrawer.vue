@@ -11,8 +11,9 @@
  * 把它们合成一条流会让人分不清"这是刚才那次导入的进度"还是"上周某次作业的
  * 记录" —— 而这两件事的处理方式完全不同。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { store } from '../store.js'
+import { fmtPct } from '../format.js'
 
 const tab = ref('import')
 
@@ -22,6 +23,63 @@ const activityLines = computed(() =>
   store.logLines.filter((line) => line.kind === 'activity'))
 
 const LEVEL_CLASS = { error: 'bad', warn: 'warn', info: '' }
+
+// ---------------------------------------------------------------------------
+// Job Console（GPT ⑩）：导入页签在**没有进行中的导入**时常驻「最近任务」——
+// 抽屉是页面的底座，空着的时候也该回答"上一次干了什么"。
+// ---------------------------------------------------------------------------
+
+const JOB_STATE_LABEL = {
+  queued: '排队', running: '执行中', done: '完成', failed: '失败',
+  partial: '部分', aborted: '中止', cancelled: '已取消',
+}
+
+const recentJobs = ref([])
+const jobsError = ref('')
+//: 已经问过一次的标记 —— 没有它，拉取中的空窗会闪一句「（还没有作业）」，
+//: 而那句话在 200ms 后变成三行列表时会被读成"刚才坏了"。
+const jobsLoaded = ref(false)
+
+async function loadRecentJobs() {
+  jobsError.value = ''
+  try {
+    recentJobs.value = (await store.listJobs(5)) || []
+  } catch (err) {
+    recentJobs.value = []
+    jobsError.value = err.message
+  } finally {
+    jobsLoaded.value = true
+  }
+}
+
+//: 进行中 = queued / running（`api/imports.py` 的状态机）—— done/failed/
+//: cancelled 是已收尾：收尾之后进度行留着（最终计数），最近任务补位。
+const inFlight = computed(() =>
+  ['queued', 'running'].includes(store.importProgress.state))
+
+/**
+ * 完成百分比。**唯一诚实的分母是文件数**：records 是累计值、没有目标总数，
+ * 拿它算百分比等于凭空编一个分母（而"进度条说 80%，报告说 100%"正是界面
+ * 自己记账的老病）。分子是数据层已 `file_done` 的文件数。
+ */
+const pct = computed(() => {
+  const total = Number(store.importProgress.fileTotal) || 0
+  if (!total) return null
+  return fmtPct(store.importProgress.files.length / total)
+})
+
+onMounted(() => {
+  if (!inFlight.value) loadRecentJobs()
+})
+//: 导入收尾的那一刻重拉一次 —— 刚跑完的那个作业要立刻出现在列表里，
+//: 而不是等下次刷新。
+watch(inFlight, (now, was) => {
+  if (was && !now) loadRecentJobs()
+})
+//: 从别的页签切回导入页签时补一次（idle 状态下才拉 —— 进行中时列表藏着）。
+watch(tab, (value) => {
+  if (value === 'import' && !inFlight.value) loadRecentJobs()
+})
 
 //: 流式坏行明细（0.18.0）：`badLinesDetail` 是事件流推来的**部分**明细
 //: （每批最多 50 条 + 明细表 1000 条上限），`badLines` 才是全数计数 ——
@@ -126,6 +184,8 @@ function onTabsDblClick(event) {
           坏行 {{ store.importProgress.badLines }}
           <span v-if="store.importProgress.files.length">
             · 已完成 {{ store.importProgress.files.length }} 个文件</span>
+          <!-- 百分比（GPT ⑩）：分母只能是文件数，见 pct 的注释。 -->
+          <span v-if="pct" class="pct"> · 完成 {{ pct }}</span>
         </div>
         <div v-for="(line, i) in importLines" :key="i" class="line"
              :class="LEVEL_CLASS[line.level]">
@@ -134,6 +194,23 @@ function onTabsDblClick(event) {
         <p v-if="!importLines.length" class="dim pad">
           还没有导入。顶部「导入」把 subfinder / httpx 的输出收进来，进度在这里实时出现。
         </p>
+
+        <!-- 最近任务（Job Console）：无进行中导入时常驻 —— 名称 / 状态 / 时间，
+             5 条。有进行中导入时整个区块让位给进度（一个抽屉同时说两件事会
+             让人分不清哪行在动）。 -->
+        <div v-if="!inFlight" class="recent">
+          <div class="recent-head">最近任务</div>
+          <div v-for="job in recentJobs" :key="job.id" class="line">
+            <span class="at faint">{{ job.started_at ? stamp(job.started_at) : '—' }}</span>
+            #{{ job.id }} · {{ job.kind || '—' }} ·
+            {{ JOB_STATE_LABEL[job.state] || job.state }}
+            <span v-if="job.actor" class="faint"> · {{ job.actor }}</span>
+          </div>
+          <p v-if="jobsError" class="line warn">最近任务拉取失败：{{ jobsError }}</p>
+          <p v-else-if="jobsLoaded && !recentJobs.length" class="line faint">
+            （还没有作业）
+          </p>
+        </div>
       </template>
 
       <template v-else-if="tab === 'activity'">
@@ -225,4 +302,14 @@ function onTabsDblClick(event) {
 .files { list-style: none; margin: 4px 0 0; padding: 0; font-size: 10px;
          word-break: break-all; color: var(--faint); }
 .files li { padding: 1px 0; }
+.pct { color: var(--accent); font-variant-numeric: tabular-nums; }
+/* 最近任务：一条淡线与上方的导入日志隔开，标题小一号（它不是日志行）。 */
+.recent { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+.recent-head {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: .06em;
+  color: var(--faint);
+  padding-bottom: 3px;
+}
 </style>

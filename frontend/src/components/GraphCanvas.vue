@@ -212,7 +212,10 @@ defineExpose({ fitView })
        听起来很薄，但它的作用是让人在拖完一个节点之后不产生"我刚才是不是改了
        数据"的疑问 —— 而这个疑问本身才是混乱的来源。 -->
   <div ref="host" class="canvas" data-mode="explore">
-    <div class="mode-badge">
+    <!-- title（GPT 轻量项）：只读徽标悬停即有解释 —— "只读"挡的是什么、放行
+         什么，说清楚才不会让人怀疑"我刚才是不是改了数据"。 -->
+    <div class="mode-badge"
+         title="探索模式：拖位置 / 折叠 / 筛选 / 标注都可以；事实数据只由导入与作业写入，画布上改不动它">
       <span class="lock">🔒</span>
       <span>探索模式 · 只读</span>
     </div>
@@ -410,4 +413,8 @@ defineExpose({ fitView })
   padding: 24px;
   text-align: center;
 }
+/* 空态不再全屏压暗（GPT ①）：网点背景留着 —— 引导卡自己就是一张描边卡片
+   （.guide.panel 的底色/描边/阴影），86% 的黑纱只把"这里为什么空"盖成了
+   一屏灰。载入中 / 出错仍用重遮罩：那两个状态下没有可读的背景可言。 */
+.overlay.empty { background: transparent; }
 </style>

@@ -1,6 +1,6 @@
 <script setup>
 /**
- * 左栏：镜头切换 + 类型面板 + 管线列表（计划书 §7.1）。
+ * 左栏：项目总览 + 镜头切换 + 资产规模 + 生效筛选 + 管线列表（计划书 §7.1）。
  *
  * 类型徽标的数字来自 `GET /lenses/{lens}`（**库里的**数），不是当前画布上
  * 载入了几个。两者的差别在项目大的时候会非常刺眼：画布受 `limit=500` 限制，
@@ -8,11 +8,17 @@
  * 而画布上的聚合横幅说的是**这一次载入了多少** —— 两个口径各自说清楚。
  *
  * 管线列表（§7.1 的那一格）从 3.7b 起是**真的**：`GET /pipelines` 不再是 501。
- * 在那之前这里写的是一句"501，不放假按钮"的说明 —— 一个空按钮比没有按钮更让
- * 人恼火（2.7 那个静态页的文件头就写着这条），而这一格一直是照着那条纪律留
- * 白的。现在它有了真列表，那句话就该走了。
  *
  * 列表里的数是**库里的**（`step_count` 来自定义本身），与镜头徽标同一条口径。
+ *
+ * 0.20.0 D 的三处改版（GPT 评审 ②③⑤⑥）：
+ *
+ *   * 顶部一行**项目总览**（实体 = `store.projectTotal`，库口径）——左栏从此
+ *     有个"规模"的锚点，下面的比例条都以它为背景；
+ *   * 类型区从胶囊平铺改成**按数量降序的行**：色点 + 名称 + 千分位数量 +
+ *     比例条（宽度 = count/max，kind 色，非零保底 10%）—— 一眼看出构成；
+ *   * **生效中的筛选可见**：类型 / 域名视图 / 关键词谁在生效谁就摆出来，
+ *     逐条可摘 + 「重置全部」，替代只有「清除筛选（N）」的括号。
  *
  * ⚠️ 镜头清单**不在这里写死**：有哪几个镜头由 `kind_registry.lens` 决定
  * （`store.lensRows` 从 `/meta` 推导）。3.2 之前这里是 `['assets','services']`
@@ -22,6 +28,7 @@
 import { computed } from 'vue'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
+import { fmtInt } from '../format.js'
 
 const lensRows = computed(() => store.lensRows)
 
@@ -40,9 +47,60 @@ function kindFilter(kind) {
 const noKinds = computed(() => !lensRows.value.some(
   (row) => row.data && row.data.kinds && row.data.kinds.length))
 
+/**
+ * 资产规模行：跨镜头摊平 + 按数量降序。
+ *
+ * 摊平不会重复 —— 一个 kind 在 `kind_registry` 里只属于一个镜头。数量是
+ * **库里的**（`/lenses` 的 count），与画布这次载入了几个是两个口径（文件头
+ * 那条纪律）。排序把最大的顶上去，比例条的分母就是第一行的 count。
+ */
+const kindRows = computed(() => {
+  const rows = []
+  for (const row of lensRows.value) {
+    for (const kind of (row.data && row.data.kinds) || []) {
+      rows.push({ kind: kind.kind, count: Number(kind.count) || 0 })
+    }
+  }
+  return rows.sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind))
+})
+
+/**
+ * 比例条：宽度 = count / max（最大的占满整行），**非零保底 10%** ——
+ * 数量悬殊时小类型的条只剩几个像素，保底让它还在视野里。色走 kind 自己的色。
+ */
+function barStyle(row) {
+  const max = kindRows.value.length ? kindRows.value[0].count : 0
+  const ratio = max > 0 && row.count > 0 ? row.count / max : 0
+  return {
+    width: ratio > 0 ? `${Math.max(ratio * 100, 10)}%` : '0%',
+    background: kindColor(row.kind),
+  }
+}
+
+/**
+ * 生效中的筛选（GPT ③）。每条自带摘除动作，且**各走各的那条路**：
+ * 类型 → `toggleKind`（服务端重载），域名 → `clearDomainFocus`（服务端重载），
+ * 关键词是纯本地谓词 —— 摘它不用重载，`_visible` 会立刻重算。
+ */
+const activeFilters = computed(() => {
+  const chips = []
+  for (const kind of store.filter.kinds) {
+    chips.push({ key: `kind:${kind}`, label: `类型 ${kind}`,
+                 remove: () => store.toggleKind(kind) })
+  }
+  if (store.filter.underDomain) {
+    chips.push({ key: 'domain', label: `域名 ${store.filter.underDomain}`,
+                 remove: () => store.clearDomainFocus() })
+  }
+  if (store.filter.keyword) {
+    chips.push({ key: 'keyword', label: `关键词 ${store.filter.keyword}`,
+                 remove: () => store.setFilter({ keyword: '' }) })
+  }
+  return chips
+})
+
 //: 管线列表。**列表里的东西是库里的**（`GET /pipelines`），不是草稿 ——
-//: 与镜头徽标"显示库里的数"同一条纪律。这一步是 3.7b 把那句"501，不放假按钮"
-//: 换成真列表的地方（3.7a §7 的留白项 4）。
+//: 与镜头徽标"显示库里的数"同一条纪律。
 const pipelines = computed(() => store.pipeline.list)
 
 function openPipeline(id) {
@@ -53,8 +111,15 @@ function openPipeline(id) {
 
 <template>
   <aside class="left">
+    <!-- 项目总览（GPT ⑤）：一行库里的实体总数。数是 `/projects` 的 counts，
+         与画布载入数无关（0.20.0 的三个口径见 store 注释）。 -->
+    <header class="overview">
+      <span class="faint">实体</span>
+      <b>{{ fmtInt(store.projectTotal) }}</b>
+    </header>
+
     <section>
-      <h2 class="section">镜头</h2>
+      <h2 class="section">视图（镜头）</h2>
       <ul class="list">
         <li
           v-for="row in lensRows"
@@ -63,37 +128,52 @@ function openPipeline(id) {
           @click="openLens(row.key)"
         >
           <span>{{ row.label }}</span>
-          <span class="badge">{{ row.data ? row.data.total : '—' }}</span>
+          <span class="badge">{{ row.data ? fmtInt(row.data.total) : '—' }}</span>
         </li>
       </ul>
     </section>
 
     <section>
-      <h2 class="section">类型（点击筛选画布）</h2>
-      <!-- 胶囊 Tag 平铺：原来一列带彩色圆点的行列表在 11 个 kind 时显得
-           琐碎杂乱 —— 换成自动换行的小胶囊，彩点弱化成点缀（5px），
-           选中态用强调色描边。点击行为一个字没变（仍走 toggleKind）。 -->
-      <div class="tags">
-        <template v-for="row in lensRows" :key="'k' + row.key">
-          <button
-            v-for="kind in (row.data ? row.data.kinds : [])"
-            :key="kind.kind"
-            type="button"
-            class="tag"
-            :class="{ active: kindFilter(kind.kind) }"
-            @click="store.toggleKind(kind.kind)"
-          >
-            <span class="swatch" :style="{ background: kindColor(kind.kind) }" />
-            <span class="name mono">{{ kind.kind }}</span>
-            <span class="count">{{ kind.count }}</span>
-          </button>
-        </template>
-      </div>
+      <h2 class="section">资产规模（点击筛选画布）</h2>
+      <!-- 比例行（GPT ②）：色点 + 名称 + 千分位数量 + 比例条。点击行为与旧
+           胶囊一字没变（仍走 toggleKind）—— 换的是呈现，不是语义。 -->
+      <ul class="kinds">
+        <li
+          v-for="row in kindRows"
+          :key="'k' + row.kind"
+          class="krow"
+          :class="{ active: kindFilter(row.kind) }"
+          :title="kindFilter(row.kind) ? `取消筛选：${row.kind}` : `只看画布上的 ${row.kind}`"
+          @click="store.toggleKind(row.kind)"
+        >
+          <span class="ktop">
+            <span class="swatch" :style="{ background: kindColor(row.kind) }" />
+            <span class="name mono">{{ row.kind }}</span>
+            <span class="count">{{ fmtInt(row.count) }}</span>
+          </span>
+          <span class="bar"><i :style="barStyle(row)" /></span>
+        </li>
+      </ul>
       <p v-if="noKinds" class="dim empty">还没有登记的类型</p>
-      <button v-if="store.filter.kinds.length" class="ghost clear"
-              @click="store.clearFilter()">
-        清除筛选（{{ store.filter.kinds.length }}）
-      </button>
+    </section>
+
+    <!-- 生效中的筛选（GPT ③）：条件不再只藏在「清除筛选（N）」的括号里。
+         没有生效条件时整个区块不出现 —— 常驻一个空的"筛选：无"只是噪音。 -->
+    <section v-if="activeFilters.length">
+      <h2 class="section">当前筛选</h2>
+      <div class="chips">
+        <button
+          v-for="chip in activeFilters"
+          :key="chip.key"
+          type="button"
+          class="chipbtn"
+          :title="`去掉这条筛选：${chip.label}`"
+          @click="chip.remove()"
+        >
+          {{ chip.label }}<span class="x">×</span>
+        </button>
+      </div>
+      <button class="ghost clear" @click="store.clearFilter()">重置全部</button>
     </section>
 
     <section>
@@ -106,7 +186,7 @@ function openPipeline(id) {
           @click="openPipeline(item.id)"
         >
           <span class="name ell">{{ item.name }}</span>
-          <span class="badge">{{ item.step_count }}</span>
+          <span class="badge">{{ fmtInt(item.step_count) }}</span>
         </li>
         <li v-if="!pipelines.length" class="dim empty">还没有存下来的管线</li>
       </ul>
@@ -130,6 +210,24 @@ function openPipeline(id) {
   padding: var(--sp-4);
   overflow-y: auto;
 }
+
+/* 项目总览行（GPT ⑤）：标签 + 千分位大数，一眼一个"库里有多大"的锚点。 */
+.overview {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.overview b {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 section + section { margin-top: var(--sp-4); }
 /* 标题与它管的列表拉开 —— 全局 h2.section 的 8px 底距在左栏里读作黏连。 */
 .left h2.section { margin-bottom: var(--sp-3); }
@@ -147,39 +245,58 @@ section + section { margin-top: var(--sp-4); }
 .list li.active { background: var(--tint-active); color: var(--accent); }
 .list li .name { flex: 1; }
 
-/* 类型胶囊 Tag（平铺、自动换行） */
-.tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag {
-  display: inline-flex;
+/* 资产规模行：上行（色点 + 名称 + 数量）+ 下行（比例条）。 */
+.kinds { list-style: none; margin: 0; padding: 0; }
+.krow {
+  padding: 3px var(--sp-2) 4px;
+  border-radius: var(--radius-ui);
+  cursor: pointer;
+}
+.krow:hover { background: var(--tint-hover); }
+.krow.active { background: var(--tint-active); }
+.krow.active .count { color: var(--accent); }
+.ktop {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--panel-3);
-  color: var(--dim);
-  font-size: 11px;
+  gap: 6px;
+  font-size: 12px;
   line-height: 18px;
 }
-.tag:hover:not(:disabled) { border-color: var(--accent); color: var(--fg); }
-.tag.active {
-  background: var(--tint-accent);
-  border-color: var(--accent);
-  color: var(--accent);
+.ktop .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.ktop .count {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  font-size: 11px;
 }
-.tag .swatch { width: 5px; height: 5px; border-radius: 50%; flex: none; opacity: .85; }
-.tag .name { letter-spacing: .01em; }
-.tag .count {
-  min-width: 14px;
-  padding: 0 4px;
+.swatch { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+/* 比例条：轨道 3px 淡底，填充走 kind 色（宽度在 barStyle 里算，非零保底 10%）。 */
+.bar {
+  display: block;
+  height: 3px;
+  margin-top: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .07);
+  overflow: hidden;
+}
+.bar i { display: block; height: 100%; border-radius: 2px; opacity: .8; }
+
+/* 生效筛选 chips：可摘的胶囊，× 是动作不是装饰。 */
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chipbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--accent);
   border-radius: 999px;
-  background: rgba(255, 255, 255, .06);
-  color: var(--faint);
-  font-size: 10px;
-  text-align: center;
-  line-height: 14px;
+  background: var(--tint-accent);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 17px;
+  cursor: pointer;
 }
-.tag.active .count { background: var(--tint-accent); color: var(--accent); }
+.chipbtn:hover { border-style: dashed; }
+.chipbtn .x { font-size: 12px; line-height: 1; opacity: .8; }
 
 .empty { cursor: default; font-size: 12px; margin: var(--sp-1) 0 0; }
 .clear { margin-top: var(--sp-2); width: 100%; }

@@ -22,12 +22,71 @@
  * 合并的**幸存者由人指定**（"合并到这个"按钮），不让界面去猜谁更像主 ——
  * 猜错的合并比没合并糟得多，因为它的症状要等到有人想拆开时才出现。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { get } from '../api.js'
 import { store } from '../store.js'
 import { kindColor } from '../graph.js'
+import { fmtInt } from '../format.js'
 
 const detail = computed(() => store.selectedDetail)
+
+// ---------------------------------------------------------------------------
+// 默认态：项目概览（GPT ④⑫）。未选中实体时右栏不再是一句说明文字，而是
+// 「风险分 + 类型分布 + 脚注」的概览卡。
+// ---------------------------------------------------------------------------
+
+/**
+ * 风险分来自 `GET /risk`（风险页同一份数据，界面不自算 —— 评分口径只有
+ * `core/risk` 一处）。
+ *
+ * **懒加载**：只在右栏处于默认态、且这个项目还没拉过时才发请求（按项目记账，
+ * 切项目重拉）。选中实体时一个请求都不发 —— 「复制给 AI」的行为测试把
+ * `get` 的调用次数钉死为 1，概览卡若在选中态也拉 `/risk` 会把那条断言变红，
+ * 而它红的原因与复制毫无关系。
+ */
+const riskPayload = ref(null)
+const riskProject = ref(null)
+const riskError = ref('')
+
+async function loadRisk(project) {
+  riskError.value = ''
+  try {
+    const query = project ? `?project=${encodeURIComponent(project)}` : ''
+    riskPayload.value = await get(`/risk${query}`)
+  } catch (err) {
+    riskPayload.value = null
+    riskError.value = err.message
+  }
+}
+
+watch(
+  () => (detail.value ? null : store.project),
+  (project) => {
+    if (project !== null && project !== riskProject.value) {
+      riskProject.value = project
+      loadRisk(project)
+    }
+  },
+  { immediate: true },
+)
+
+const riskScore = computed(() => {
+  const score = riskPayload.value && riskPayload.value.score
+  return score && Number.isFinite(Number(score.total))
+    ? Number(score.total) : null
+})
+
+/** 类型分布：跨镜头摊平的**库里**计数 —— 与左栏「资产规模」同一数据源
+ *  （`lenses.kinds`），两个地方各数一遍迟早分叉。 */
+const kindSummary = computed(() => {
+  const rows = []
+  for (const row of store.lensRows) {
+    for (const kind of (row.data && row.data.kinds) || []) {
+      rows.push({ kind: kind.kind, count: Number(kind.count) || 0 })
+    }
+  }
+  return rows.sort((a, b) => b.count - a.count || a.kind.localeCompare(b.kind))
+})
 /** 这个实体参与过的、仍然生效的合并事件。**单独一条读**
  *  （`GET /entities/{id}/merges`）而不是塞进 `/entities/{id}` —— 后者的形状
  *  是对外契约，3.8 不动它。 */
@@ -205,13 +264,52 @@ function goTo(rel) {
 
 <template>
   <aside class="right">
-    <div v-if="!detail" class="dim pad">
-      <p>点画布上的一个实体，这里显示它的概况 / 观测 / 关系 / 时间线。</p>
-      <p class="faint small">
-        聚合视图下（节点数超过 200）卡片代表一个**类型**，没有单个实体的详情 ——
-        在左栏按类型筛选后即可回到逐个实体。
+    <!-- 默认态 = 项目概览（GPT ④⑫）：原来两行说明文字占着一整个右栏。风险分
+         懒加载（见 loadRisk），类型分布与左栏同源；「点一个实体看详情」降级
+         为底部脚注，不再冒充正文。 -->
+    <template v-if="!detail">
+      <section>
+        <h2 class="section">项目概览</h2>
+        <div class="stats">
+          <div class="stat">
+            <b>{{ fmtInt(store.projectTotal) }}</b>
+            <span>实体（库中）</span>
+          </div>
+          <div class="stat">
+            <b :class="{ faint: riskScore === null }">
+              {{ riskScore === null ? (riskError ? '—' : '…') : fmtInt(riskScore) }}
+            </b>
+            <span>风险分</span>
+          </div>
+          <div class="stat">
+            <b>{{ fmtInt(store.openInboxCount) }}</b>
+            <span>待裁决</span>
+          </div>
+        </div>
+        <p v-if="riskError" class="bad small">风险分拉取失败：{{ riskError }}</p>
+        <p class="faint small">
+          风险分与「风险」页同一份口径（`GET /risk`）—— 界面不自算。
+        </p>
+      </section>
+
+      <section>
+        <h2 class="section">类型分布</h2>
+        <ul class="dist">
+          <li v-for="row in kindSummary" :key="'d' + row.kind">
+            <span class="swatch" :style="{ background: kindColor(row.kind) }" />
+            <span class="mono name">{{ row.kind }}</span>
+            <span class="num">{{ fmtInt(row.count) }}</span>
+          </li>
+        </ul>
+        <p v-if="!kindSummary.length" class="dim small">（还没有登记的类型）</p>
+      </section>
+
+      <p class="faint small hint">
+        点画布上的一个实体，这里显示它的概况 / 观测 / 关系 / 时间线。
+        聚合视图下（节点数超过 200）卡片代表一个类型 —— 在左栏按类型筛选后
+        即可回到逐个实体。
       </p>
-    </div>
+    </template>
 
     <template v-else>
       <header class="head">
@@ -281,7 +379,7 @@ function goTo(rel) {
       </section>
 
       <section>
-        <h2 class="section">观测（{{ detail.observations.length }}）</h2>
+        <h2 class="section">观测（{{ fmtInt(detail.observations.length) }}）</h2>
         <p v-if="!detail.observations.length" class="warn small">
           一条观测都没有 —— 这是一个**没测过**的实体。
         </p>
@@ -305,7 +403,7 @@ function goTo(rel) {
       </section>
 
       <section>
-        <h2 class="section">关系（出 {{ outRelations.length }} / 入 {{ inRelations.length }}）</h2>
+        <h2 class="section">关系（出 {{ fmtInt(outRelations.length) }} / 入 {{ fmtInt(inRelations.length) }}）</h2>
         <ul class="rels">
           <li v-for="rel in outRelations" :key="'o' + rel.id">
             <span class="arrow ok">→</span>
@@ -420,6 +518,37 @@ function goTo(rel) {
 }
 .pad { padding: 8px; }
 .small { font-size: 11px; line-height: 1.5; }   /* 脚注小字，刻意比正文低一档 */
+
+/* 项目概览（GPT ④⑫）：三个大数横排 + 类型分布行。 */
+.stats { display: flex; gap: var(--sp-4); }
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat b {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.stat b.faint { color: var(--faint); }
+.stat span { font-size: 11px; color: var(--faint); }
+.dist { list-style: none; margin: 0; padding: 0; font-size: var(--fs-md); }
+.dist li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+}
+.dist .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.dist .num {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  font-size: 11px;
+}
+/* 脚注：原默认态的两行说明降级到这里，顶部再让一条淡线与正文隔开。 */
+.hint {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
 section + section { margin-top: 18px; }
 /* 标签与正文的层级 = 11px 大写标签 + 拉开的底距，而不是"两行差不多大的字"。 */
 .right h2.section { margin-bottom: var(--sp-3); }
