@@ -125,16 +125,20 @@ function openPipeline(id) {
   /* --chrome：与顶栏同一层，比画布略亮 —— 左栏从此读作「框架/导航」，
      不再和内容区黏在一起。真正的层级靠"底色差 + 右侧分割线"两件事。 */
   background: var(--chrome);
-  padding: 12px;
+  /* 12 → 16：左栏原先贴着边一列挤；间距从此走阶梯 token（--sp-*），
+     不再各处手写一个数。 */
+  padding: var(--sp-4);
   overflow-y: auto;
 }
-section + section { margin-top: 16px; }
+section + section { margin-top: var(--sp-4); }
+/* 标题与它管的列表拉开 —— 全局 h2.section 的 8px 底距在左栏里读作黏连。 */
+.left h2.section { margin-bottom: var(--sp-3); }
 .list { list-style: none; margin: 0; padding: 0; }
 .list li {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 5px 7px;
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--radius-ui);
   cursor: pointer;
   font-size: 12px;
@@ -177,9 +181,9 @@ section + section { margin-top: 16px; }
 }
 .tag.active .count { background: var(--tint-accent); color: var(--accent); }
 
-.empty { cursor: default; font-size: 12px; margin: 6px 0 0; }
-.clear { margin-top: 8px; width: 100%; }
-.new { margin-top: 8px; width: 100%; }
+.empty { cursor: default; font-size: 12px; margin: var(--sp-1) 0 0; }
+.clear { margin-top: var(--sp-2); width: 100%; }
+.new { margin-top: var(--sp-2); width: 100%; }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notimpl {
   margin: 0;

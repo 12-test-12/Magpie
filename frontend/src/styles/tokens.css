@@ -71,6 +71,30 @@
   --radius-card: 10px;
   --radius-ui: 6px;
   --shadow-select: 0 0 0 1px var(--accent), 0 0 6px var(--accent-glow);
+
+  /*
+   * 间距 / 字号阶梯（视觉整改立的第二组 token —— 颜色之外，padding 与字号
+   * 原先全是字面量，"左栏挤、右栏憋"就是 12px 与 11px 各处随手写的结果）。
+   * 收编的是**改动落点**（左栏 / 日志 / 详情 / 卡片），不是全仓替换 ——
+   * 全仓替换会把 diff 撑到没人敢 review 的尺寸。
+   *   --sp   4 / 8 / 12 / 16 / 24
+   *   --fs   10 / 11 / 12 / 13 / 15 / 16（xs / sm / md / base / lg / h1）
+   */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs-md: 12px;
+  --fs-base: 13px;
+  --fs-lg: 15px;
+  --fs-h1: 16px;
+
+  /* 卡片描边。原 --line #2A2A32 对 --panel-2 的对比约 1.4:1 —— 卡片与画布
+   * 几乎融在一起；这一档到 ~2:1，读得出"这是一张卡"，又不至于框得死。 */
+  --line-card: #3A3A46;
 }
 
 * { box-sizing: border-box; }

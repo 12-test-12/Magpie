@@ -24,7 +24,7 @@ import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import EntityNode from './EntityNode.vue'
-import { AGGREGATE_THRESHOLD, relationColor } from '../graph.js'
+import { AGGREGATE_THRESHOLD, kindColor, relationColor } from '../graph.js'
 import { store } from '../store.js'
 
 const props = defineProps({
@@ -62,6 +62,27 @@ const flowEdges = computed(() => store.visible.edges.map((edge) => {
 
 const isAggregate = computed(() => store.visible.aggregated)
 const selection = computed(() => store.selection || [])
+
+/**
+ * 图例（视觉整改）。数据源是**当前渲染的节点**（`store.visible`）—— 图上画了
+ * 什么，图例就列什么，两边不可能对不上（聚合模式下按卡片的 count 汇总）。
+ * 点击 = `store.toggleKind`：与左栏「类型」胶囊同一个动作、同一套白名单语义，
+ * 不是第二套筛选状态。
+ */
+const legendItems = computed(() => {
+  const counts = new Map()
+  for (const node of flowNodes.value || []) {
+    const data = node.data || {}
+    const kind = String(data.kind || '')
+    if (!kind) continue
+    const weight = data.aggregated && Number.isFinite(data.count) ? data.count : 1
+    counts.set(kind, (counts.get(kind) || 0) + weight)
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, count]) => ({ kind, count }))
+})
+const activeKinds = computed(() => store.filter.kinds || [])
 const busy = ref(false)
 const batchNote = ref('')
 
@@ -225,6 +246,20 @@ defineExpose({ fitView })
       <button class="ghost" @click="store.clearDomainFocus()">退出</button>
     </div>
 
+    <!-- 图例浮层（视觉整改）。左下角 —— 缩放控件被钉在右下（Controls
+         position="bottom-right"），左下只属于图例。只有一种类型时不摆图例：
+         一个没人会点的图例只是在占地方。 -->
+    <div v-if="legendItems.length > 1" class="legend">
+      <button v-for="item in legendItems" :key="item.kind"
+              class="chip legend-chip"
+              :class="{ on: activeKinds.includes(item.kind) }"
+              @click="store.toggleKind(item.kind)">
+        <span class="swatch" :style="{ background: kindColor(item.kind) }" />
+        <span class="mono">{{ item.kind }}</span>
+        <b>{{ item.count }}</b>
+      </button>
+    </div>
+
     <div v-if="store.loadError" class="overlay bad">
       读取图谱失败：{{ store.loadError }}
     </div>
@@ -311,6 +346,30 @@ defineExpose({ fitView })
   font-size: 11px;
   /* 纯提示条不拦指针：没有它，画布左上角一条区域的拖拽/点选全被吃掉 */
   pointer-events: none;
+}
+.legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 46%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ui);
+  background: var(--overlay);
+}
+.legend-chip { cursor: pointer; }
+.legend-chip b { color: var(--fg); font-weight: 600; }
+.legend-chip.on { border-color: var(--accent); color: var(--accent); }
+.legend-chip.on b { color: var(--accent); }
+.legend .swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
 }
 .domain-banner {
   position: absolute;

@@ -416,18 +416,24 @@ function goTo(key) {
   flex: none;
   border-left: 1px solid var(--line);
   background: var(--panel);
-  padding: 12px;
+  /* 12 → 16：右栏原先贴边，内容与边框黏在一起（视觉整改的"呼吸感"）。 */
+  padding: var(--sp-4);
   overflow-y: auto;
 }
 .pad { padding: 8px; }
-.small { font-size: 11px; line-height: 1.5; }
-section + section { margin-top: 14px; }
-.head { margin-bottom: 12px; }
+.small { font-size: 11px; line-height: 1.5; }   /* 脚注小字，刻意比正文低一档 */
+section + section { margin-top: 18px; }
+/* 标签与正文的层级 = 11px 大写标签 + 拉开的底距，而不是"两行差不多大的字"。 */
+.right h2.section { margin-bottom: var(--sp-3); }
+.head { margin-bottom: var(--sp-3); }
 .title { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
 .key { font-size: 13px; word-break: break-all; }
 .swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.kv { display: grid; grid-template-columns: 68px 1fr; gap: 3px 8px; margin: 0; font-size: 11px; }
+/* 正文 11 → 12（--fs-md）：11px 在 330px 栏里读着费劲；脚注（.small）仍是
+   11px —— 层级靠"正文大一档、脚注小一档"拉开，不是全栏一个字号。 */
+.kv { display: grid; grid-template-columns: 84px 1fr; gap: 3px 8px; margin: 0;
+      font-size: var(--fs-md); }
 .kv dt { color: var(--faint); }
 .kv dd { margin: 0; word-break: break-all; }
 .group { margin-bottom: 4px; }
@@ -435,10 +441,11 @@ section + section { margin-top: 14px; }
               gap: 6px; padding: 3px 4px; color: var(--dim); }
 .caret { width: 9px; }
 .obs { list-style: none; margin: 2px 0 6px; padding: 0 0 0 14px; }
-.obs li { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; }
+.obs li { display: flex; align-items: center; gap: 6px; padding: 3px 0;
+          font-size: var(--fs-md); }
 .obs .field { color: var(--faint); min-width: 92px; }
 .obs .value { flex: 1; word-break: break-all; }
-.rels { list-style: none; margin: 0; padding: 0; font-size: 11px; }
+.rels { list-style: none; margin: 0; padding: 0; font-size: var(--fs-md); }
 .rels li { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .rels .verb { color: var(--dim); min-width: 74px; }
 .rels .other { color: var(--accent); cursor: pointer; word-break: break-all; }
@@ -458,10 +465,10 @@ section + section { margin-top: 14px; }
   padding: 6px; border: 1px solid var(--line); border-radius: 4px;
   background: var(--bg, #fff); color: var(--dim); resize: vertical;
 }
-.merges { list-style: none; margin: 0 0 8px; padding: 0; font-size: 11px; }
+.merges { list-style: none; margin: 0 0 8px; padding: 0; font-size: var(--fs-md); }
 .merges li { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
 .merges li span { color: var(--dim); word-break: break-all; }
-.timeline { list-style: none; margin: 0; padding: 0; font-size: 11px; }
+.timeline { list-style: none; margin: 0; padding: 0; font-size: var(--fs-md); }
 .timeline li { display: flex; gap: 7px; padding: 2px 0; }
 .timeline .at { color: var(--faint); font-size: 10px; }
 .timeline .action { color: var(--dim); }

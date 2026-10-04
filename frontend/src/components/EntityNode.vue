@@ -39,6 +39,15 @@ function onFoldClick(event) {
 
 const color = computed(() => kindColor(props.data.kind))
 
+/**
+ * 高危突出（视觉整改）。信号是**开着的漏洞**（kind=vuln + lifecycle=active）：
+ * 严重度不在 `/graph` 的节点负载里，而给 nodes 加键是契约变更 —— 本轮（E）
+ * 无契约影响，所以不用 severity。要在画布上按严重度分层，得走一次 minor
+ * 升级把 `severity` 带进 nodes；这条边界写在这里，免得有人"顺手"加个键。
+ */
+const isHigh = computed(() => props.data.kind === 'vuln'
+  && props.data.lifecycle === 'active' && !props.data.aggregated)
+
 const LIFECYCLE_TONE = {
   active: 'ok',
   stale: 'warn',
@@ -54,7 +63,7 @@ const subtitle = computed(() => {
 <template>
   <div
     class="card"
-    :class="{ selected, folded: data.collapsed }"
+    :class="{ selected, folded: data.collapsed, high: isHigh }"
     :style="{ width: NODE_WIDTH + 'px', height: NODE_HEIGHT + 'px', '--band': color }"
     :data-entity-id="data.entityId"
     :data-collapsed="data.collapsed ? '1' : '0'"
@@ -89,13 +98,20 @@ const subtitle = computed(() => {
 .card {
   position: relative;
   background: var(--panel-2);
-  border: 1px solid var(--line);
+  /* --line-card（#3A3A46）：原 --line 对卡片底色只有 ~1.4:1，卡片与画布
+     几乎融在一起；这一档读得出"这是一张卡"，又不至于框死。 */
+  border: 1px solid var(--line-card);
   border-radius: var(--radius-card);
   overflow: hidden;
   cursor: grab;
   user-select: none;
 }
 .card.selected { box-shadow: var(--shadow-select); border-color: var(--accent); }
+/* 高危突出：开着的漏洞卡红描边 + 光晕 —— 一眼扫过去先看见它。 */
+.card.high {
+  border-color: var(--bad);
+  box-shadow: 0 0 0 1px rgba(240, 62, 62, .35), 0 0 10px rgba(240, 62, 62, .22);
+}
 .card.folded { opacity: .5; }
 .fold {
   margin-left: auto; flex: none; border: 0; background: transparent;

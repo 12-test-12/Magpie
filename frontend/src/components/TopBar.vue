@@ -76,10 +76,12 @@ const emit = defineEmits(['import', 'palette'])
 
     <span class="spacer" />
 
-    <button class="ghost" title="Ctrl+K" @click="emit('palette')">
-      搜索 <span class="mono faint">Ctrl+K</span>
+    <!-- 窄窗（≤1200px）只留 🔍 图标：完整文案在 title 里，键盘还是 Ctrl+K。 -->
+    <button class="ghost search" title="搜索（Ctrl+K）" @click="emit('palette')">
+      🔍<span class="search-text"> 搜索 <span class="mono faint">Ctrl+K</span></span>
     </button>
-    <button class="ghost" @click="store.setView('doctor')">体检</button>
+    <!-- 「体检」按钮删掉了：nav 里已有数据体检页签，两个入口指向同一页 ——
+         多出来的那个只会让人猜"这两个体检有什么不一样"。 -->
     <button class="primary" @click="emit('import')">导入</button>
 
     <!--
@@ -100,13 +102,33 @@ const emit = defineEmits(['import', 'palette'])
   background: var(--chrome);
   border-bottom: 1px solid var(--line);
   flex: none;
+  /* 不换行（第二行顶栏比第一行溢出更难读）；溢出的压力全部交给 .views
+     的横向滚动 —— 见下面的注释。 */
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .brand { display: flex; align-items: baseline; gap: 8px; }
 .logo { font-size: 15px; font-weight: 600; letter-spacing: .04em; }
 .v { font-size: 11px; }
 .project { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .project select { min-width: 170px; }
-.views { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
+/* .views 是**唯一允许横向溢出**的段：页签多了出滚动条（隐藏滚动条样式，
+   滚轮/触控板照常滚），而不是把整条顶栏挤变形。min-width:0 是 flex 子项
+   收缩的前提 —— 没有它 overflow-x 永远不触发。 */
+.views {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.views::-webkit-scrollbar { display: none; }
+.search-text { display: inline; }
+@media (max-width: 1200px) {
+  .search-text { display: none; }
+}
 /* 组间竖线 —— 「模式 | 镜头 | 治理」的层级一眼可分 */
 .divider {
   width: 1px;

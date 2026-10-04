@@ -40,11 +40,52 @@ function stamp(at) {
     `${String(date.getMinutes()).padStart(2, '0')}:` +
     `${String(date.getSeconds()).padStart(2, '0')}`
 }
+
+// ---------------------------------------------------------------------------
+// 拖高（视觉整改）。96 再矮只剩页签、520 再高把画布整个吃掉 —— clamp 写死
+// 在这里而不是 store，因为这是**这一个组件**的尺寸约束，不是共享状态的语义。
+// ---------------------------------------------------------------------------
+const H_MIN = 96
+const H_MAX = 520
+
+/**
+ * 把手按下 → 捕获指针后跟随移动。`setPointerCapture` 是关键：光标拖出抽屉
+ * 范围（或快到屏幕边缘）时事件仍送回把手 —— 没有它，拖到一半鼠标一快就"断线"。
+ */
+function onGripDown(event) {
+  const target = event.currentTarget
+  const startY = event.clientY
+  const startHeight = store.drawerHeight
+  target.setPointerCapture?.(event.pointerId)
+  const onMove = (moveEvent) => {
+    // 向上拖 = 变高（clientY 变小），从按下的那一刻的高度起算
+    const next = startHeight + (startY - moveEvent.clientY)
+    store.drawerHeight = Math.min(H_MAX, Math.max(H_MIN, next))
+  }
+  const onUp = (upEvent) => {
+    target.releasePointerCapture?.(upEvent.pointerId)
+    target.removeEventListener('pointermove', onMove)
+    target.removeEventListener('pointerup', onUp)
+    target.removeEventListener('pointercancel', onUp)
+  }
+  target.addEventListener('pointermove', onMove)
+  target.addEventListener('pointerup', onUp)
+  target.addEventListener('pointercancel', onUp)
+}
+
+//: 双击页签栏折叠/展开（快捷方式；按钮还在，手势是加的不是换的）。
+//: 落在按钮上的双击不算 —— 那是在连点两个按钮，不是在拍页签栏。
+function onTabsDblClick(event) {
+  if (event.target.closest('button')) return
+  store.drawerOpen = !store.drawerOpen
+}
 </script>
 
 <template>
   <section class="drawer" :class="{ collapsed: !store.drawerOpen }">
-    <header class="tabs">
+    <!-- 拖高把手：贴在抽屉最上沿的窄条（双击页签栏 = 折叠，把手本身只管拖）。 -->
+    <div class="grip" title="拖动调高" @pointerdown="onGripDown" />
+    <header class="tabs" @dblclick="onTabsDblClick">
       <button v-for="item in [
           { key: 'import', label: '导入作业' },
           { key: 'activity', label: 'agent 活动' },
@@ -72,7 +113,8 @@ function stamp(at) {
       </button>
     </header>
 
-    <div v-show="store.drawerOpen" class="body">
+    <div v-show="store.drawerOpen" class="body"
+         :style="{ height: store.drawerHeight + 'px' }">
       <template v-if="tab === 'import'">
         <div v-if="store.importProgress.state" class="progress">
           阶段 {{ store.importProgress.stage || '—' }}
@@ -140,12 +182,31 @@ function stamp(at) {
   flex-direction: column;
 }
 .drawer.collapsed { height: auto; }
+/* 把手：平时只有一道居中的短横（收拾得像一条缝），hover 变色提示可拖。 */
+.grip {
+  height: 6px;
+  cursor: ns-resize;
+  position: relative;
+  touch-action: none;        /* 触屏上拖动不许变成页面滚动 */
+}
+.grip::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.grip:hover::after { background: var(--accent); }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 5px 10px; }
 .tab { border-color: transparent; color: var(--dim); display: inline-flex; gap: 5px; }
 .tab.active { border-color: var(--accent); color: var(--accent); }
 .spacer { flex: 1; }
 .body {
-  height: 190px;
+  /* 高度走 store.drawerHeight（拖动把手改它）；overflow 让长日志滚动。 */
   overflow-y: auto;
   padding: 4px 12px 10px;
   font-family: var(--font-mono);

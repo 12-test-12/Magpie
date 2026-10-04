@@ -91,6 +91,9 @@ const _logLines = shallowRef([])
 const _view = ref('explore')
 const _paletteOpen = ref(false)
 const _drawerOpen = ref(true)
+//: 日志抽屉高度（视觉整改：可拖高）。**会话内记忆**，与聚合卡位置同一待遇
+//: （不入库 —— 布局偏好不是事实）；clamp 在组件里（96–520，见 LogDrawer）。
+const _drawerHeight = ref(190)
 const _activeImportId = ref(null)
 //: 进度数字的口径（0.18.0 多文件）：
 //:   `records` / `badLines` 是**跨文件累计**（= baseRecords/baseBadLines +
@@ -256,6 +259,7 @@ export const store = reactive({
   view: _view,
   paletteOpen: _paletteOpen,
   drawerOpen: _drawerOpen,
+  drawerHeight: _drawerHeight,
   activeImportId: _activeImportId,
   importProgress: _importProgress,
   importReport: _importReport,
