@@ -269,6 +269,10 @@ defineExpose({ fitView })
     </div>
     <div v-else-if="store.loading" class="overlay dim">载入中…</div>
 
+    <!-- 交互（0.20.0 修"无法滑动"）：原来 pan-on-drag=[1,2] 把左键排除在平移
+         之外（普通左键拖拽什么也不发生），pan-on-scroll 又让滚轮去平移而不是
+         缩放 —— 图工具的标准手势两个都不成立。现在：空白处左键拖 = 平移，
+         滚轮 = 缩放（zoom-on-scroll 默认 true），Shift 框选（默认值）。 -->
     <VueFlow
       :nodes="flowNodes"
       :edges="flowEdges"
@@ -282,8 +286,7 @@ defineExpose({ fitView })
       :max-zoom="2.5"
       :fit-view-on-init="true"
       :default-viewport="{ x: 0, y: 0, zoom: 0.85 }"
-      :pan-on-scroll="true"
-      :pan-on-drag="[1, 2]"
+      :pan-on-drag="true"
       :zoom-on-double-click="false"
       :prevent-scrolling="true"
       class="flow"

@@ -193,15 +193,13 @@ function selectManual(event) {
   event.target.select()
 }
 
-function goTo(key) {
-  const node = store.visible.nodes.find(
-    (n) => String(n.data?.key) === String(key) || String(n.id) === String(key))
-  if (!node) {
-    store.pushLog(`画布上找不到 ${key}（可能受载入上限或筛选影响）`, 'activity', 'warn')
-    return
-  }
-  store.setFilter({ focusId: null })
-  store.selectEntity(node.data.entityId ?? node.id)
+/**
+ * 关系跳转（0.20.0 修"坏链"）。旧版只在**已载入的窗口**里找 key，找不到就
+ * 一句"画布上找不到"了事 —— 内容多的库（limit=500）里关系对面几乎总在窗外。
+ * 现在走 `store.ensureVisible`：按 `other_id` 拉邻居合入再选中，详情永远打开。
+ */
+function goTo(rel) {
+  store.ensureVisible(rel.other_id)
 }
 </script>
 
@@ -312,12 +310,12 @@ function goTo(key) {
           <li v-for="rel in outRelations" :key="'o' + rel.id">
             <span class="arrow ok">→</span>
             <span class="mono verb">{{ rel.rel }}</span>
-            <a class="mono other" @click="goTo(rel.other_key)">{{ rel.other_key }}</a>
+            <a class="mono other" @click="goTo(rel)">{{ rel.other_key }}</a>
           </li>
           <li v-for="rel in inRelations" :key="'i' + rel.id">
             <span class="arrow dim">←</span>
             <span class="mono verb">{{ rel.rel }}</span>
-            <a class="mono other" @click="goTo(rel.other_key)">{{ rel.other_key }}</a>
+            <a class="mono other" @click="goTo(rel)">{{ rel.other_key }}</a>
           </li>
           <li v-if="!detail.relations.length" class="dim">（无）</li>
         </ul>

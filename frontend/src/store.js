@@ -307,6 +307,7 @@ export const store = reactive({
   selectProject,
   createProject,
   selectEntity,
+  ensureVisible,
   moveEntity,
   moveAggregate,
   toggleCollapse,
@@ -520,6 +521,60 @@ export async function selectEntity(id) {
     return null
   } finally {
     _selectedLoading.value = false
+  }
+}
+
+/**
+ * 关系跳转的兜底（0.20.0 修"坏链"）：目标不在载入窗口（`limit=500`）时，
+ * 拉它的邻居 `GET /graph/{id}/neighbors?depth=1`，**按 id 去重合并**进 `_raw`，
+ * 然后照常选中 —— 详情面板点一条关系不再以"画布上找不到"告终。
+ *
+ * 合并函数刻意叫 `_mergeGraphFragment` 而不是别的什么：READONLY 红线扫
+ * `frontend/src/**`，`addNode` / `setNodes` 这些名字一出现整轮验证变红。
+ * 这里合并的是**服务端返回的既有事实**（邻居读），不是"往图里造东西"。
+ *
+ * 合入后仍可能不被渲染（kind 不在当前筛选里、或进了聚合卡）—— 那时详情
+ * 照样打开，并在日志里说清楚"详情已打开，但它不在当前画布窗口"。
+ */
+function _mergeGraphFragment(data) {
+  const seenNodes = new Set(_raw.nodes.map((n) => String(n.id)))
+  for (const node of (data.nodes || [])) {
+    if (seenNodes.has(String(node.id))) continue
+    seenNodes.add(String(node.id))
+    _raw.nodes.push(node)
+  }
+  const seenEdges = new Set(_raw.edges.map((e) => String(e.id)))
+  for (const edge of (data.edges || [])) {
+    if (seenEdges.has(String(edge.id))) continue
+    seenEdges.add(String(edge.id))
+    _raw.edges.push(edge)
+  }
+  // 布局**只补空缺**：邻居 payload 里的坐标不覆盖本地已有的（拖过的位置是
+  // 人刚决定的，比服务端那份新）。
+  for (const [key, pos] of Object.entries(data.layout || {})) {
+    if (!_raw.layout[key]) _raw.layout[key] = pos
+  }
+}
+
+export async function ensureVisible(id) {
+  const loaded = _raw.nodes.some((n) => String(n.id) === String(id))
+  if (!loaded) {
+    try {
+      const query = await _projectQuery()
+      const data = await get(`/graph/${id}/neighbors?depth=1`
+                             + `${query ? `&${query}` : ''}`)
+      _mergeGraphFragment(data)
+    } catch (err) {
+      pushLog(`拉取实体 ${id} 的邻居失败：${err.message}`, 'activity', 'warn')
+    }
+  }
+  _filter.focusId = null          // 邻域高亮与"跳过去"是两层语义，别叠
+  await selectEntity(id)
+  const rendered = _visible.value.nodes.some(
+    (n) => String(n.data?.entityId ?? '') === String(id))
+  if (!rendered) {
+    pushLog('详情已打开 —— 该实体不在当前画布窗口（被筛选挡住或进了聚合卡）',
+            'activity', 'warn')
   }
 }
 
