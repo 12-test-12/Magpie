@@ -249,6 +249,10 @@ def test_the_declaration_is_narrow(db, project, tmp_path):
         ("observation_field", "location"),
         # 4.3 的离线指纹：同一 service 上多条规则各自命中 → 各自的证据 JSON。
         ("observation_field", "fingerprint"),
+        # 0.20.0（014）：endpoint 身份跨 scheme 折叠 → http/https 与 80/443
+        # 成对出现，是逐次遭遇的证据（真库 125 条假冲突的根因）。
+        ("observation_field", "scheme"),
+        ("observation_field", "port"),
     }, sorted(declared)
     # 声明表里每一行都必须带理由 —— 一条说不出理由的声明不该进得来。
     assert not [r for r in db.execute(
@@ -653,3 +657,180 @@ def test_reconcile_is_idempotent(db, project, tmp_path):
         report = ops.reconcile_conflicts(db, project_id=project)
         assert report == {"opened": 0, "closed": 0}, report
     assert all_conflict_rows(db, project) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# 0.20.0 C · scheme / port 的多值声明（014）+ 批量评分等价 + 存量修复
+# ---------------------------------------------------------------------------
+
+
+def _seed_endpoint_with_two_schemes(conn, project: int) -> int:
+    """同折一个 endpoint 上的 http/https 双探 —— 014 的形状（ops 原语，同 010 种子）。
+
+    endpoint 的 key 不带 scheme（006 的折叠规则），所以 http 与 https 的两次
+    遭遇都落在 `app.example.com/` 上：scheme 两个值、port 两个值，各自成对。
+    """
+    job = ops.start_job(conn, project_id=project, kind="ingest", coverage="partial")
+    raw = ops.add_raw_file(conn, project_id=project, locator_uri="file:///scheme.txt",
+                           content="http + https\n")
+    evidence = ops.add_evidence(conn, project_id=project, raw_file_id=raw,
+                                locator={"line": 1}, snippet="http + https")
+    key = "app.example.com/"
+    for source_name, scheme, port in (("httpx", "http", "80"),
+                                      ("urlscan", "https", "443")):
+        source = store.register_source(conn, name=source_name, actor="test")
+        ops.add_entity_field(conn, project_id=project, job_id=job, evidence_id=evidence,
+                             source_id=source, entity_key=key, kind="endpoint",
+                             semantic_field="display_name", value=key)
+        ops.add_observation(conn, project_id=project, job_id=job, evidence_id=evidence,
+                            source_id=source, entity_key=key, kind="endpoint",
+                            semantic_field="scheme", value=scheme)
+        ops.add_observation(conn, project_id=project, job_id=job, evidence_id=evidence,
+                            source_id=source, entity_key=key, kind="endpoint",
+                            semantic_field="port", value=port)
+        # 关系一条（同 010 的种子）：让 relations / entity_keys 也有行可数。
+        ops.add_relation(conn, project_id=project, job_id=job, evidence_id=evidence,
+                         source_id=source, src_key=key,
+                         dst_key="app.example.com:443", rel="served_by", kind="endpoint")
+    ops.refresh_observation_conflicts(conn, project, job_id=job)
+    return int(job)
+
+
+def test_scheme_and_port_on_a_folded_endpoint_are_not_conflicts(db, project):
+    """014 的语义面：http/https 与 80/443 成对 → 视图不冲突、批量评分不撒谎。
+
+    两层断言各挡一种退化:
+      * **视图层**（Inbox）—— 010 就有的那层，014 把声明补上后必须同样静；
+      * **批量评分层**（`observations.confidence`）—— 这才是 0.20.0 C 的新钉子:
+        `FieldScoreBatch` 过去不读声明表，recompute 之后 scheme/port 会被打上
+        `confidence='conflict'`（真库 1442 条假 conflict 的根因）。全量 recompute
+        跑一遍，任何一行 conflict 都是批量版与 `score_field` 分叉的证据。
+    """
+    _seed_endpoint_with_two_schemes(db, project)
+
+    assert open_conflicts(db, project) == []
+    assert query.health_report(db, project)["open_inbox"] == 0
+
+    # 全量重算（批量评分的那条路）—— 种子写完的行还是 is_current=0 的空壳，
+    # recompute 才把它们翻成 current 并落评分；下面两条断言都跑在这个真实状态上。
+    store.recompute(db)
+
+    # 证据一条不少：两个 scheme、两个 port 都在观测里（"不开冲突"≠"不落证据"）。
+    for field, expected in (("scheme", ["http", "https"]), ("port", ["443", "80"])):
+        values = sorted(str(r[0]) for r in db.execute(
+            "SELECT o.value FROM observations o"
+            "  JOIN entities e ON e.id = o.entity_id"
+            "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
+            " WHERE o.project_id=? AND o.is_current=1 AND ek.entity_key=?"
+            "   AND o.semantic_field=?", (project, "app.example.com/", field)))
+        assert values == expected, (field, values)
+
+    # recompute 之后，没有任何一行声明字段带 conflict。
+    stale = db.execute(
+        "SELECT COUNT(*) FROM observations WHERE is_current=1"
+        "  AND confidence='conflict'"
+        "  AND semantic_field IN ('scheme','port','path')").fetchone()[0]
+    assert stale == 0, f"批量评分与 score_field 分叉了：{stale} 行假 conflict"
+
+
+def test_repair_declared_conflicts_heals_stale_rows_and_is_idempotent(db, project):
+    """存量修复（`store.repair_declared_conflicts`）: 修干净、报真数、跑两次=跑一次。
+
+    假 conflict 的行由**直接 UPDATE 注入**（模拟批量分叉期写下的存量）—— 不走
+    管线是刻意的: 这个函数验的就是"库里已经躺着的脏值"，而修好之后的管线再也
+    产不出那种行，没有夹具能自然造出来。
+    """
+    _seed_endpoint_with_two_schemes(db, project)
+    store.recompute(db)
+    db.execute(
+        "UPDATE observations SET confidence='conflict'"
+        "  WHERE is_current=1 AND semantic_field IN ('scheme','port')")
+    injected = db.execute(
+        "SELECT COUNT(*) FROM observations WHERE is_current=1"
+        "  AND confidence='conflict'").fetchone()[0]
+    assert injected >= 4, f"夹具没把脏值顶起来：{injected}"
+
+    report = store.repair_declared_conflicts(db)
+    assert report == {"repaired": injected, "remaining": 0}, report
+    assert db.execute(
+        "SELECT COUNT(*) FROM observations WHERE confidence='conflict'"
+        "  AND is_current=1").fetchone()[0] == 0
+
+    # 自限/幂等：第二次跑查到 0 条，零写入。
+    assert store.repair_declared_conflicts(db) == {"repaired": 0, "remaining": 0}
+
+
+def _database_at_version_13(tmp_path) -> sqlite3.Connection:
+    """建一个**只应用到 013** 的库 —— 升级路径本身要被测到（010 先例）。"""
+    conn = store.connect(tmp_path / "old13.db")
+    conn.execute("PRAGMA foreign_keys = ON")
+    original = migrate.MIGRATIONS
+    try:
+        migrate.MIGRATIONS = tuple(m for m in original if m.version <= 13)
+        store.init_db(conn)
+    finally:
+        migrate.MIGRATIONS = original
+    assert migrate.current_version(conn) == 13
+    return conn
+
+
+def test_migration_014_declares_scheme_port_and_closes_stale_inbox(tmp_path):
+    """014 升级路径: 声明进了表、老假冲突被收口、事实一行不少（010 同款三件事）。
+
+    * 升级前 `v_field_conflicts` 有 scheme / port（老判据），升级后没有；
+    * 升级**不动事实**（声明表是数据、Inbox 收口只改 state —— 实体 / 观测 /
+      贡献的行数逐张相等）；
+    * 两条开着的 `value_conflict` 被 `reconcile:014` 关掉，`resolved_at` 与
+      `store.now()` 同形（ISO8601 UTC）。
+    """
+    import re
+
+    conn = _database_at_version_13(tmp_path)
+    try:
+        project = ops.create_project(conn, "upgrade-014", {"include": [], "exclude": []})
+        job_id = _seed_endpoint_with_two_schemes(conn, project)
+
+        old = sorted(str(r["semantic_field"]) for r in conn.execute(
+            "SELECT DISTINCT semantic_field FROM v_field_conflicts WHERE project_id=?",
+            (project,)))
+        assert old == ["port", "scheme"], old
+        assert sorted(i["field"] for i in open_conflicts(conn, project)) == [
+            "port", "scheme"], "升级前这两条必须是开着的（收口才有东西可收）"
+        before = {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
+                  for t in ("entities", "observations", "contributions",
+                            "entity_keys", "relations")}
+        assert all(v > 0 for v in before.values()), before
+
+        applied = [a["version"] for a in migrate.migrate(conn)]
+        assert 14 in applied, applied
+        assert applied == list(range(14, max(applied) + 1)), applied
+
+        # 视图换判据（010 的视图查声明表，加行即生效 —— 不重建也必须生效）。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM v_field_conflicts WHERE project_id=?",
+            (project,)).fetchone()[0] == 0
+        # 两条假冲突收口，时间戳同形。
+        rows = [dict(r) for r in conn.execute(
+            "SELECT state, close_reason, resolved_at FROM inbox_items"
+            "  WHERE project_id=? AND kind='value_conflict'", (project,))]
+        assert len(rows) == 2, rows
+        for row in rows:
+            assert row["state"] == "closed", row
+            assert row["close_reason"] == "reconcile:014", row
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                                str(row["resolved_at"])), row["resolved_at"]
+
+        # 事实一行没少。
+        after = {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
+                 for t in before}
+        assert after == before, f"迁移动了事实层：{before} → {after}"
+        assert job_id > 0
+        # 升级后的库里声明真的在（含 why —— 说不出理由的声明不该进得来）。
+        declared = {(str(r[0]), str(r[1])) for r in conn.execute(
+            "SELECT field_namespace, semantic_field FROM multivalue_fields")}
+        assert ("observation_field", "scheme") in declared
+        assert ("observation_field", "port") in declared
+        assert not [r for r in conn.execute(
+            "SELECT 1 FROM multivalue_fields WHERE why IS NULL OR why = ''")]
+    finally:
+        conn.close()

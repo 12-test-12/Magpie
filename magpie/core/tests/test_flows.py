@@ -742,7 +742,12 @@ def test_migration_011_rebuilds_the_inbox_table_without_losing_anything(tmp_path
         before = [tuple(row) for row in conn.execute(
             f"SELECT {', '.join(columns)} FROM inbox_items ORDER BY id")]
 
-        assert [a["version"] for a in migrate.migrate(conn)] == [11, 12, 13]
+        # 同 010 用例那句注释: `[11, 12, 13]` 是写死的快照，每加一个迁移都红一次
+        # 而那种红不指向任何真实缺陷。这里验的还是同一件事: 011 进去了、
+        # 升级是逐个 apply 的（连续且升序，没有跳号倒序）。
+        applied = [a["version"] for a in migrate.migrate(conn)]
+        assert 11 in applied, applied
+        assert applied == list(range(11, max(applied) + 1)), applied
         assert [r["name"] for r in conn.execute(
             "PRAGMA table_info(inbox_items)")] == columns
         after = [tuple(row) for row in conn.execute(

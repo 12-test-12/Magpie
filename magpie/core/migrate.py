@@ -95,6 +95,11 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 这一步**没有**新 kind —— 命中的落点是已登记的 product + runs，理由写在
     # 013 的文件头第二节。同样**新增迁移、不改 001–012**（R4）。
     Migration(13, "kind_fingerprint", SCHEMA_DIR / "013_kind_fingerprint.sql"),
+    # scheme / port 的多值声明（0.20.0 C）：endpoint 身份跨 scheme 折叠，http→https
+    # 与 80/443 双探是逐次遭遇的证据 —— 与 010 的 path 同判。真库里 125 条 open
+    # 的 value_conflict 全落在这个形状上。只加声明行 + 一次性 Inbox 收口，
+    # **视图不重建**（010 的视图每次计算都查声明表，加行即生效）。014 的文件头。
+    Migration(14, "scheme_port_multivalue", SCHEMA_DIR / "014_scheme_port_multivalue.sql"),
 )
 
 

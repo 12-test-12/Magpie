@@ -142,6 +142,12 @@ def create_app(*, db_path: str | Path | None = None,
     async def lifespan(_app: FastAPI):
         ctx.started_at = time.monotonic()
         ctx.writer.start()                 # 建库 / 迁移也在这里完成（写线程的活）
+        # 0.20.0 C: 存量脏置信度的一次性修复 —— 迁移 014 之后，库里可能还躺着
+        # "字段已声明多值、观测仍标 conflict"的行（批量评分分叉期写入的）。
+        # 自限（查到 0 条零写入）+ 走写者队列（写不碰第二条路），不等它完成：
+        # 修复在后台排队，失败也会落进 writer 的 stats/error，不挡住启动。
+        ctx.writer.submit("repair declared conflicts",
+                          store.repair_declared_conflicts)
         try:
             yield
         finally:

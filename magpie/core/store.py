@@ -957,6 +957,40 @@ def recompute(conn: sqlite3.Connection, delta: Sequence[tuple[str, int]] | None 
     return {"subjects": len(subjects)}
 
 
+def repair_declared_conflicts(conn: sqlite3.Connection) -> dict[str, int]:
+    """存量脏置信度的一次性修复（0.20.0 C）：声明过的字段还标着
+    `confidence='conflict'` 的观测，重算干净。
+
+    来龙去脉: 批量评分 `FieldScoreBatch`（recompute 走的那条路）过去不读
+    `multivalue_fields`，单值 `score_field` 走 `v_field_conflicts` 视图却读 ——
+    两条路分叉: 010 收了 Inbox，没收观测行，真库里攒下 1442 条假 conflict。
+    批量评分修好之后**新写入**都对了；存量要等各自的实体下次被触及才重算，
+    所以在 API 启动时（写者队列上）收一次。
+
+    自限与幂等: 查到 0 条直接返回（零写入）—— 修完计数归零，之后每次启动都
+    是一次只读查询，常驻成本趋零。修复走 `recompute` 的 **delta 路径**（与
+    导入时同一条语义），不是 UPDATE 硬改缓存列: 缓存列只能被重算覆写，手改的
+    下一次重算就会被覆盖 —— 那正是"缓存与贡献层分叉"这类查不出来的问题的
+    来源。
+    """
+    count_sql = ("SELECT COUNT(*) FROM observations o"
+                 " JOIN multivalue_fields m"
+                 "   ON m.field_namespace = o.field_namespace"
+                 "  AND m.semantic_field  = o.semantic_field"
+                 " WHERE o.confidence = 'conflict' AND o.is_current = 1")
+    ids = [int(r["id"]) for r in conn.execute(
+        "SELECT DISTINCT o.id FROM observations o"
+        " JOIN multivalue_fields m"
+        "   ON m.field_namespace = o.field_namespace"
+        "  AND m.semantic_field  = o.semantic_field"
+        " WHERE o.confidence = 'conflict' AND o.is_current = 1")]
+    if not ids:
+        return {"repaired": 0, "remaining": 0}
+    recompute(conn, delta=[("observation", i) for i in ids])
+    left = int(conn.execute(count_sql).fetchone()[0])
+    return {"repaired": len(ids), "remaining": left}
+
+
 def vacuum_orphan_cache(conn: sqlite3.Connection) -> dict[str, int]:
     """回收"没有任何贡献、也没有人工作业锚点"的**二级**缓存行。
 

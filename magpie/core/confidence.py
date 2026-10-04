@@ -121,7 +121,9 @@ class FieldScoreBatch:
 
     等价性（必须与 `score_field` 逐值一致，由 INV-04 交错属性测试守护）:
         - 主体仍是 **entity**（`v_field_owner.owner_id`），不是 observation 行；
-        - 冲突域仍是 (owner, namespace, field)，`distinct_values > 1`；
+        - 冲突域仍是 (owner, namespace, field)，`distinct_values > 1`，且
+          **被 `multivalue_fields` 声明的字段整个退出冲突域**（与
+          `v_field_conflicts` 的 `WHERE NOT EXISTS` 同判 —— 0.20.0 C 起）；
         - `quality_term = max(quality_weight over 该值的 evidence)`，
           evidence 缺失时退回 `QUALITY_WEIGHT['low'] * 0.5`；
         - `authority_term = max(authority_level over 该值的 source)`；
@@ -138,7 +140,7 @@ class FieldScoreBatch:
     """
 
     __slots__ = ("_by_value", "_field_values", "_quality", "_authority",
-                 "_manual", "_unknown", "_recent", "_owners")
+                 "_manual", "_unknown", "_recent", "_owners", "_multivalue")
 
     def __init__(self, conn: sqlite3.Connection,
                  owners: "set[int] | None" = None) -> None:
@@ -150,6 +152,17 @@ class FieldScoreBatch:
                         对应的 owner 至多 2K 个。否则每次 delta 都要付 O(N)
                         的全库扫描代价，"增量"就名存实亡。
         """
+        #: 被声明多值的字段（010/014 的 `multivalue_fields`）—— 视图
+        #: `v_field_conflicts` 靠它把声明字段移出冲突域，单值 `score_field`
+        #: 走视图所以天然豁免；批量这条路**必须显式载入同一份声明**，否则
+        #: 两条路分叉 —— recompute 之后 path/scheme/port 的观测会带上假的
+        #: `confidence='conflict'`（真库实测 1442 条，0.20.0 C 修）。
+        #: 放在 owners 早退分支**之前**：空窗口也要有这个属性（__slots__）。
+        self._multivalue = {
+            (str(r["field_namespace"]), str(r["semantic_field"]))
+            for r in conn.execute(
+                "SELECT field_namespace, semantic_field FROM multivalue_fields")
+        }
         if owners is not None:
             self._owners = frozenset(int(o) for o in owners)
             if not owners:
@@ -267,7 +280,10 @@ class FieldScoreBatch:
 
         values = self._field_values.get(key[:3]) or ()
         distinct_values = len(values)
-        has_conflict = distinct_values > 1
+        #: 声明字段退出冲突域 —— 与 `v_field_conflicts` 的 `WHERE NOT EXISTS`
+        #: 同判（单值 `score_field` 就是走那条视图拿的 has_conflict）。
+        declared = (str(field_namespace), str(semantic_field)) in self._multivalue
+        has_conflict = distinct_values > 1 and not declared
 
         # manual 判定需要逐行 authorship —— 用"该值是否含 manual 来源"近似会错，
         # 因此单独保留 manual 标记。
@@ -278,7 +294,10 @@ class FieldScoreBatch:
         authority = self._authority[key]
         distinct_sources = len(set(sources))
 
-        if distinct_values > 1:
+        # agreement 同样要豁免：`_agreement_term` 在声明字段上拿到的
+        # `all_values_for_field` 恒为 1（视图里查无冲突 → conflict_row=None），
+        # 批量版若还按 distinct_values>1 走 0.4，两条路的分值就对不上。
+        if distinct_values > 1 and not declared:
             agreement = 0.4
         elif distinct_sources >= 2:
             agreement = 1.25

@@ -177,6 +177,12 @@ def _mixed_env(conn: sqlite3.Connection, env: Env) -> list[int]:
     env.obs(j, key="host:a", field="server", value="nginx", source_id=1)
     env.obs(j, key="host:a", field="server", value="nginx", source_id=3)  # 两源一致
     env.obs(j, key="host:m", field="tech", value="iis", authorship="manual")
+    # 被声明多值的字段（010 的 path）：两个值**不算**冲突 —— 批量（FieldScoreBatch）
+    # 与单值（score_field 走 v_field_conflicts 视图）两条路必须给出同一个答案。
+    # 这两行是 0.20.0 C 的回归钉子：旧批量版忽略 multivalue_fields，path 会被
+    # 打上 has_conflict=True（真库实测 1442 条假 conflict 的根因）。
+    env.obs(j, key="host:a", field="path", value="/x", source_id=1)
+    env.obs(j, key="host:a", field="path", value="/y", source_id=2)
     for i in range(LOW_LIMIT + 4):
         env.obs(j, key=f"host:s{i}", field="server", value="nginx")
     env.rel(j, src="host:a", dst="host:b")
