@@ -17,6 +17,7 @@
  */
 import { computed, ref } from 'vue'
 import { store } from '../store.js'
+import { fmtInt } from '../format.js'
 import EmptyState from './EmptyState.vue'
 
 const emit = defineEmits(['import'])
@@ -26,7 +27,11 @@ const busy = ref(false)
 const error = ref('')
 
 const hasProjects = computed(() => store.projects.length > 0)
-const hasEntities = computed(() => store.counts.entities > 0)
+//: "库里有没有实体"看的是**项目总数**（`/projects` 的 counts），不是已载入数
+//: （0.20.0）—— kind 筛选推到服务端之后，筛一个库里没有的类型会返回 0 个节点，
+//: 拿已载入数判断会把"筛选没匹配"错报成"项目还没数据"（两个下一步完全不同：
+//: 一个是清除筛选，一个是去导入）。
+const hasEntities = computed(() => store.projectTotal > 0 || store.counts.entities > 0)
 const filtered = computed(() => store.filter.kinds.length > 0 || Boolean(store.filter.keyword))
 
 async function createProject() {
@@ -89,9 +94,13 @@ async function createProject() {
     </template>
 
     <template v-else>
+      <!-- 三个口径并排（0.20.0）：库中共 / 符合当前筛选 / 画布已载入 —— 原来
+           只写"库里有 500 个实体"，500 是载入数（/graph 的 limit），不是库。 -->
       <EmptyState
         title="当前筛选没有匹配的实体"
-        :desc="`库里有 ${store.counts.entities} 个实体，只是被筛掉了。`"
+        :desc="`库中共 ${fmtInt(store.projectTotal)} 个实体；符合当前筛选的 ` +
+               `${fmtInt(store.graphTotal)} 个，画布已加载 ` +
+               `${fmtInt(store.counts.entities)} 个。`"
         tone="clean"
       >
         <button class="ghost" @click="store.clearFilter()">

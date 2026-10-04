@@ -1244,7 +1244,8 @@ NAMED_QUERIES = {
 def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None,
                   kind: str | None, q: str | None, limit: int,
                   seeds: list[int] | None = None,
-                  under_domain: str | None = None) -> dict:
+                  under_domain: str | None = None,
+                  kinds: list[str] | None = None) -> dict:
     """节点 + 边 + 布局。`GET /graph` 与 `GET /graph/{id}/neighbors` 共用它。
 
     `q` 是**内存里**的过滤（在已取回的那一批节点上做子串匹配），不推进 SQL ——
@@ -1255,6 +1256,13 @@ def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None
     之后的节点根本没进内存，在内存里筛等于看不见第 501 个资产。归属推导的
     边界随 `notes` 一起回去 —— **这个键从 0.19.0 起恒在**（空数组 = 没话要说），
     调用方不必"有没有 notes 这个键"两个分支。
+
+    `kinds`（0.20.0，复数）与 `under_domain` 同一条纪律：kind 筛选也推在 SQL
+    里 —— 筛 `secret`（库里 13 个）时它们多半不在前 500 里，本地筛等于"0 个
+    匹配"。`kind`（单数）原样保留，老调用方行为逐字不变；两者同时给就是 AND。
+    `total` 是**同一条 WHERE、不带 LIMIT 的 COUNT**：符合当前筛选的库中总数。
+    它在 `q` 过滤**之前**算 —— `q` 本来就只作用于载入窗口，拿它冒充全库口径
+    就是截图 bug 里"库里有 500 个实体"的翻版。
     """
     where = ["e.project_id=?", "e.is_current=1", "e.merged_into IS NULL"]
     params: list[Any] = [project_id]
@@ -1262,6 +1270,11 @@ def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None
     if kind:
         where.append("e.kind=?")
         params.append(str(kind))
+    if kinds:
+        clean = [str(k).strip() for k in kinds if str(k).strip()]
+        if clean:
+            where.append(f"e.kind IN ({','.join('?' * len(clean))})")
+            params.extend(clean)
     if lens:
         where.append("e.kind IN (SELECT kind FROM kind_registry WHERE lens=?)")
         params.append(str(lens))
@@ -1277,6 +1290,9 @@ def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None
     if seeds is not None:
         where.append(f"e.id IN ({','.join('?' * len(seeds))})")
         params.extend(seeds)
+    total = int(conn.execute(
+        f"SELECT COUNT(*) FROM entities e WHERE {' AND '.join(where)}",
+        params).fetchone()[0])
     rows = conn.execute(
         "SELECT e.id, e.kind, e.lifecycle,"
         " (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
@@ -1308,7 +1324,8 @@ def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None
                           "confidence": row["confidence"],
                           "src_key": keys.get(int(row["src_id"])),
                           "dst_key": keys.get(int(row["dst_id"]))})
-    return {"nodes": nodes, "edges": edges, "layout": layout, "notes": notes}
+    return {"nodes": nodes, "edges": edges, "layout": layout, "notes": notes,
+            "total": total}
 
 
 def neighbour_ids(conn: sqlite3.Connection, project_id: int, entity_id: int,

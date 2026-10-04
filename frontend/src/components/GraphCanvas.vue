@@ -25,6 +25,7 @@ import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import EntityNode from './EntityNode.vue'
 import { AGGREGATE_THRESHOLD, kindColor, relationColor } from '../graph.js'
+import { fmtInt } from '../format.js'
 import { store } from '../store.js'
 
 const props = defineProps({
@@ -230,10 +231,13 @@ defineExpose({ fitView })
       <span v-if="batchNote" class="note">{{ batchNote }}</span>
     </div>
 
+    <!-- 三个口径一起说（0.20.0）：库中总数（符合当前筛选、无 LIMIT）/ 已载入 /
+         聚合后的卡片数。原来只写"500 个节点已聚合"，与左栏的 9,593 对不上 ——
+         500 是载入数，不是库。 -->
     <div v-if="isAggregate" class="aggregate-banner">
-      {{ store.counts.entities }} 个节点已按类型聚合为
-      {{ flowNodes.length }} 个（阈值 {{ AGGREGATE_THRESHOLD }}）——
-      单个类型内部不再逐个显示
+      库中共 {{ fmtInt(store.graphTotal) }} · 已载入 {{ fmtInt(store.counts.entities) }}
+      个节点 → 聚合为 {{ flowNodes.length }} 张卡（阈值 {{ AGGREGATE_THRESHOLD }}）
+      —— 单个类型内部不再逐个显示
     </div>
 
     <!-- 域名视图横幅（0.19.0）。裁剪是**服务端**做的，所以必须有个常驻的出口：
@@ -242,7 +246,7 @@ defineExpose({ fitView })
     <div v-if="store.filter.underDomain" class="domain-banner">
       <span class="label">域名视图</span>
       <span class="key">{{ store.filter.underDomain }}</span>
-      <span class="count">{{ store.counts.entities }} 个实体</span>
+      <span class="count">{{ fmtInt(store.graphTotal) }} 个实体</span>
       <button class="ghost" @click="store.clearDomainFocus()">退出</button>
     </div>
 

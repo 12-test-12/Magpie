@@ -55,7 +55,10 @@ const _lenses = reactive({})
 const _lensKeys = ref([])
 const _openInboxCount = ref(0)
 
-const _raw = reactive({ nodes: [], edges: [], layout: {} })
+//: `total`（0.20.0）= 服务端同筛选条件、不带 LIMIT 的库中总数（`graph_payload`
+//: 的 COUNT）。它和 `nodes.length`（已载入）是**两个口径** —— 截图里"库里有
+//: 500 个实体"就是拿后者冒充前者来的。
+const _raw = reactive({ nodes: [], edges: [], layout: {}, total: 0 })
 //: 聚合卡（`kind:<kind>` 虚拟节点）的**会话级**位置记忆。不入库：`entity_layout`
 //: 的外键指向 `entities(id)`（整数实体），而聚合卡既不是实体、`Number('kind:x')`
 //: 还是 NaN —— 走持久化链路只会送一个 NaN 出去。换来的行为是"刷新回圆环、
@@ -80,11 +83,13 @@ const _selectedDetail = ref(null)
 //: 因为后者的形状是对外契约，3.8 不动它。
 const _selectedMerges = ref([])
 const _selectedLoading = ref(false)
-//: `underDomain`（0.19.0 域名视图）是**服务端**参数：`/graph` 写死
-//: `limit=500`，在前端已取回的 500 个节点上做归属筛选 = 第 501 个资产永远
-//: 看不见。所以它进 URL（`under_domain=`），载图重来；kinds/keyword/focusId
-//: 仍是本地筛选，两层并存互不干涉（进入域名视图时清 focusId 是怕"高亮一片
-//: + 缩小一图"被读成两层筛选）。
+//: `underDomain`（0.19.0 域名视图）与 `kinds`（0.20.0 类型筛选）都是**服务端**
+//: 参数：`/graph` 写死 `limit=500`，在前端已取回的 500 个节点上做筛选 = 第 501
+//: 个资产永远看不见 —— 筛 `secret`（库里 13 个）本地筛得到 0 个，就是截图里
+//: 那个 bug。所以两者都进 URL（`under_domain=` / `kinds=`），载图重来；
+//: kinds **本地那层仍保留**（同一谓词两层并存）：挡住邻居合并进来的异类节点。
+//: keyword/focusId 仍是纯本地筛选（关键词本来就只在载入窗口内搜）。
+//: 进入域名视图时清 focusId 是怕"高亮一片 + 缩小一图"被读成两层筛选。
 const _filter = reactive({ kinds: [], keyword: '', focusId: null, depth: 1,
                            underDomain: null })
 const _logLines = shallowRef([])
@@ -163,6 +168,18 @@ const _counts = computed(() => ({
   rendered: _visible.value.nodes.length,
   aggregated: _visible.value.aggregated,
 }))
+
+//: 三个口径各说各的（0.20.0 口径修复）：
+//:   `graphTotal`  = 符合**当前筛选**的库中总数（服务端 COUNT，无 LIMIT）
+//:   `counts.entities` = 画布**已载入**的节点数（≤500 或筛选后的实到数）
+//:   `projectTotal` = 这个项目**库里**的实体总数（`/projects` 的 counts ——
+//:   与筛选无关，左栏徽标、空状态的"库里有"都用它）
+const _graphTotal = computed(() => _raw.total)
+
+const _projectTotal = computed(() => {
+  const row = _projects.value.find((p) => p.name === _project.value)
+  return row ? Number(row.counts?.entities || 0) : 0
+})
 
 /** 超过阈值就自动进聚合视图（§7.3 防视觉混乱第 ② 条）。 */
 const _aggregate = computed(() => shouldAggregate(_raw.nodes))
@@ -270,6 +287,8 @@ export const store = reactive({
 
   // -- 派生 --
   counts: _counts,
+  graphTotal: _graphTotal,
+  projectTotal: _projectTotal,
   aggregate: _aggregate,
   visible: _visible,
   lensRows: _lensRows,
@@ -415,15 +434,24 @@ export async function loadGraph() {
     const query = await _projectQuery()
     const domain = _filter.underDomain
       ? `&under_domain=${encodeURIComponent(_filter.underDomain)}` : ''
-    const data = await get(`/graph?limit=500${query ? `&${query}` : ''}${domain}`)
+    //: kinds 进 URL（0.20.0）：与 under_domain 同一条纪律 —— 筛 secret 时那 13
+    //: 个多半不在前 500 里，本地筛等于"0 个匹配"（截图 bug 的根因）。
+    const kinds = _filter.kinds.length
+      ? `&kinds=${encodeURIComponent(_filter.kinds.join(','))}` : ''
+    const data = await get(`/graph?limit=500${query ? `&${query}` : ''}${domain}${kinds}`)
     _raw.nodes = data.nodes || []
     _raw.edges = data.edges || []
     _raw.layout = data.layout || {}
+    //: total 缺省时退回"已载入数"—— 老后端没有这个键，退化的口径至少不会凭空
+    //: 多出一个更大的数。
+    _raw.total = Number.isFinite(Number(data.total))
+      ? Number(data.total) : _raw.nodes.length
   } catch (err) {
     _loadError.value = err.message
     _raw.nodes = []
     _raw.edges = []
     _raw.layout = {}
+    _raw.total = 0
   } finally {
     _loading.value = false
   }
@@ -616,21 +644,28 @@ export async function clearDomainFocus() {
   await loadGraph()
 }
 
-export function toggleKind(kind) {
+/**
+ * 类型筛选。**先改本地、再重载**（0.20.0）：本地那层谓词立刻生效（下面
+ * `_visible` 同步重算，测试与交互都不等网络），重载把 kinds 推给服务端 ——
+ * 截图里筛 `secret` 得到 0 个，就是因为只改了本地、而那 13 个不在前 500 里。
+ */
+export async function toggleKind(kind) {
   const set = new Set(_filter.kinds)
   if (set.has(kind)) set.delete(kind)
   else set.add(kind)
   _filter.kinds = [...set]
+  await loadGraph()
 }
 
 export async function clearFilter() {
-  const scoped = _filter.underDomain !== null
+  //: kinds / 域名视图都是服务端筛的 —— 只清本地标志不重载，画布上留着的
+  //: 还是裁剪过的图。
+  const scoped = _filter.underDomain !== null || _filter.kinds.length > 0
   _filter.kinds = []
   _filter.keyword = ''
   _filter.focusId = null
   _filter.depth = 1
   _filter.underDomain = null
-  // 域名视图是服务端筛的 —— 只清本地标志不重载，画布上留着的还是裁剪过的图。
   if (scoped) await loadGraph()
 }
 

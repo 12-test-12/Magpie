@@ -110,6 +110,27 @@ describe('> 200 个节点自动进聚合视图', () => {
     expect(other.position).not.toEqual({ x: 12, y: 34 })
   })
 
+  it('toggleKind 把 kinds 推给服务端，clearFilter 摘掉（0.20.0 口径修复）', async () => {
+    // 截图 bug 的回归钉子：筛 secret（库里 13 个）本地筛得到 0 个，因为稀有
+    // kind 不在 limit=500 的前 500 里 —— 所以 kinds 必须进 URL，载图重来。
+    const calls = []
+    stubFetch(fakeGraph(300), calls)
+    const { store } = await import('../src/store.js')
+    await store.loadGraph()
+
+    await store.toggleKind('domain')
+    expect(store.filter.kinds).toEqual(['domain'])
+    expect(calls.at(-1)).toContain('kinds=domain')
+    // 本地谓词仍在（同一谓词两层并存：挡住邻居合并进来的异类节点）
+    expect(store.visible.nodes).toHaveLength(150)
+
+    await store.clearFilter()
+    expect(store.filter.kinds).toEqual([])
+    expect(calls.at(-1)).not.toContain('kinds=')
+    expect(store.counts.entities).toBe(300)   // 全量回来了
+    expect(store.visible.aggregated).toBe(true)  // 300 > 200 → 重新进聚合
+  })
+
   it('图端点报错时画布拿到空图与一条**说出来**的错误，而不是静默空白', async () => {
     global.fetch = vi.fn(async () => ({
       ok: false, status: 500,

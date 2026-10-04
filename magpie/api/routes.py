@@ -548,18 +548,24 @@ def unmerge_entity(entity_id: int, body: UnmergeBody, request: Request,
 def get_graph(project: str | None = None, lens: str | None = None,
               kind: str | None = None, q: str | None = None,
               under_domain: str | None = None,
+              kinds: str | None = None,
               limit: int = 500,
               depth: int | None = None,
               conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     """注意 `_unsupported({"depth": depth})`：`depth` 在 `/graph` 上**仍然**是
     "传了就 400"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默
-    忽略，调用方就会以为按深度筛过了。`under_domain`（0.19.0）推在 SQL 里 ——
-    `limit=500` 之后的节点没进内存，内存筛等于看不见。"""
+    忽略，调用方就会以为按深度筛过了。`under_domain`（0.19.0）与 `kinds`
+    （0.20.0，逗号分隔）都推在 SQL 里 —— `limit=500` 之后的节点没进内存，
+    内存筛等于看不见。`total` 在 payload 里（同筛选条件、不带 LIMIT 的库中
+    总数），界面拿它说话，别再拿载入数冒充库总数。"""
     _unsupported({"depth": depth})
     project_id = _resolve_project(conn, project)
+    kind_list = ([k.strip() for k in kinds.split(',') if k.strip()]
+                 if kinds else None)
     payload = query.graph_payload(conn, project_id, lens=lens, kind=kind, q=q,
                                   limit=query.page_size(limit),
-                                  under_domain=under_domain)
+                                  under_domain=under_domain,
+                                  kinds=kind_list)
     payload["project_id"] = project_id
     return ok(payload, counts={"nodes": len(payload["nodes"]),
                                "edges": len(payload["edges"])})

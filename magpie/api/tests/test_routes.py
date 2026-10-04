@@ -258,6 +258,31 @@ def test_graph_notes_always_present(loaded):
     assert data["notes"] == []
 
 
+def test_graph_kinds_filters_in_sql_and_carries_total(loaded):
+    """0.20.0：kind 筛选推在 SQL 里，负载恒带 `total`（同筛选、不带 LIMIT）。
+
+    截图 bug 的根因：稀有 kind（secret，库里 13 个）多半不在前 500 里，本地筛
+    等于"0 个匹配"；空状态还拿载入数（=limit）冒充库总数。`total` 与
+    `nodes.length` 是**两个口径**，界面上不许再混。
+    """
+    full = loaded.get("/api/v1/graph?limit=500", headers=HEADERS).json()["data"]
+    assert isinstance(full["total"], int) and full["total"] >= len(full["nodes"])
+
+    single = loaded.get("/api/v1/graph?limit=500&kind=domain",
+                        headers=HEADERS).json()["data"]
+    assert single["nodes"] and {n["kind"] for n in single["nodes"]} == {"domain"}
+
+    multi = loaded.get("/api/v1/graph?limit=500&kinds=domain,ip",
+                       headers=HEADERS).json()["data"]
+    assert multi["nodes"], "夹具里 domain 与 ip 都该有"
+    assert {n["kind"] for n in multi["nodes"]} <= {"domain", "ip"}
+
+    # 库里没有的 kind：节点 0 个，total 也是 0（不是"加载数冒充库总数"）
+    none = loaded.get("/api/v1/graph?limit=500&kinds=nonexistent",
+                      headers=HEADERS).json()["data"]
+    assert none["nodes"] == [] and none["total"] == 0
+
+
 def test_entities_under_domain_missing_says_missing(loaded):
     """格式合法但实体不在库里 → 空 + **为什么空**（product 先例），200 不是 404。"""
     response = loaded.get("/api/v1/entities?under_domain=ghost.example.com",
