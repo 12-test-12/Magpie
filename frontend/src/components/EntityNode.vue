@@ -12,9 +12,14 @@
  * 入口，而探索模式里不存在这件事。不渲染它，连误操作的入口都没有。
  *
  * 卡片上唯一的按钮是**折叠**（3.8）。它是"改显示"而不是"改数据"：折叠过的
- * 卡片淡下去、连着它的线也淡下去（把噪音收起来），一个事实都不动。它 `emit`
- * 一个事件而不是直接调 store —— 卡片不需要知道 store 长什么样，而那个事件由
- * `GraphCanvas` 转发给 `store.toggleCollapse`（顺带把坐标带上，见那边的注释）。
+ * 卡片淡下去、连着它的线也淡下去（把噪音收起来），一个事实都不动。它从卡片根
+ * 元素**冒泡一个 DOM 事件**而不是直接调 store —— 卡片不需要知道 store 长什么
+ * 样，而那个事件由 `GraphCanvas` 程序化收下交给 `store.toggleCollapse`（顺带把
+ * 坐标带上，见那边的注释）。
+ *
+ * 为什么不用 Vue 的 `emit`：Vue Flow 渲染自定义节点时只传固定的上下文 props，
+ * **不透传组件上的监听器** —— `emit('toggle-collapse')` 发出去无人接收，按钮
+ * 就是个摆设（这个 bug 存在了很久，因为开发环境数据少、很少点它）。
  */
 import { computed } from 'vue'
 import { NODE_HEIGHT, NODE_WIDTH, kindColor } from '../graph.js'
@@ -24,7 +29,13 @@ const props = defineProps({
   selected: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['toggle-collapse'])
+/** 折叠：从卡片根元素发一个冒泡的 CustomEvent，GraphCanvas 用 addEventListener 收。 */
+function onFoldClick(event) {
+  const root = event.currentTarget && event.currentTarget.closest
+    ? event.currentTarget.closest('.card') : null
+  if (!root) return
+  root.dispatchEvent(new CustomEvent('toggle-collapse', { bubbles: true }))
+}
 
 const color = computed(() => kindColor(props.data.kind))
 
@@ -56,7 +67,7 @@ const subtitle = computed(() => {
         <span class="key mono">{{ data.key || ('#' + data.entityId) }}</span>
         <button v-if="!data.aggregated" class="fold"
                 :title="data.collapsed ? '展开' : '折叠（只是把它画轻一点）'"
-                @click.stop="emit('toggle-collapse')">
+                @click.stop="onFoldClick($event)">
           {{ data.collapsed ? '▸' : '▾' }}
         </button>
       </div>

@@ -172,7 +172,7 @@ describe('批量选中与批量改状态', () => {
 })
 
 describe('卡片上的折叠按钮', () => {
-  it('点了会 emit，且**不冒泡**（折叠不该顺手改选中）', async () => {
+  it('点了会发 toggle-collapse，且 click 本身**不冒泡**（折叠不该顺手改选中）', async () => {
     const wrapper = mount(EntityNode, {
       props: { data: { entityId: 1, kind: 'domain', key: 'a.example.com',
                        degree: 2, lifecycle: 'active', collapsed: false },
@@ -180,8 +180,16 @@ describe('卡片上的折叠按钮', () => {
     })
     const button = wrapper.find('.fold')
     expect(button.exists()).toBe(true)
+    // 折叠事件是卡片根元素上**冒泡的 DOM 事件**（Vue Flow 不透传 emit，见
+    // fold.test.js 的文件头），画布用程序化 addEventListener 收。
+    const folds = []
+    wrapper.element.addEventListener('toggle-collapse', (e) => folds.push(e))
+    // click 本身被 `.stop` 挡在卡片内 —— 折叠不该顺手触发节点选中
+    const clicks = []
+    wrapper.element.addEventListener('click', (e) => clicks.push(e))
     await button.trigger('click')
-    expect(wrapper.emitted('toggle-collapse')).toHaveLength(1)
+    expect(folds).toHaveLength(1)
+    expect(clicks).toHaveLength(0)
     // 折叠态在 DOM 上是**可断言的属性**，不只是两段 CSS
     expect(wrapper.attributes('data-collapsed')).toBe('0')
     wrapper.unmount()

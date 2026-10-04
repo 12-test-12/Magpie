@@ -89,6 +89,27 @@ describe('> 200 个节点自动进聚合视图', () => {
     expect(store.visible.nodes[0].data).toBeTypeOf('object')
   })
 
+  it('拖过聚合卡后，筛选来回来去它都留在原地', async () => {
+    stubFetch(fakeGraph(300), [])
+    const { store } = await import('../src/store.js')
+    await store.loadGraph()
+    expect(store.visible.aggregated).toBe(true)
+
+    store.moveAggregate('kind:domain', { x: 12, y: 34 })
+    // 触发两次 _visible 重算：先掉出聚合（只剩 150 个 domain），再回到聚合。
+    // 旧版每次重算都从零摆圆环，一松手卡片就弹回去。
+    store.toggleKind('domain')
+    expect(store.visible.aggregated).toBe(false)
+    store.toggleKind('domain')
+    expect(store.visible.aggregated).toBe(true)
+
+    const card = store.visible.nodes.find((n) => n.id === 'kind:domain')
+    expect(card.position).toEqual({ x: 12, y: 34 })
+    // 没拖过的那张仍然在圆环上（不是都被搬走）
+    const other = store.visible.nodes.find((n) => n.id !== 'kind:domain')
+    expect(other.position).not.toEqual({ x: 12, y: 34 })
+  })
+
   it('图端点报错时画布拿到空图与一条**说出来**的错误，而不是静默空白', async () => {
     global.fetch = vi.fn(async () => ({
       ok: false, status: 500,

@@ -35,6 +35,9 @@ const emit = defineEmits(['select'])
 
 const { fitView, onNodeDragStop, onEdgeClick } = useVueFlow()
 
+//: 模板根元素的 ref —— 折叠事件的程序化监听挂在这里（见 onFoldEvent）。
+const host = ref(null)
+
 const flowNodes = computed(() => store.visible.nodes)
 
 /** 折叠节点的 id 集合。折叠是**渲染层**的事（计划书 §7.3 的"把噪音收起来"），
@@ -85,13 +88,18 @@ async function batchLifecycle(lifecycle) {
 
 onMounted(() => {
   onNodeDragStop(({ node }) => {
-    if (node.id.startsWith('kind:')) return          // 聚合节点没有位置可存
+    if (node.id.startsWith('kind:')) {
+      // 聚合卡：只进会话记忆（进不了 entity_layout，见 store.moveAggregate）
+      store.moveAggregate(node.id, node.position)
+      return
+    }
     store.persistLayout(node.id, node.position)
   })
   onEdgeClick(({ edge }) => {
     store.pushLog(`关系 #${edge.id}：${edge.data.srcKey} --${edge.data.rel}--> ` +
       `${edge.data.dstKey}（置信度 ${edge.data.confidence}）`, 'activity')
   })
+  host.value?.addEventListener('toggle-collapse', onFoldEvent)
   window.addEventListener('keydown', onKey)
 })
 
@@ -101,15 +109,29 @@ onMounted(() => {
  * **带上坐标**：折叠是"改这一列"，不是"建一条记录" —— 后端拒绝"对一条不存在的
  * 行只写 collapsed"，因为那条记录会带着 (0,0) 出生，节点下次打开就跳到左上角。
  *
- * 事件经 Vue Flow 的**自定义节点事件转发**上来（自定义节点组件 `emit` 的名字，
- * 在 `<VueFlow>` 上用 `@toggle-collapse` 收）。这样卡片不必知道 store 长什么样。
+ * 事件是 `EntityNode` 从卡片根元素 `dispatchEvent` 出来的**冒泡 DOM 事件**，
+ * 这里用程序化 `addEventListener` 收 —— 而不是 `<VueFlow @toggle-collapse>`：
+ * Vue Flow 渲染自定义节点时只传固定的上下文 props，不透传组件上的监听器，
+ * 模板绑定收到的永远是空（这正是这个按钮曾经"点了没反应"的原因）。带连字符的
+ * 事件名走模板绑定还有 Vue 编译歧义，程序化注册没有这层问题。
+ *
+ * 坐标取自 `store.visible` —— 它永远等于"屏幕上正在渲染的位置"（拖完已经由
+ * `moveEntity` 同步），比事件携带的快照可靠。
  */
-function onToggleCollapse({ node }) {
-  if (!node || String(node.id).startsWith('kind:')) return
-  store.toggleCollapse(node.id, node.position)
+function onFoldEvent(event) {
+  const card = event.target && event.target.closest
+    ? event.target.closest('[data-entity-id]') : null
+  if (!card) return
+  const id = card.getAttribute('data-entity-id')
+  if (id === null || id === '' || id === 'null') return   // 聚合卡没有身份
+  const node = (store.visible.nodes || []).find((n) => String(n.id) === String(id))
+  store.toggleCollapse(id, node ? node.position : undefined)
 }
 
-onUnmounted(() => window.removeEventListener('keydown', onKey))
+onUnmounted(() => {
+  host.value?.removeEventListener('toggle-collapse', onFoldEvent)
+  window.removeEventListener('keydown', onKey)
+})
 
 function onKey(event) {
   const tag = (event.target && event.target.tagName) || ''
@@ -218,7 +240,6 @@ defineExpose({ fitView })
       class="flow"
       @node-click="onNodeClick"
       @node-double-click="onNodeDoubleClick"
-      @toggle-collapse="onToggleCollapse"
     >
       <Background :gap="24" :size="1.2" pattern-color="#1B1B20" bg-color="#0E0E11" />
       <Controls :show-interactive="false" position="bottom-right" />
@@ -278,6 +299,8 @@ defineExpose({ fitView })
   background: var(--overlay);
   color: var(--warn);
   font-size: 11px;
+  /* 纯提示条不拦指针：没有它，画布左上角一条区域的拖拽/点选全被吃掉 */
+  pointer-events: none;
 }
 .overlay {
   position: absolute;

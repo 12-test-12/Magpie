@@ -68,6 +68,18 @@ describe('聚合（防视觉混乱第 ② 条）', () => {
     for (const node of aggregated.nodes) expect(node.id).toMatch(/^kind:/)
   })
 
+  it('拖过的聚合卡留在保存位置，其余仍按圆环', () => {
+    const graph = makeGraph(300)
+    const base = buildAggregate(graph.nodes, graph.edges)
+    const saved = { 'kind:domain': { x: 42, y: 24 } }
+    const kept = buildAggregate(graph.nodes, graph.edges, { saved })
+    const domainCard = kept.nodes.find((n) => n.id === 'kind:domain')
+    const ipCard = kept.nodes.find((n) => n.id === 'kind:ip')
+    expect(domainCard.position).toEqual({ x: 42, y: 24 })
+    // 没拖过的那张不受影响 —— saved 只覆盖命中的卡
+    expect(ipCard.position).toEqual(base.nodes.find((n) => n.id === 'kind:ip').position)
+  })
+
   it('聚合节点与边带齐 Vue Flow 需要的形状（data / position / source / target）', () => {
     // 这条是"聚合视图从没被打开过"那个盲区的补丁：卡片组件读 `data.*`、
     // Vue Flow 读 `position` / `source` / `target`，缺一个就是白屏或控制台报错，
@@ -123,6 +135,41 @@ describe('布局（防视觉混乱第 ① ③ 条）', () => {
       const key = `${x}/${y}`
       expect(seen.has(key)).toBe(false)
       seen.add(key)
+    }
+  })
+
+  /** 矩形相交判定 —— 保存位置不保证与网格对齐，坐标不等 ≠ 不重叠。 */
+  function overlaps(a, b) {
+    return a.x < b.x + NODE_WIDTH && a.x + NODE_WIDTH > b.x
+      && a.y < b.y + NODE_HEIGHT && a.y + NODE_HEIGHT > b.y
+  }
+
+  it('网格避让已保存的位置：混合布局下任意两卡矩形不相交', () => {
+    // 两个保存位置各钉死一片区域：
+    //   '1' 恰好压在第一个网格单元 (60,60) 上 —— 旧版从不避让，后续节点会盖上来；
+    //   '2' 是非网格坐标，且压在单元 (60,220) 上 —— 坐标对不上也必须避让。
+    const nodes = makeGraph(40).nodes
+    const saved = { 1: { x: 60, y: 60 }, 2: { x: 100, y: 250 } }
+    const positions = applyLayout(nodes, saved)
+    expect(positions.get('1')).toEqual({ x: 60, y: 60 })      // 拖过的永不动
+    expect(positions.get('2')).toEqual({ x: 100, y: 250 })
+    // 旧版的"尾部挪一格"在此处也断言不到：拖过的节点不参与网格，网格从第一个
+    // 空闲单元继续铺，任何一对矩形都不许相交。
+    const rects = nodes.map((n) => ({ ...positions.get(String(n.id)) }))
+    for (let i = 0; i < rects.length; i += 1) {
+      for (let j = i + 1; j < rects.length; j += 1) {
+        expect(overlaps(rects[i], rects[j])).toBe(false)
+      }
+    }
+  })
+
+  it('避让不破坏确定性：同一份 saved 两次跑出同一套位置', () => {
+    const nodes = makeGraph(30).nodes
+    const saved = { 1: { x: 60, y: 60 } }
+    const a = applyLayout(nodes, saved)
+    const b = applyLayout([...nodes].reverse(), saved)
+    for (const node of nodes) {
+      expect(b.get(String(node.id))).toEqual(a.get(String(node.id)))
     }
   })
 })

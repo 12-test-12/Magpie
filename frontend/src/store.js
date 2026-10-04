@@ -56,6 +56,11 @@ const _lensKeys = ref([])
 const _openInboxCount = ref(0)
 
 const _raw = reactive({ nodes: [], edges: [], layout: {} })
+//: 聚合卡（`kind:<kind>` 虚拟节点）的**会话级**位置记忆。不入库：`entity_layout`
+//: 的外键指向 `entities(id)`（整数实体），而聚合卡既不是实体、`Number('kind:x')`
+//: 还是 NaN —— 走持久化链路只会送一个 NaN 出去。换来的行为是"刷新回圆环、
+//: session 内（筛选/切页/重算）保持"，而刷新后的确定性圆环本身也是一种稳定布局。
+const _aggLayout = reactive({})
 //: 标签词表（`GET /tags`）。**空数组起步**，界面上"一个标签都没有"与
 //: "还没读到"于是是同一种显示 —— 而那正是想要的：本地工具里没有"加载中"的
 //: 那一格，也不该有。
@@ -159,7 +164,7 @@ const _visible = computed(() => {
     focusId: _filter.focusId, depth: _filter.depth,
   })
   if (shouldAggregate(filtered.nodes)) {
-    const grouped = buildAggregate(filtered.nodes, filtered.edges)
+    const grouped = buildAggregate(filtered.nodes, filtered.edges, { saved: _aggLayout })
     return { ...grouped, aggregated: true, entityCount: filtered.nodes.length }
   }
   const flow = toFlow({ nodes: filtered.nodes, edges: filtered.edges,
@@ -255,6 +260,7 @@ export const store = reactive({
   createProject,
   selectEntity,
   moveEntity,
+  moveAggregate,
   toggleCollapse,
   persistLayout,
   setFilter,
@@ -420,6 +426,9 @@ export async function selectProject(name) {
   _pipeline.runs = []
   _pipeline.activeRunId = null
   _pipeline.error = ''
+  // 聚合卡位置是**项目内**的会话记忆：带去别的项目，就是把 A 项目的排版
+  // 盖在 B 项目的卡上（kind 相同就能撞键）。
+  for (const key of Object.keys(_aggLayout)) delete _aggLayout[key]
   await reload()
 }
 
@@ -458,6 +467,16 @@ export function moveEntity(id, position) {
   _raw.layout[String(id)] = Object.assign({}, _raw.layout[String(id)], {
     x: position.x, y: position.y,
   })
+}
+
+/**
+ * 拖**聚合卡**（`kind:` 虚拟节点）。只写会话记忆 `_aggLayout`，不落库 ——
+ * 聚合卡进不了 `entity_layout`（见 `_aggLayout` 处的注释），走 `persistLayout`
+ * 会把 `Number('kind:domain')` = NaN 送进 PATCH。
+ */
+export function moveAggregate(id, position) {
+  if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.y)) return
+  _aggLayout[String(id)] = { x: position.x, y: position.y }
 }
 
 /** 折叠。同上：它影响**怎么显示**，不影响**有什么**。 */

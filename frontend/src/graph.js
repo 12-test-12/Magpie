@@ -80,8 +80,13 @@ export function shouldAggregate(nodes) {
  *
  * 返回的节点 id 带 `kind:` 前缀：它与实体 id（数字）不可能撞号，于是
  * "聚合节点"在整条链路里都能被一眼认出来，不需要额外维护一张映射表。
+ *
+ * `saved`（可选）是**用户拖过的聚合卡位置**（键 `kind:<kind>`）：命中的卡用
+ * 保存坐标，其余仍走圆环。聚合卡不是实体、进不了 `entity_layout`，所以这份
+ * 位置只活在 store 的会话记忆里（`store.moveAggregate`）—— 但只要它参与这次
+ * 计算，任何筛选/重算就不会把拖过的卡打回圆环。
  */
-export function buildAggregate(nodes, edges) {
+export function buildAggregate(nodes, edges, { saved } = {}) {
   const groups = new Map()
   for (const node of nodes || []) {
     const kind = String(node.kind || 'unknown')
@@ -111,6 +116,14 @@ export function buildAggregate(nodes, edges) {
   const aggregateNodes = ring.map((kind, index) => {
     const angle = (index / Math.max(ring.length, 1)) * Math.PI * 2 - Math.PI / 2
     const count = groups.get(kind).length
+    const kept = saved && saved[`kind:${kind}`]
+    const home = {
+      x: center.x + radius * Math.cos(angle) - NODE_WIDTH / 2,
+      y: center.y + radius * Math.sin(angle) - NODE_HEIGHT / 2,
+    }
+    const position = (kept && Number.isFinite(kept.x) && Number.isFinite(kept.y))
+      ? { x: kept.x, y: kept.y }               // 拖过的卡：整 session 都留在原地
+      : home
     return {
       id: `kind:${kind}`,
       type: 'entity',
@@ -128,10 +141,7 @@ export function buildAggregate(nodes, edges) {
         degree: 0,
         collapsed: false,
       },
-      position: {
-        x: center.x + radius * Math.cos(angle) - NODE_WIDTH / 2,
-        y: center.y + radius * Math.sin(angle) - NODE_HEIGHT / 2,
-      },
+      position,
     }
   })
 
@@ -157,9 +167,20 @@ export function buildAggregate(nodes, edges) {
  * 给节点安排位置。**已经持久化过位置的节点永不被移动**（§7.3 交互的最后一条：
  * "之后永不动用户拖过的节点"）。
  *
- * 没位置的节点按 kind 分环摆放：同一类型的邻居聚在一起，比按 id 平铺更容易读。
- * 这一步是 O(n)，1000 个节点量级下不值一提 —— 但它必须**确定性**（同样的输入
- * 出同样的位置），否则每次打开都换一个样子，那就等于没有布局。
+ * 没位置的节点按 (kind, id) 顺序铺网格。这一步必须**确定性**（同样的输入出
+ * 同样的位置），否则每次打开都换一个样子，那就等于没有布局。
+ *
+ * 两遍式，第二遍要**避让**第一遍的已保存位置：
+ *
+ *   1. 第一遍：有保存位置的节点原位不动，其矩形（NODE_WIDTH×NODE_HEIGHT）收进
+ *      `occupied` —— 保存位置不保证与网格对齐，所以避让用的是**矩形相交**判定，
+ *      不是坐标相等。
+ *   2. 第二遍：未保存节点按序扫网格单元（游标只前进），跳过与任何 occupied
+ *      相交的单元。
+ *
+ * 旧版的两个确定性缺陷都出在缺这一步上：网格永远从 (60,60) 铺起不避让任何人，
+ * 且计数器只数未保存节点 —— 于是"拖一个，后面的全体挪一格"，新位置正好压在
+ * 手摆的节点上（用户报告的"自动补齐导致覆盖"）。
  */
 export function applyLayout(nodes, layout) {
   const saved = layout || {}
@@ -172,19 +193,37 @@ export function applyLayout(nodes, layout) {
     return String(a.id).localeCompare(String(b.id), 'en', { numeric: true })
   })
   const positions = new Map()
-  const columns = 5
-  let placed = 0
+  const occupied = []
+  const pending = []
   for (const node of sorted) {
     const stored = saved[String(node.id)]
     if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y)) {
-      positions.set(String(node.id), { x: stored.x, y: stored.y })
-      continue                                   // 拖过的节点**永不被移动**
+      positions.set(String(node.id), { x: stored.x, y: stored.y })  // 拖过的**永不被移动**
+      occupied.push({ x: stored.x, y: stored.y, w: NODE_WIDTH, h: NODE_HEIGHT })
+    } else {
+      pending.push(node)
     }
-    positions.set(String(node.id), {
-      x: 60 + (placed % columns) * (NODE_WIDTH + 96),
-      y: 60 + Math.floor(placed / columns) * (NODE_HEIGHT + 96),
-    })
-    placed += 1
+  }
+
+  const columns = 5
+  const cellWidth = NODE_WIDTH + 96
+  const cellHeight = NODE_HEIGHT + 96
+  let cell = 0
+  for (const node of pending) {
+    let spot
+    for (;;) {
+      spot = {
+        x: 60 + (cell % columns) * cellWidth,
+        y: 60 + Math.floor(cell / columns) * cellHeight,
+      }
+      cell += 1
+      const blocked = occupied.some((rect) => (
+        spot.x < rect.x + rect.w && spot.x + NODE_WIDTH > rect.x
+        && spot.y < rect.y + rect.h && spot.y + NODE_HEIGHT > rect.y))
+      if (!blocked) break                          // 游标只前进：布局保持确定性
+    }
+    positions.set(String(node.id), spot)
+    occupied.push({ x: spot.x, y: spot.y, w: NODE_WIDTH, h: NODE_HEIGHT })
   }
   return positions
 }
