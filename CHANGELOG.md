@@ -12,6 +12,43 @@
 
 ---
 
+## 0.19.0 — 域名视图：`under_domain=` 归属推导 + `with_domain=` 分组注解
+
+**视图层隔离的服务端那半**：每个域名只看自己名下的资产，不拆项目、不加
+schema 字段。归属是**推导的**（域名后缀 + `resolves_to` 反查 + `found_on`
+并入；`product` 不归域 —— 跨域共享，归一是撒谎），所以结果一律带 `notes`
+说清"怎么推的"。openapi 快照重新生成（`info.version` 0.18.0 → 0.19.0）。
+没有新增迁移（R4 未动）。
+
+### 对外契约（按本节开头的规矩登记）
+
+* **`GET /api/v1/graph` 与 `GET /api/v1/entities` 各加查询参数
+  `under_domain=`**（合法域名）。推在 SQL 里 —— `/graph` 的 `limit=500`
+  之后的节点没进内存，在已取回的那批上做归属筛选等于永远看不见第 501 个
+  资产。命中时 `/entities` 的 `query` 为新具名查询 `assets_under_domain`
+  （`meta.query` / `--json` 同名），`/graph` 与 `/entities` 的 `meta.notes`
+  会带上推导边界。
+* **`GET /api/v1/entities` 加查询参数 `with_domain=1`**（呈现参数）：给每行
+  补一个 `domain` 键（归到哪个域名，最具体优先、域名行归自己；没有归属是
+  `null`）。**不筛选、不进 `ENTITY_FILTERS`** —— 它与 `under_domain=` 共用
+  同一组推导原语（`query._key_host` + `query._suffix_domains`），分组看到的
+  与筛出来的是同一套判定。参数不出现时行上**没有** `domain` 键。
+* **`ENTITY_FILTERS` 加 `under_domain`** —— 涟漪：`magpie schema --json` 的
+  `named_queries[].filters` 随之变化（`with_domain` 刻意不在其中）。同表
+  `NAMED_QUERIES` 加 `assets_under_domain` 一条。
+* **新错误码 `E_NOT_A_DOMAIN`**：目标不是合法域名、或 key 被非 domain 实体
+  占用（IP / host …）。API 侧 **400**（`_QUERY_STATUS`），CLI 侧
+  **`EXIT_USAGE`**（`cli/read.py` 的 `QUERY_EXIT`）。与"格式对但实体不在
+  库里"（200 + 空列表 + `notes` 说"还没被写进来"，product 先例）刻意分开：
+  问法错要响亮，查无此人要诚实。
+* **`GET /api/v1/graph` 负载恒有 `notes` 键**（空数组 = 没话要说）—— 调用方
+  不必再写"有没有 notes"两个分支。
+* **`GET /api/v1/entities` 的 `meta.filters` 在传了 `under_domain=` 时多一个
+  `under_domain` 键**（规范化后的域名，`EXAMPLE.com` → `example.com`）。
+  既有四键（kind/q/tag/lifecycle）形状不动，只在参数出现时加键。
+
+---
+
 ## 0.18.0 — 多文件导入报告可见：`GET /jobs` 行加 `source_files`
 
 **既有响应加键**（照 0.6.0 的先例登记），既有键一字未删（openapi 快照重新

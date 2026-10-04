@@ -65,6 +65,10 @@ const _aggLayout = reactive({})
 //: "还没读到"于是是同一种显示 —— 而那正是想要的：本地工具里没有"加载中"的
 //: 那一格，也不该有。
 const _tags = ref([])
+//: 镜头页域名下拉的选项（0.19.0）。**按项目缓存**：读时比对 `project`，对
+//: 不上就重取（换项目 = 换了一个库的事实）。取失败缓存空列表而不是每次重试
+//: —— 下拉少几个选项是降级，每翻一页镜头打一次失败请求是拖累。
+const _domains = ref({ project: undefined, rows: [] })
 //: 批量选中的实体 id。批量改状态的操作对象就是它。
 const _selection = ref([])
 const _loading = ref(false)
@@ -76,7 +80,13 @@ const _selectedDetail = ref(null)
 //: 因为后者的形状是对外契约，3.8 不动它。
 const _selectedMerges = ref([])
 const _selectedLoading = ref(false)
-const _filter = reactive({ kinds: [], keyword: '', focusId: null, depth: 1 })
+//: `underDomain`（0.19.0 域名视图）是**服务端**参数：`/graph` 写死
+//: `limit=500`，在前端已取回的 500 个节点上做归属筛选 = 第 501 个资产永远
+//: 看不见。所以它进 URL（`under_domain=`），载图重来；kinds/keyword/focusId
+//: 仍是本地筛选，两层并存互不干涉（进入域名视图时清 focusId 是怕"高亮一片
+//: + 缩小一图"被读成两层筛选）。
+const _filter = reactive({ kinds: [], keyword: '', focusId: null, depth: 1,
+                           underDomain: null })
 const _logLines = shallowRef([])
 const _view = ref('explore')
 const _paletteOpen = ref(false)
@@ -251,6 +261,7 @@ export const store = reactive({
   importReport: _importReport,
   pipeline: _pipeline,
   tags: _tags,
+  domains: _domains,
   selection: _selection,
 
   // -- 派生 --
@@ -280,9 +291,12 @@ export const store = reactive({
   setFilter,
   toggleKind,
   clearFilter,
+  setDomainFocus,
+  clearDomainFocus,
   tagEntity,
   setEntityTags,
   loadTags,
+  loadDomains,
   // 合并 / 拆开 / 批量改状态（3.8，全部落在探索模式）
   loadMerges,
   mergeEntities,
@@ -395,7 +409,9 @@ export async function loadGraph() {
   _loadError.value = ''
   try {
     const query = await _projectQuery()
-    const data = await get(`/graph?limit=500${query ? `&${query}` : ''}`)
+    const domain = _filter.underDomain
+      ? `&under_domain=${encodeURIComponent(_filter.underDomain)}` : ''
+    const data = await get(`/graph?limit=500${query ? `&${query}` : ''}${domain}`)
     _raw.nodes = data.nodes || []
     _raw.edges = data.edges || []
     _raw.layout = data.layout || {}
@@ -444,6 +460,9 @@ export async function selectProject(name) {
   // 聚合卡位置是**项目内**的会话记忆：带去别的项目，就是把 A 项目的排版
   // 盖在 B 项目的卡上（kind 相同就能撞键）。
   for (const key of Object.keys(_aggLayout)) delete _aggLayout[key]
+  // 域名视图同理：A 项目的域名在 B 项目多半查无此人，带着它换项目 = 一张
+  // 永远空着的图 + 一个说不清原因的横幅。
+  _filter.underDomain = null
   await reload()
 }
 
@@ -571,6 +590,26 @@ export function setFilter(next) {
   if (next.keyword !== undefined) _filter.keyword = next.keyword
   if (next.focusId !== undefined) _filter.focusId = next.focusId
   if (next.depth !== undefined) _filter.depth = next.depth
+  if (next.underDomain !== undefined) _filter.underDomain = next.underDomain
+}
+
+/**
+ * 进入域名视图（0.19.0）：置位 + 清邻域高亮 + **重新载图**。
+ *
+ * 重载是必须的 —— 归属推导在服务端（`limit=500` 的道理见 `_filter` 注释），
+ * 只改本地状态的话画布上还是全量图。
+ */
+export async function setDomainFocus(key) {
+  _filter.underDomain = key || null
+  _filter.focusId = null
+  await loadGraph()
+}
+
+/** 退出域名视图：回到全量图（其它筛选原样保留）。 */
+export async function clearDomainFocus() {
+  if (_filter.underDomain === null) return
+  _filter.underDomain = null
+  await loadGraph()
 }
 
 export function toggleKind(kind) {
@@ -580,11 +619,15 @@ export function toggleKind(kind) {
   _filter.kinds = [...set]
 }
 
-export function clearFilter() {
+export async function clearFilter() {
+  const scoped = _filter.underDomain !== null
   _filter.kinds = []
   _filter.keyword = ''
   _filter.focusId = null
   _filter.depth = 1
+  _filter.underDomain = null
+  // 域名视图是服务端筛的 —— 只清本地标志不重载，画布上留着的还是裁剪过的图。
+  if (scoped) await loadGraph()
 }
 
 /** 标注：加一个标签。走 2.7 就有的 `PATCH /entities/{id}`（写值那条路仍然 501）。 */
@@ -624,6 +667,25 @@ export async function loadTags() {
     pushLog(`读取标签词表失败：${err.message}`, 'import', 'warn')
   }
   return _tags.value
+}
+
+/**
+ * 镜头页域名下拉的选项（0.19.0）：**懒加载**，带项目级缓存（见 `_domains`）。
+ * 静默失败 —— 下拉只剩「全部」是降级，整页报错是事故。
+ */
+export async function loadDomains() {
+  if (_domains.value.project !== _project.value) {
+    try {
+      const query = await _projectQuery()
+      const data = await get(
+        `/entities?kind=domain&limit=500${query ? `&${query}` : ''}`)
+      _domains.value = { project: _project.value, rows: data }
+    } catch (err) {
+      pushLog(`读取域名清单失败：${err.message}`, 'import', 'warn')
+      _domains.value = { project: _project.value, rows: [] }
+    }
+  }
+  return _domains.value.rows
 }
 
 // ---------------------------------------------------------------------------

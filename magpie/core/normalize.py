@@ -729,6 +729,35 @@ def _normalize_target_host(raw: str) -> str:
     return normalize_domain(text)
 
 
+def service_host(key: str) -> str:
+    """`host:port` / `host:scheme` → host。**按最后一个冒号切**：`host:scheme`
+    里 scheme 不是数字，同样要切掉。整串再含冒号（裸 IPv6）时不切、原样当 host ——
+    当前产出 service 的解析器（httpx / nuclei）host 都过域名归一化，这个分支
+    是**坏数据的保底**，不是一条被依赖的路径。
+
+    原住 `risk.py`（attack_surface 的分组键），0.19.0 下沉到这里：域名归属
+    推导（`query.under_domain_ids`）要同一把"从 service key 取 host"的尺子，
+    而 risk 已经 import query —— 反向 import 会成环。`risk` 里保留旧名别名。
+    """
+    head, sep, _ = key.rpartition(":")
+    return head if sep and ":" not in head and head else key
+
+
+def endpoint_host(key: str) -> str:
+    """`host[:port]/path` → host。authority 段取第一个 `/` 之前；`[v6]:port`
+    拆出方括号里的部分；其余只在"一个冒号 + 纯数字尾段"时切端口。
+
+    与 `service_host` 同一趟搬家（见那里的 0.19.0 注记）。
+    """
+    authority = key.split("/", 1)[0]
+    if authority.startswith("["):
+        return authority[1:].split("]", 1)[0]
+    head, sep, tail = authority.rpartition(":")
+    if sep and tail.isdigit() and ":" not in head:
+        return head
+    return authority
+
+
 # ---------------------------------------------------------------------------
 # 接口（endpoint）· 3.3 dirsearch / katana / gau / ffuf
 # ---------------------------------------------------------------------------

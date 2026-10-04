@@ -48,6 +48,7 @@
     按 severity/state 筛   kind=vuln severity=high    → vulns
     某个接口归谁           endpoint=<URL 或 key>      → endpoint_owners
     哪些资产落在网段里     in_cidr=10.0.0.0/24        → assets_in_cidr
+    哪些资产在这个域名名下 under_domain=example.com   → assets_under_domain
     镜头里的 kind 计数     （GET /lenses/{lens}）     → lens_view
     通用列表               kind= / q= / tag= …        → entities_page
     体检页的六类           各一组 inbox kind           → health_report
@@ -83,12 +84,15 @@ LENSES = ("graph", "assets", "services", "api", "traffic", "vuln")
 #: `ls` / `GET /entities` 支持的过滤条件。**唯一声明处** —— 报错信息也从它来
 #: （2.2 与 2.7 各有一份同名常量，本步收敛成这一份）。
 #:
-#: 后四个是具名查询的入口（见模块文档的表）：`product` / `endpoint` 走关系
-#: （`runs` / `served_by`），`severity` / `state` 走观测，`in_cidr` 走地址包含。
-#: `review_status` / `in_scope` **仍然不在里面** —— 它们需要"人工状态"与 scope
-#: 求值，传了要响亮地拒绝（见 `reject_unsupported`）。
+#: 后几个是具名查询的入口（见模块文档的表）：`product` / `endpoint` 走关系
+#: （`runs` / `served_by`），`severity` / `state` 走观测，`in_cidr` 走地址包含，
+#: `under_domain`（0.19.0）走域名归属推导。`review_status` / `in_scope`
+#: **仍然不在里面** —— 它们需要"人工状态"与 scope 求值，传了要响亮地拒绝
+#: （见 `reject_unsupported`）。`with_domain` 也不在里面：它是**呈现参数**
+#: （补一个 `domain` 字段给人看），不是筛选 —— 进了筛选清单就等于说"筛过了"。
 ENTITY_FILTERS = ("kind", "lens", "q", "tag", "lifecycle", "product", "endpoint",
-                  "severity", "state", "in_cidr", "cursor", "limit")
+                  "severity", "state", "in_cidr", "under_domain", "cursor",
+                  "limit")
 
 #: 分页：与 2.7 的 `MAX_PAGE` / `DEFAULT_PAGE` 同值。上限只有一处定义，
 #: 两侧各写一个就是两个真相。
@@ -609,6 +613,7 @@ def entities_page(conn: sqlite3.Connection, project_id: int, *,
                   endpoint: str | None = None,
                   severity: str | None = None, state: str | None = None,
                   in_cidr: str | None = None,
+                  under_domain: str | None = None,
                   cursor: str | None = None, limit: int = DEFAULT_PAGE) -> dict:
     """实体列表。**键集游标分页**（`ORDER BY e.id` + `e.id > cursor`）。
 
@@ -710,6 +715,16 @@ def entities_page(conn: sqlite3.Connection, project_id: int, *,
                          f"实体逐个与 {canonical} 比对（nmap 的 `<target>` 不与主机"
                          f"连边，那条边是 3.8 的 `member_of` 上推的事）。"
                          f"候选 {len(ids)} 个。")
+    if under_domain is not None:
+        canonical, ids, domain_notes = under_domain_ids(conn, project_id,
+                                                        under_domain)
+        echo["under_domain"] = canonical
+        notes.extend(domain_notes)
+        if not ids:
+            where.append("1=0")
+        else:
+            where.append(f"e.id IN ({','.join('?' * len(ids))})")
+            params.extend(ids)
     if after is not None:
         where.append("e.id > ?")
         params.append(after)
@@ -903,6 +918,271 @@ def assets_in_network(conn: sqlite3.Connection, project_id: int,
     return canonical, network, ids
 
 
+# ---------------------------------------------------------------------------
+# under_domain —— 按域名归拢资产（0.19.0，视图层隔离的服务端那半）
+# ---------------------------------------------------------------------------
+
+
+def _suffix_domains(rows: Any, host: str) -> list[str]:
+    """`rows`（kind=domain 的行）里以 `host` 为后缀的 key，**最具体优先**。
+
+    判据与 scope 的 `*.example.com` 同一条：`host == key` 或 `host` 以
+    `".key"` 结尾 —— `badexample.com` 不算 `example.com` 的（没有点的后缀
+    会把两个无关域名接在一起）。最具体优先 = 最长 key 在前，同长按字典序，
+    所以 `a.example.com` 与 `example.com` 同时命中时首选是前者，且**每次
+    都是**同一个。
+
+    这是**筛选与分组共用的唯一原语**：`under_domain_ids` 拿它判"在不在名下"，
+    `annotate_domains` 拿它取"归到哪个"。两处各写一遍后缀判断，是"筛出来的
+    分组与筛出来的集合不一致"的标准来路。
+    """
+    if not host:
+        return []
+    return sorted(
+        (str(row["entity_key"]) for row in rows
+         if host == row["entity_key"] or host.endswith(f".{row['entity_key']}")),
+        key=lambda key: (-len(key), key))
+
+
+def _key_host(kind: str, key: str) -> str | None:
+    """实体 key → 可做后缀判断的 host；**这个 kind 的 key 没有 host 语义**时
+    回 `None`（product / vuln / cidr … —— 拿它们的 key 硬做后缀匹配是在发明
+    归属）。
+
+    domain / host 的 key 就是主机串（host kind 是"原始主机串"，拆不拆端口
+    是猜 —— 原样比）；service / endpoint 的 key 带端口与路径，用 `normalize`
+    里与 `risk.attack_surface` **同一把**尺子取 host。
+    """
+    if kind in ("domain", "host"):
+        return str(key)
+    if kind == "service":
+        return normalize.service_host(str(key))
+    if kind == "endpoint":
+        return normalize.endpoint_host(str(key))
+    return None
+
+
+def under_domain_ids(conn: sqlite3.Connection, project_id: int,
+                     spec: str) -> tuple[str, list[int], list[str]]:
+    """(规范域名, 名下的实体 id, notes) —— `under_domain=` 的全部语义。
+
+    **归属是推导出来的，不是一条存着的边**（与 `assets_in_network` 同一性质），
+    所以结果必须带着"怎么推的"一起回去（notes）。四路成员，各有各的理由：
+
+      1. **后缀命中**：`domain` / `host` / `service` / `endpoint` 的 host（后两者
+         先用 `_key_host` 取 host）等于该域名或以 `.该域名` 结尾。**不走
+         `member_of` 边** —— 003 词表说 `member_of` 就是"由域名后缀推导"的，
+         拿推导物当事实，边缺失时会漏判、边陈旧时会误判，而后缀今天就在 key 里。
+      2. **`resolves_to` 反查**：名下域名解析出的 ip 并入。共享 CDN ip 归**解析
+         它的那些域名**，不按地址段猜。
+      3. **`found_on` 正查（第二遍）**：漏洞落在 (1)(2) 的成员上 → 并入 vuln。
+         只并 `kind=vuln` —— found_on 的语义就是"漏洞落在资产上"。
+      4. 域名实体自己（目标 key 命中即在 (1) 里）。
+
+    **不含 product**：产品（`nginx@1.24.0`）被多个域名共享，归给谁都是撒谎 ——
+    要问产品用 `product=`，两个问题各有各的入口。
+
+    两种"空"必须分开：域名实体**不存在** → notes 说"它还没被写进库"（product
+    先例），空列表是诚实的。目标 key 被**非 domain 实体**占用、或输入根本不是
+    合法域名 → `E_NOT_A_DOMAIN`（这不是"空"，是问法错了 —— 沉默回空列表会
+    让人以为"查过了，名下没有"）。目标存在时 `ids` **恒 ≥ 1**（域名实体自己
+    是成员，画布要它当焦点节点），所以"存在但一个成员都没有"不是一种可达状态
+    —— 相应地这里也不备一条到不了的 note。
+    """
+    try:
+        canonical = normalize.normalize_domain(str(spec))
+    except normalize.NormalizeError as exc:
+        raise QueryError(
+            "E_NOT_A_DOMAIN", f"{spec!r} 不是一个合法域名",
+            hint="under_domain 要的是域名（example.com），不是 IP / URL / 网段。",
+            requested=str(spec)) from exc
+    row = conn.execute(
+        "SELECT e.kind FROM entities e"
+        " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+        "  AND k.canonical=1 AND k.entity_key=?"
+        " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
+        " ORDER BY e.id LIMIT 1", (canonical, project_id)).fetchone()
+    if row is None:
+        return canonical, [], [
+            f"库里没有 {canonical!r} 这个域名实体 —— 空结果的意思是**它还没被"
+            f"任何来源写进来**，不是「名下没有资产」。"]
+    if str(row["kind"]) != "domain":
+        raise QueryError(
+            "E_NOT_A_DOMAIN", f"{canonical!r} 是 {row['kind']} 实体，不是域名",
+            hint="under_domain 要的是 kind=domain 的实体；"
+                 "IP 用 in_cidr，产品用 product。",
+            requested=canonical, actual_kind=str(row["kind"]))
+
+    members = conn.execute(
+        "SELECT e.id, e.kind, k.entity_key FROM entities e"
+        " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+        "  AND k.canonical=1"
+        " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
+        " AND e.kind IN ('domain','host','service','endpoint') ORDER BY e.id",
+        (project_id,)).fetchall()
+
+    def under(host: str | None) -> bool:
+        return bool(host) and (host == canonical
+                               or host.endswith(f".{canonical}"))
+
+    ids: set[int] = set()
+    domain_ids: set[int] = set()
+    for member in members:
+        if under(_key_host(str(member["kind"]), str(member["entity_key"]))):
+            ids.add(int(member["id"]))
+            if str(member["kind"]) == "domain":
+                domain_ids.add(int(member["id"]))
+    # (2) resolves_to 反查 —— 名下域名解析出的 ip。
+    if domain_ids:
+        marks = ",".join("?" * len(domain_ids))
+        for row in conn.execute(
+                "SELECT r.dst_id FROM relations r"
+                " JOIN entities e ON e.id=r.dst_id AND e.is_current=1"
+                "  AND e.merged_into IS NULL"
+                f" WHERE r.project_id=? AND r.is_current=1 AND r.rel='resolves_to'"
+                f" AND r.src_id IN ({marks})",
+                (project_id, *sorted(domain_ids))):
+            ids.add(int(row["dst_id"]))
+    # (3) found_on 第二遍 —— 漏洞落在名下成员上。用 (1)(2) 的**全集**当目标。
+    if ids:
+        marks = ",".join("?" * len(ids))
+        for row in conn.execute(
+                "SELECT DISTINCT r.src_id FROM relations r"
+                " JOIN entities e ON e.id=r.src_id AND e.kind='vuln'"
+                "  AND e.is_current=1 AND e.merged_into IS NULL"
+                f" WHERE r.project_id=? AND r.is_current=1 AND r.rel='found_on'"
+                f" AND r.dst_id IN ({marks})",
+                (project_id, *sorted(ids))):
+            ids.add(int(row["src_id"]))
+
+    notes = [f"`under_domain` 是**推导出来的**归属：host 后缀命中、名下域名的"
+             f" resolves_to 反查、落在成员上的 found_on（product 不归域）。"
+             f"候选 {len(ids)} 个。"]
+    return canonical, sorted(ids), notes
+
+
+def annotate_domains(conn: sqlite3.Connection, project_id: int,
+                     items: list[dict]) -> None:
+    """给实体行补 `domain` 字段（`GET /entities?with_domain=1` 的呈现参数）。
+
+    **与筛选共用同一组原语**（`_key_host` + `_suffix_domains`），所以"按域名
+    分组看到的"与"`under_domain=` 筛出来的"是同一套判定 —— 两处各写一遍，
+    分组与筛选就一定会有对不上的那天。
+
+    多归属时的分工写死在这里：**筛选取全集**（`under_domain=example.com` 逐个
+    域名问，问几次给几次），**分组取确定性首选**（`_suffix_domains` 最具体
+    优先，一行只进一个分组）—— 一行落进两个分组，表里就是两条，而实体只有一
+    个。
+
+    推导深度与 `under_domain_ids` 对齐：行内的 host 后缀（内存）→ 未归的 ip 一次
+    `resolves_to` 反查 → 未归的 vuln 一次 `found_on` 正查（目标再走前两步）。
+    全是**批量** SQL，与行数无关的最多三轮。
+    """
+    if not items:
+        return
+    domain_rows = [dict(row) for row in conn.execute(
+        "SELECT k.entity_key FROM entities e"
+        " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id"
+        "  AND k.canonical=1"
+        " WHERE e.project_id=? AND e.is_current=1 AND e.merged_into IS NULL"
+        " AND e.kind='domain' ORDER BY k.entity_key", (project_id,))]
+    by_id = {int(item["id"]): item for item in items}
+    for item in items:
+        host = _key_host(str(item.get("kind") or ""), str(item.get("entity_key") or ""))
+        matches = _suffix_domains(domain_rows, host or "")
+        item["domain"] = matches[0] if matches else None
+
+    # 轮 1：还没归属的 ip → resolves_to 反查（名下域名解析过它）。
+    unclaimed_ips = [i for i, item in by_id.items()
+                     if item.get("domain") is None and item.get("kind") == "ip"]
+    resolved = _resolves_to_domains(conn, project_id, unclaimed_ips, domain_rows)
+    for entity_id, domain in resolved.items():
+        by_id[entity_id]["domain"] = domain
+
+    # 轮 2：还没归属的 vuln → found_on 目标归给谁，它就归给谁（目标自己也走
+    # host 后缀 / resolves_to，深度与 under_domain_ids 的第二、三遍一致）。
+    unclaimed_vulns = [i for i, item in by_id.items()
+                       if item.get("domain") is None and item.get("kind") == "vuln"]
+    for vuln_id, target in _found_on_targets(conn, project_id,
+                                             unclaimed_vulns).items():
+        host = _key_host(str(target.get("kind") or ""),
+                         str(target.get("entity_key") or ""))
+        matches = _suffix_domains(domain_rows, host or "")
+        if matches:
+            by_id[vuln_id]["domain"] = matches[0]
+        elif target.get("kind") == "ip":
+            extra = _resolves_to_domains(conn, project_id, [int(target["id"])],
+                                         domain_rows)
+            if extra:
+                by_id[vuln_id]["domain"] = extra[int(target["id"])]
+
+
+def _resolves_to_domains(conn: sqlite3.Connection, project_id: int,
+                         ip_ids: list[int],
+                         domain_rows: list[dict]) -> dict[int, str]:
+    """一批 ip → 解析出它的域名里**最具体**的那个（没解析过 / 域名不在库里 → 不进映射）。"""
+    if not ip_ids:
+        return {}
+    marks = ",".join("?" * len(ip_ids))
+    out: dict[int, str] = {}
+    for row in conn.execute(
+            "SELECT r.dst_id, k.entity_key FROM relations r"
+            " JOIN entity_keys k ON k.entity_id=r.src_id"
+            "  AND k.project_id=r.project_id AND k.canonical=1"
+            " JOIN entities e ON e.id=r.src_id AND e.kind='domain'"
+            "  AND e.is_current=1 AND e.merged_into IS NULL"
+            f" WHERE r.project_id=? AND r.is_current=1 AND r.rel='resolves_to'"
+            f" AND r.dst_id IN ({marks})", (project_id, *sorted(ip_ids))):
+        matches = _suffix_domains(domain_rows, str(row["entity_key"]))
+        if matches:
+            ip_id = int(row["dst_id"])
+            chosen = matches[0]
+            # 同一个 ip 被多个域名解析：取最具体的那个（同长字典序），保证
+            # "每次分组都一样"——首选是确定性的，与先查到谁无关。
+            if ip_id not in out or (-len(chosen), chosen) < (-len(out[ip_id]),
+                                                             out[ip_id]):
+                out[ip_id] = chosen
+    return out
+
+
+def _found_on_targets(conn: sqlite3.Connection, project_id: int,
+                      vuln_ids: list[int]) -> dict[int, dict]:
+    """一批 vuln → 它 `found_on` 的目标行（id / kind / entity_key）；没挂或目标
+    不在当前视图（is_current / 未合并）→ 不进映射。"""
+    if not vuln_ids:
+        return {}
+    marks = ",".join("?" * len(vuln_ids))
+    out: dict[int, dict] = {}
+    for row in conn.execute(
+            "SELECT r.src_id, e.id AS target_id, e.kind AS target_kind,"
+            "  (SELECT k.entity_key FROM entity_keys k WHERE k.entity_id=e.id"
+            "    AND k.project_id=e.project_id AND k.canonical=1"
+            "    ORDER BY k.entity_key LIMIT 1) AS entity_key"
+            " FROM relations r JOIN entities e ON e.id=r.dst_id"
+            "  AND e.is_current=1 AND e.merged_into IS NULL"
+            f" WHERE r.project_id=? AND r.is_current=1 AND r.rel='found_on'"
+            f" AND r.src_id IN ({marks}) ORDER BY r.id",
+            (project_id, *sorted(vuln_ids))):
+        vuln_id = int(row["src_id"])
+        if vuln_id not in out:
+            out[vuln_id] = {"id": int(row["target_id"]),
+                            "kind": str(row["target_kind"]),
+                            "entity_key": str(row["entity_key"] or "")}
+    return out
+
+
+def assets_under_domain(conn: sqlite3.Connection, project_id: int,
+                        under_domain: str, **page: Any) -> dict:
+    """**落在某个域名名下的资产**。归属是推导的（见 `under_domain_ids`）。
+
+    参数名与过滤条件名（`under_domain`）刻意一致：`dispatch` 把整组关键字原样
+    转交，名字对不上就会在分发那一行炸掉 —— 与 `assets_in_cidr` 同一条纪律。
+    """
+    out = entities_page(conn, project_id, under_domain=under_domain, **page)
+    out["query"] = "assets_under_domain"
+    return out
+
+
 def dispatch(conn: sqlite3.Connection, project_id: int, **filters: Any) -> dict:
     """**唯一的分发点**：这组过滤条件在问哪一个具名查询。
 
@@ -919,6 +1199,8 @@ def dispatch(conn: sqlite3.Connection, project_id: int, **filters: Any) -> dict:
         return endpoint_owners(conn, project_id, **filters)
     if filters.get("in_cidr") is not None:
         return assets_in_cidr(conn, project_id, **filters)
+    if filters.get("under_domain") is not None:
+        return assets_under_domain(conn, project_id, **filters)
     if filters.get("severity") is not None or filters.get("state") is not None:
         return vulns(conn, project_id, **filters)
     return entities_page(conn, project_id, **filters)
@@ -933,6 +1215,8 @@ NAMED_QUERIES = {
     "vulns": "按 severity / state 筛漏洞（两者都是观测）",
     "endpoint": "某个接口的归属服务（endpoint --served_by--> service）",
     "assets_in_cidr": "落在网段里的资产（包含判断是算出来的）",
+    "assets_under_domain": "落在某个域名名下的资产（归属是推导的：后缀 + "
+                           "resolves_to + found_on；product 不归域）",
     "lens": "镜头页：这个镜头下每个 kind 的类型徽标与计数",
     # 六类问题（§7.4 的体检页）。它们不是 `ls` 上的过滤条件，而是**体检页**
     # 会问的六问 —— 一并列在这里，是因为 agent 同样该知道"这个库里现在有哪几类
@@ -959,21 +1243,37 @@ NAMED_QUERIES = {
 
 def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None,
                   kind: str | None, q: str | None, limit: int,
-                  seeds: list[int] | None = None) -> dict:
+                  seeds: list[int] | None = None,
+                  under_domain: str | None = None) -> dict:
     """节点 + 边 + 布局。`GET /graph` 与 `GET /graph/{id}/neighbors` 共用它。
 
     `q` 是**内存里**的过滤（在已取回的那一批节点上做子串匹配），不推进 SQL ——
     它的位置在 `limit` 之后，所以"筛出来比 limit 少"是正常的：这一条写在
     `_graph_payload` 的老注释里，改动它要连着前端的告示一起改。
+
+    `under_domain`（0.19.0）推在 SQL 里，理由与 `in_cidr` 相同：`limit=500`
+    之后的节点根本没进内存，在内存里筛等于看不见第 501 个资产。归属推导的
+    边界随 `notes` 一起回去 —— **这个键从 0.19.0 起恒在**（空数组 = 没话要说），
+    调用方不必"有没有 notes 这个键"两个分支。
     """
     where = ["e.project_id=?", "e.is_current=1", "e.merged_into IS NULL"]
     params: list[Any] = [project_id]
+    notes: list[str] = []
     if kind:
         where.append("e.kind=?")
         params.append(str(kind))
     if lens:
         where.append("e.kind IN (SELECT kind FROM kind_registry WHERE lens=?)")
         params.append(str(lens))
+    if under_domain is not None:
+        canonical, ids, domain_notes = under_domain_ids(conn, project_id,
+                                                        under_domain)
+        notes.extend(domain_notes)
+        if not ids:
+            where.append("1=0")
+        else:
+            where.append(f"e.id IN ({','.join('?' * len(ids))})")
+            params.extend(ids)
     if seeds is not None:
         where.append(f"e.id IN ({','.join('?' * len(seeds))})")
         params.extend(seeds)
@@ -1008,7 +1308,7 @@ def graph_payload(conn: sqlite3.Connection, project_id: int, *, lens: str | None
                           "confidence": row["confidence"],
                           "src_key": keys.get(int(row["src_id"])),
                           "dst_key": keys.get(int(row["dst_id"]))})
-    return {"nodes": nodes, "edges": edges, "layout": layout}
+    return {"nodes": nodes, "edges": edges, "layout": layout, "notes": notes}
 
 
 def neighbour_ids(conn: sqlite3.Connection, project_id: int, entity_id: int,

@@ -215,6 +215,16 @@ defineExpose({ fitView })
       单个类型内部不再逐个显示
     </div>
 
+    <!-- 域名视图横幅（0.19.0）。裁剪是**服务端**做的，所以必须有个常驻的出口：
+         否则"图怎么变小了"没有答案，也没有回去的门。顶部居中是因为左上被
+         只读徽标/聚合条占着、右上是批量条 —— 三个都挤左边会叠成一团。 -->
+    <div v-if="store.filter.underDomain" class="domain-banner">
+      <span class="label">域名视图</span>
+      <span class="key">{{ store.filter.underDomain }}</span>
+      <span class="count">{{ store.counts.entities }} 个实体</span>
+      <button class="ghost" @click="store.clearDomainFocus()">退出</button>
+    </div>
+
     <div v-if="store.loadError" class="overlay bad">
       读取图谱失败：{{ store.loadError }}
     </div>
@@ -302,6 +312,25 @@ defineExpose({ fitView })
   /* 纯提示条不拦指针：没有它，画布左上角一条区域的拖拽/点选全被吃掉 */
   pointer-events: none;
 }
+.domain-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--overlay);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.domain-banner .label { color: var(--dim); }
+.domain-banner .key { color: var(--accent); font-weight: 600; }
+.domain-banner .count { color: var(--dim); }
 .overlay {
   position: absolute;
   inset: 0;

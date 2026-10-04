@@ -92,6 +92,9 @@ _QUERY_STATUS: dict[str, int] = {
     "E_BAD_CIDR": 400,
     "E_BAD_STATE": 400,
     "E_BAD_DEPTH": 400,
+    # 0.19.0：under_domain 的目标不是 kind=domain 实体（或根本不是域名）——
+    # 用法错而非数据错：问法错了，改参数就能好。
+    "E_NOT_A_DOMAIN": 400,
     "E_LENS_NOT_FOUND": 404,
     "E_ENTITY_NOT_FOUND": 404,
     "E_JOB_NOT_FOUND": 404,
@@ -272,17 +275,24 @@ def list_entities(project: str | None = None,
                   severity: str | None = None,
                   state: str | None = None,
                   in_cidr: str | None = None,
+                  under_domain: str | None = None,
+                  with_domain: str | None = None,
                   cursor: str | None = None,
                   limit: int = DEFAULT_PAGE,
                   review_status: str | None = None,
                   in_scope: str | None = None,
                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    """实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` 是
-    §3.5 的**具名查询**（`query.dispatch` 决定这组条件在问哪一问）—— 与
-    `magpie ls` 的同名 flag 一字不差，两边走同一段实现。
+    """实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` /
+    `under_domain` 是 §3.5 的**具名查询**（`query.dispatch` 决定这组条件在问
+    哪一问）—— 与 `magpie ls` 的同名 flag 一字不差，两边走同一段实现。
 
-    `meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来的
-    而不是连出来的…… 一个空列表必须带着"为什么是空的"，否则它会被读成
+    `with_domain=1`（0.19.0）是**呈现参数**：给每行补一个 `domain` 字段供
+    分组展示，**不筛选、不进 `ENTITY_FILTERS`** —— 它与 `under_domain` 共用
+    同一组推导原语（`query.annotate_domains`），所以"分组看到的归属"与
+    "筛出来的集合"是同一套判定。
+
+    `meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来
+    的而不是连出来的…… 一个空列表必须带着"为什么是空的"，否则它会被读成
     "筛过了，就是没有"（这正是 `review_status` 那条纪律的同一个理由）。
     """
     _unsupported({"review_status": review_status, "in_scope": in_scope})
@@ -296,11 +306,19 @@ def list_entities(project: str | None = None,
     result = query.dispatch(
         conn, project_id, kind=kind, lens=lens, q=q, tag=tag, lifecycle=lifecycle,
         product=product, version=version, endpoint=endpoint, severity=severity,
-        state=state, in_cidr=in_cidr, cursor=cursor, limit=limit)
+        state=state, in_cidr=in_cidr, under_domain=under_domain,
+        cursor=cursor, limit=limit)
+    if with_domain not in (None, "", "0", "false", "False"):
+        query.annotate_domains(conn, project_id, result["entities"])
+    meta_filters: dict[str, Any] = {"kind": kind, "q": q, "tag": tag,
+                                    "lifecycle": lifecycle}
+    if result["filters"].get("under_domain") is not None:
+        # 0.19.0 回显规范化后的域名（EXAMPLE.com → example.com）；只在参数
+        # 出现时加键 —— 既有四键形状不动。
+        meta_filters["under_domain"] = result["filters"]["under_domain"]
     return ok(result["entities"], count=result["count"],
               next_cursor=result["next_cursor"], project_id=project_id,
-              query=result["query"], filters={"kind": kind, "q": q, "tag": tag,
-                                              "lifecycle": lifecycle},
+              query=result["query"], filters=meta_filters,
               notes=result["notes"])
 
 
@@ -529,16 +547,19 @@ def unmerge_entity(entity_id: int, body: UnmergeBody, request: Request,
 @_translating
 def get_graph(project: str | None = None, lens: str | None = None,
               kind: str | None = None, q: str | None = None,
+              under_domain: str | None = None,
               limit: int = 500,
               depth: int | None = None,
               conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     """注意 `_unsupported({"depth": depth})`：`depth` 在 `/graph` 上**仍然**是
     "传了就 400"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默
-    忽略，调用方就会以为按深度筛过了。"""
+    忽略，调用方就会以为按深度筛过了。`under_domain`（0.19.0）推在 SQL 里 ——
+    `limit=500` 之后的节点没进内存，内存筛等于看不见。"""
     _unsupported({"depth": depth})
     project_id = _resolve_project(conn, project)
     payload = query.graph_payload(conn, project_id, lens=lens, kind=kind, q=q,
-                                  limit=query.page_size(limit))
+                                  limit=query.page_size(limit),
+                                  under_domain=under_domain)
     payload["project_id"] = project_id
     return ok(payload, counts={"nodes": len(payload["nodes"]),
                                "edges": len(payload["edges"])})

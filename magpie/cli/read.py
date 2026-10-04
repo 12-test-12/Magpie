@@ -90,12 +90,14 @@ QUERY_EXIT: dict[str, int] = {
     "E_BAD_CIDR": EXIT_USAGE,
     "E_BAD_STATE": EXIT_USAGE,
     "E_BAD_DEPTH": EXIT_USAGE,
+    # 0.19.0：under_domain 的目标不是域名 —— 问法错（1 ↔ 400），改参数就能好。
+    "E_NOT_A_DOMAIN": EXIT_USAGE,
     "E_LENS_NOT_FOUND": EXIT_DATA,
 }
 
 
 def as_cli_error(exc: query.QueryError) -> CliError:
-    """`QueryError` → `CliError`。**唯一的映射点**（见 `QUERY_EXIT`）。"""
+    """`QueryError` → `CliError`。**唯一 的映射点**（见 `QUERY_EXIT`）。"""
     return CliError(exc.code, exc.message, hint=exc.hint,
                     exit_code=QUERY_EXIT.get(exc.code, EXIT_DATA), **exc.details)
 

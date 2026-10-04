@@ -67,6 +67,12 @@ const truncated = ref([])
 const facets = ref({})
 const enriching = ref(false)
 const facetFilter = ref({ severity: '', state: '' })
+//: 域名筛选（'' = 全部）。选中时 kind 查询带 `under_domain=`（服务端裁剪），
+//: 全部时带 `with_domain=1` 让行带上归属 —— 分段与筛选共用同一套推导原语，
+//: 所以"分段看到的"与"筛出来的"不会分叉（后端单真相测试钉住）。
+const domainChoice = ref('')
+const domainOptions = computed(
+  () => (store.domains?.rows || []).map((row) => row.entity_key).sort())
 
 const COLUMNS = [
   { key: 'entity_key', label: '实体', mono: true },
@@ -114,11 +120,18 @@ async function load() {
   facetFilter.value = { severity: '', state: '' }
   const collected = []
   const capped = []
+  const project = store.project ? `&project=${encodeURIComponent(store.project)}` : ''
+  // 两个都是**服务端**参数：under_domain 裁剪（limit=500 本地筛看不见第 501
+  // 个）、with_domain 补归属字段（呈现参数，不筛）。选了域名就不必再要归属
+  // 字段 —— 整页就是一个分段，分段行反而是一句废话。
+  const domain = domainChoice.value
+    ? `&under_domain=${encodeURIComponent(domainChoice.value)}`
+    : '&with_domain=1'
   try {
     for (const entry of kinds.value) {
-      const query = store.project ? `&project=${encodeURIComponent(store.project)}` : ''
       const data = await get(
-        `/entities?kind=${encodeURIComponent(entry.kind)}&limit=${PAGE}${query}`)
+        `/entities?kind=${encodeURIComponent(entry.kind)}&limit=${PAGE}`
+        + `${project}${domain}`)
       collected.push(...data)
       if (data.length >= PAGE) capped.push(entry.kind)
     }
@@ -186,14 +199,50 @@ const columns = computed(() => {
   return out
 })
 
-/** 表格行 = 通过筛选的行 + 补回来的那几列。 */
-const tableRows = computed(() => visibleRows.value.map((row) => Object.assign(
-  {}, row, facets.value[row.id] || {})))
+/**
+ * 表格行 = 通过筛选的行 + 补回来的那几列；「全部」模式下再按归属**分段**。
+ *
+ * 分段行是 `{__group, __key}` 的标记行（VirtualTable 跨列渲染、不吃点击）。
+ * 顺序：域名按字典序，**「未归属」垫底** —— 它们不是"另一个域名"，是还没归
+ * 上；混在中间会把可读的分段冲散。行的分组键就是后端注解的 `domain` 字段，
+ * 与 `under_domain=` 筛选同源（单真相），所以两处不会给出不同的归属。
+ */
+const tableRows = computed(() => {
+  const merged = visibleRows.value.map(
+    (row) => Object.assign({}, row, facets.value[row.id] || {}))
+  if (domainChoice.value) return merged        // 已按域名筛过：一个分段，无须标
+  const buckets = new Map()
+  for (const row of merged) {
+    const name = row.domain || null
+    if (!buckets.has(name)) buckets.set(name, [])
+    buckets.get(name).push(row)
+  }
+  const names = [...buckets.keys()].filter((name) => name !== null).sort()
+  if (buckets.has(null)) names.push(null)
+  const out = []
+  for (const name of names) {
+    out.push({ __group: name === null ? '未归属' : name,
+               __key: `group:${name === null ? 'none' : name}` })
+    out.push(...buckets.get(name))
+  }
+  return out
+})
+
+async function onDomainChange(event) {
+  domainChoice.value = event.target.value
+  selected.value = null
+  await load()
+}
 
 onMounted(load)
 // 切换镜头要重载；项目换了也要 —— 行是按项目隔离的。
 watch(() => props.lens, load)
-watch(() => store.project, load)
+// 切项目**清掉域名选择**：上个项目的域名在新项目多半查无此人，带着它进来 =
+// 一页永远空着的表，而"为什么空"不在这个页面的视野里。
+watch(() => store.project, () => {
+  domainChoice.value = ''
+  load()
+})
 // 首次挂载时 `lenses` 可能还没到（App 的 boot 还在拉 meta → lenses）。kind 列表
 // 一到就重载，否则这个页面会停在一个"空镜头"上，而它其实只是比数据早了一拍。
 watch(() => kinds.value.length, (now, before) => {
@@ -210,6 +259,18 @@ watch(() => kinds.value.length, (now, before) => {
         <span class="mono">{{ entry.kind }}</span>
         <b>{{ entry.count }}</b>
       </span>
+      <!-- 域名下拉（0.19.0）：选项**懒加载**（第一次聚焦才拉，按项目缓存），
+           「全部」= 按域名分段看，选中一个 = 服务端 under_domain= 裁剪。 -->
+      <label class="domain-pick">
+        <span class="faint">域名</span>
+        <select :value="domainChoice" @focus="store.loadDomains()"
+                @change="onDomainChange">
+          <option value="">全部</option>
+          <option v-for="key in domainOptions" :key="key" :value="key">
+            {{ key }}
+          </option>
+        </select>
+      </label>
       <span class="spacer" />
       <button class="ghost" :disabled="loading" @click="load">刷新</button>
     </header>
@@ -288,8 +349,13 @@ watch(() => kinds.value.length, (now, before) => {
 .lens { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 8px; }
 .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .facets { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.facet { display: flex; align-items: center; gap: 6px; font-size: 11px; }
-.facet select {
+.facet, .domain-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.facet select, .domain-pick select {
   background: var(--panel-2);
   color: var(--fg);
   border: 1px solid var(--line);

@@ -227,6 +227,83 @@ def test_lenses_only_accepts_registered_lenses(loaded):
 
 
 # ---------------------------------------------------------------------------
+# 域名视图（0.19.0 · under_domain / with_domain）
+# ---------------------------------------------------------------------------
+
+
+def test_graph_under_domain_scopes_to_the_family(loaded):
+    """/graph?under_domain= —— 画布只剩名下节点，推导边界随 `notes` 回去。
+
+    夹具前提：subfinder 有 app/api 两个域名实体（没有裸 example.com，
+    所以这里锚定 app.example.com —— 它自己就是 kind=domain）。
+    """
+    full = loaded.get("/api/v1/graph?limit=500", headers=HEADERS).json()["data"]
+    full_keys = {n["entity_key"] for n in full["nodes"]}
+    assert {"app.example.com", "api.example.com"} <= full_keys, "夹具前提"
+    scoped = loaded.get(
+        "/api/v1/graph?limit=500&under_domain=app.example.com",
+        headers=HEADERS).json()["data"]
+    keys = {n["entity_key"] for n in scoped["nodes"]}
+    assert "app.example.com" in keys, "域名实体自己是画布焦点节点"
+    assert "api.example.com" not in keys, "别的域名混进来了"
+    assert {n["id"] for n in scoped["nodes"]} <= {n["id"] for n in full["nodes"]}, \
+        "scoped 必须是 full 的子集（推在 SQL 里，不是前端再筛的）"
+    assert any("推导出来的" in note for note in scoped["notes"]), \
+        "推导的边界必须跟着图负载一起回去"
+
+
+def test_graph_notes_always_present(loaded):
+    """0.19.0 起 `/graph` 负载恒有 `notes`：没话要说 = 空数组，但键必须在。"""
+    data = loaded.get("/api/v1/graph?limit=50", headers=HEADERS).json()["data"]
+    assert data["notes"] == []
+
+
+def test_entities_under_domain_missing_says_missing(loaded):
+    """格式合法但实体不在库里 → 空 + **为什么空**（product 先例），200 不是 404。"""
+    response = loaded.get("/api/v1/entities?under_domain=ghost.example.com",
+                          headers=HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"] == []
+    meta = body["meta"]
+    assert meta["query"] == "assets_under_domain"
+    assert meta["filters"]["under_domain"] == "ghost.example.com"
+    assert any("还没被任何来源写进来" in note for note in meta["notes"])
+
+
+def test_under_domain_bad_usage_is_400(loaded):
+    """问法错要响亮 —— 静默回空列表会让人以为"查过了，名下没有"。"""
+    for path in ("/api/v1/graph?under_domain=nonsense",
+                 "/api/v1/entities?under_domain=nonsense"):
+        response = loaded.get(path, headers=HEADERS)
+        assert response.status_code == 400, path
+        assert response.json()["error"]["code"] == "E_NOT_A_DOMAIN"
+
+
+def test_entities_with_domain_annotates_without_filtering(loaded):
+    """`with_domain=1` 是呈现参数：补 `domain` 字段，一行不多一行不少。
+
+    注解与 `under_domain=` 筛选共用同一组原语 —— 这里在 API 层再钉一遍
+    "注解归到 app.example.com 的行，必须也在 under_domain 的集合里"。
+    """
+    plain = loaded.get("/api/v1/entities?limit=500", headers=HEADERS).json()
+    annotated = loaded.get("/api/v1/entities?limit=500&with_domain=1",
+                           headers=HEADERS).json()
+    assert len(annotated["data"]) == len(plain["data"]), "呈现参数不许筛掉行"
+    assert all("domain" in row for row in annotated["data"])
+    assert all("domain" not in row for row in plain["data"])
+    by_key = {row["entity_key"]: row["domain"] for row in annotated["data"]}
+    assert by_key["app.example.com"] == "app.example.com", "域名行归自己"
+
+    scoped_ids = {row["id"] for row in loaded.get(
+        "/api/v1/entities?limit=500&under_domain=app.example.com",
+        headers=HEADERS).json()["data"]}
+    for row in annotated["data"]:
+        if row["domain"] == "app.example.com":
+            assert row["id"] in scoped_ids, f"{row['entity_key']} 注解与筛选分叉"
+
+
+# ---------------------------------------------------------------------------
 # 写入路径
 # ---------------------------------------------------------------------------
 

@@ -455,7 +455,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.18.0"
+    "version": "0.19.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -694,7 +694,7 @@
     },
     "/api/v1/entities": {
       "get": {
-        "description": "实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` 是\n§3.5 的**具名查询**（`query.dispatch` 决定这组条件在问哪一问）—— 与\n`magpie ls` 的同名 flag 一字不差，两边走同一段实现。\n\n`meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来的\n而不是连出来的…… 一个空列表必须带着\"为什么是空的\"，否则它会被读成\n\"筛过了，就是没有\"（这正是 `review_status` 那条纪律的同一个理由）。",
+        "description": "实体列表。`product` / `endpoint` / `severity` / `state` / `in_cidr` /\n`under_domain` 是 §3.5 的**具名查询**（`query.dispatch` 决定这组条件在问\n哪一问）—— 与 `magpie ls` 的同名 flag 一字不差，两边走同一段实现。\n\n`with_domain=1`（0.19.0）是**呈现参数**：给每行补一个 `domain` 字段供\n分组展示，**不筛选、不进 `ENTITY_FILTERS`** —— 它与 `under_domain` 共用\n同一组推导原语（`query.annotate_domains`），所以\"分组看到的归属\"与\n\"筛出来的集合\"是同一套判定。\n\n`meta.notes` 是**诚实的边界**：产品实体根本不存在、网段里的候选是算出来\n的而不是连出来的…… 一个空列表必须带着\"为什么是空的\"，否则它会被读成\n\"筛过了，就是没有\"（这正是 `review_status` 那条纪律的同一个理由）。",
         "operationId": "list_entities_api_v1_entities_get",
         "parameters": [
           {
@@ -887,6 +887,38 @@
                 }
               ],
               "title": "In Cidr"
+            }
+          },
+          {
+            "in": "query",
+            "name": "under_domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Under Domain"
+            }
+          },
+          {
+            "in": "query",
+            "name": "with_domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "With Domain"
             }
           },
           {
@@ -1455,7 +1487,7 @@
     },
     "/api/v1/graph": {
       "get": {
-        "description": "注意 `_unsupported({\"depth\": depth})`：`depth` 在 `/graph` 上**仍然**是\n\"传了就 400\"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默\n忽略，调用方就会以为按深度筛过了。",
+        "description": "注意 `_unsupported({\"depth\": depth})`：`depth` 在 `/graph` 上**仍然**是\n\"传了就 400\"（它只在 `/graph/{id}/neighbors` 上有意义）—— 收下它再静默\n忽略，调用方就会以为按深度筛过了。`under_domain`（0.19.0）推在 SQL 里 ——\n`limit=500` 之后的节点没进内存，内存筛等于看不见。",
         "operationId": "get_graph_api_v1_graph_get",
         "parameters": [
           {
@@ -1520,6 +1552,22 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "under_domain",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Under Domain"
             }
           },
           {

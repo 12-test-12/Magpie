@@ -84,18 +84,25 @@ function cell(row, column) {
                :style="column.width ? { width: column.width } : null" />
         </colgroup>
         <tbody>
-          <tr
-            v-for="row in windowRows"
-            :key="row.__key"
-            :class="{ selected: String(selectedKey) === String(row.__key) }"
-            :style="{ height: rowHeight + 'px' }"
-            @click="emit('row-click', row)"
-          >
-            <td v-for="column in columns" :key="column.key"
-                :class="{ mono: column.mono }" :title="cell(row, column)">
-              <slot :name="column.key" :row="row">{{ cell(row, column) }}</slot>
-            </td>
-          </tr>
+          <template v-for="row in windowRows" :key="row.__key">
+            <!-- 分段行（0.19.0 域名分组）：`__group` 是行的**标记**不是列 ——
+                 跨列一行、不吃点击（它没有 id，点了没有详情可开）。 -->
+            <tr v-if="'__group' in row" class="group-row"
+                :style="{ height: rowHeight + 'px' }">
+              <td :colspan="columns.length">{{ row.__group }}</td>
+            </tr>
+            <tr
+              v-else
+              :class="{ selected: String(selectedKey) === String(row.__key) }"
+              :style="{ height: rowHeight + 'px' }"
+              @click="emit('row-click', row)"
+            >
+              <td v-for="column in columns" :key="column.key"
+                  :class="{ mono: column.mono }" :title="cell(row, column)">
+                <slot :name="column.key" :row="row">{{ cell(row, column) }}</slot>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
@@ -113,6 +120,15 @@ function cell(row, column) {
 }
 .body { position: relative; }
 .rows { position: absolute; top: 0; left: 0; width: 100%; }
+.group-row td {
+  padding: 0 8px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
 .empty { padding: 18px; text-align: center; font-size: 12px; }
 .empty:deep(.empty-state) { padding-top: 44px; padding-bottom: 44px; }
 </style>

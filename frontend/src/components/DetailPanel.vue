@@ -228,6 +228,26 @@ function goTo(key) {
         </div>
       </header>
 
+      <!-- 域名视图入口（0.19.0）。**互斥的单按钮**：不在视图里是「只看它的
+           资产」，正在看它就是「退出域名视图」—— 两个按钮并排会让人先问
+           "我现在在哪"，而一个状态只需要一个动作。看别的域名时按钮回到
+           「只看它的资产」，点了直接换视图（setDomainFocus 是覆盖不是叠加）。 -->
+      <section v-if="detail.entity.kind === 'domain'">
+        <h2 class="section">域名视图</h2>
+        <div class="acts">
+          <button v-if="store.filter.underDomain !== detail.entity.entity_key"
+                  class="primary" @click="store.setDomainFocus(detail.entity.entity_key)">
+            只看它的资产
+          </button>
+          <button v-else class="primary" @click="store.clearDomainFocus()">
+            退出域名视图
+          </button>
+        </div>
+        <p class="faint small">
+          归属是推导的（域名后缀 + 解析反查 + 漏洞落点），不是一条存着的边。
+        </p>
+      </section>
+
       <section>
         <h2 class="section">复制给 AI</h2>
         <div class="acts">

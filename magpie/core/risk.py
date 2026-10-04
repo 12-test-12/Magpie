@@ -45,7 +45,15 @@ import json
 import sqlite3
 from typing import Any, Iterable
 
+from . import normalize
 from . import query
+
+# 0.19.0：下面这两个"从 key 取 host"的尺子随域名归属推导一起下沉到
+# `normalize.py`（`query.under_domain_ids` 要用同一把尺子，而 risk 已 import
+# query —— 反向 import 会成环）。旧名在这里**保号**：本模块的调用点与既有
+# 测试看到的仍是 `_service_host` / `_endpoint_host`。
+_service_host = normalize.service_host
+_endpoint_host = normalize.endpoint_host
 
 __all__ = [
     "RULE_VERSION", "RULES", "EVIDENCE_CAP",
@@ -410,27 +418,6 @@ def score(facts: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # attack_surface —— 纯函数：同一份 facts 的另一面
 # ---------------------------------------------------------------------------
-
-
-def _service_host(key: str) -> str:
-    """`host:port` / `host:scheme` → host。**按最后一个冒号切**：`host:scheme`
-    里 scheme 不是数字，同样要切掉。整串再含冒号（裸 IPv6）时不切、原样当 host ——
-    当前产出 service 的解析器（httpx / nuclei）host 都过域名归一化，这个分支
-    是**坏数据的保底**，不是一条被依赖的路径。"""
-    head, sep, _ = key.rpartition(":")
-    return head if sep and ":" not in head and head else key
-
-
-def _endpoint_host(key: str) -> str:
-    """`host[:port]/path` → host。authority 段取第一个 `/` 之前；`[v6]:port`
-    拆出方括号里的部分；其余只在"一个冒号 + 纯数字尾段"时切端口。"""
-    authority = key.split("/", 1)[0]
-    if authority.startswith("["):
-        return authority[1:].split("]", 1)[0]
-    head, sep, tail = authority.rpartition(":")
-    if sep and tail.isdigit() and ":" not in head:
-        return head
-    return authority
 
 
 def attack_surface(facts: dict[str, Any]) -> dict[str, Any]:
