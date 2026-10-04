@@ -204,7 +204,57 @@ describe('镜头页按域名分段', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 3. 画布横幅：常驻出口
+// 3. 详情面板的域名入口
+// ---------------------------------------------------------------------------
+
+describe('详情面板：域名实体的主按钮', () => {
+  it('「只看它的资产」进视图、视图开着换「退出」；非域名没有这个按钮', async () => {
+    global.fetch = vi.fn(async () => jsonResponse(EMPTY_GRAPH))
+    const { store } = await import('../src/store.js')
+    const DetailPanel = (await import('../src/components/DetailPanel.vue')).default
+    const base = {
+      observations: [], relations: [], tags: [],
+      manual: { protected_fields: [] }, open_inbox: [], timeline: [],
+    }
+    const buttons = (wrapper, label) => wrapper.findAll('button')
+      .filter((button) => button.text() === label)
+
+    store.selectedMerges = []
+    store.selectedDetail = {
+      ...base,
+      entity: { id: 42, entity_key: 'example.com', kind: 'domain',
+                lifecycle: 'active' },
+    }
+    const wrapper = mount(DetailPanel)
+    await flushPromises()
+
+    expect(buttons(wrapper, '只看它的资产')).toHaveLength(1)
+    await buttons(wrapper, '只看它的资产')[0].trigger('click')
+    await flushPromises()
+    expect(store.filter.underDomain).toBe('example.com')
+    // 互斥单按钮：视图开着，入口按钮让位给出口（一个状态一个动作）
+    expect(buttons(wrapper, '只看它的资产')).toHaveLength(0)
+    expect(buttons(wrapper, '退出域名视图')).toHaveLength(1)
+
+    await buttons(wrapper, '退出域名视图')[0].trigger('click')
+    await flushPromises()
+    expect(store.filter.underDomain).toBeNull()
+    expect(buttons(wrapper, '只看它的资产')).toHaveLength(1)
+
+    // 非域名实体没有这个入口 —— 对 ip 问"只看它的资产"是问法错（E_NOT_A_DOMAIN）
+    store.selectedDetail = {
+      ...base,
+      entity: { id: 9, entity_key: '203.0.113.10', kind: 'ip',
+                lifecycle: 'active' },
+    }
+    await wrapper.vm.$nextTick()
+    expect(buttons(wrapper, '只看它的资产')).toHaveLength(0)
+    wrapper.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4. 画布横幅：常驻出口
 // ---------------------------------------------------------------------------
 
 describe('画布上的域名横幅', () => {
