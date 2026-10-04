@@ -12,6 +12,56 @@
 
 ---
 
+## 0.20.0 — 画布口径根治 + 项目管理：`/graph` `kinds=`·`total`、`/domains/summary`、归档/硬删
+
+两张截图（筛 `secret` 得 0、筛 `endpoint` 显示 437 而左栏 9,593）是同一根因的
+两种症状：`/graph` 服务端截断 `limit=500`，kind 筛选却在前端已载入的 500 个
+节点上本地做。本版把筛选推进 SQL、把"库中总数"还给调用方，外加 Yakit 式项目
+管理（归档 / 恢复 / 硬删）与域名名下资产计数。迁移 **014**（append-only，R4
+未动既有文件）。openapi 快照重新生成（新路径 + `kinds=` 参数 + `info.version`
+0.19.0 → 0.20.0）。
+
+### 对外契约（按本节开头的规矩登记）
+
+* **`GET /api/v1/graph` 加查询参数 `kinds=`**（逗号分隔多 kind，与
+  `under_domain=` 同一条纪律推在 SQL 里 —— `limit=500` 之后的节点没进内存，
+  本地筛等于看不见第 501 个）；**负载 `data` 加 `total` 键**（同一筛选条件、
+  不带 LIMIT 的库中总数，`q` 过滤之前算）。`kind=` 单数行为逐字不变；
+  `total` 照 0.6.0 先例登记为既有响应加键。
+* **新端点 `GET /api/v1/domains/summary`**（+ 可选 `domain=`）：按域名聚合
+  名下资产，行形状 `{domain, total, kinds: {kind: 计数}}`，total 降序。归属与
+  `with_domain=1` 共用同一套推导（**单真相**），口径写死"分组取首选"（0.19.0
+  定的分工）—— 各行 total 之和小于项目实体总数是取舍不是漏计（product /
+  cidr 不归域）。问法错 → `E_NOT_A_DOMAIN`，域名实体不存在 → 空列表 + note，
+  沿 0.19.0 "两种空分开"的纪律。
+* **新端点 `POST /api/v1/projects/{id}/archive`、`POST /api/v1/projects/{id}/restore`、
+  `DELETE /api/v1/projects/{id}?confirm=<项目名>`**（全部经写者队列）：
+  confirm 不逐字等于项目名 → **400 `E_CONFIRM`**（回带 `expected`）；项目不
+  存在 → 404 `E_PROJECT_NOT_FOUND`。删除成功回 `{id, name, removed: {表: 行数}}`
+  逐表回执（回执对账，收尾 `foreign_key_check` 断言为空）。归档/恢复幂等
+  （`changed` 键报"这次动没动"）。删除是**不可恢复的硬删**：按现场
+  `foreign_key_list` 算反拓扑序删子行，带 `project_id` 的按列删、全局表经
+  外键定位，词表一行不碰；失败整任务回滚。
+* **`GET /api/v1/projects` 默认不列归档项目**（行形状一字未动，`status` 键
+  本来就有；`?include_archived=1` 给项目管理页看全部）。隐式项目解析同步只在
+  活跃项目间选 —— API 缺省解析、`magpie ls` 报错里的 `candidates`、
+  `magpie init --json` 的 `projects` 与"项目数"都不再出现归档。显式
+  `?project=` / `--project` 点名归档项目**仍解析得开**（归档是隐藏不是锁定）。
+  `/meta` 的 `counts.projects` 刻意保持全库口径（"全库"两个字本来就写着）。
+* **迁移 `014_scheme_port_multivalue.sql`**（数据修正，不改形状）：
+  `multivalue_fields` 声明 endpoint 的 `scheme`/`port`（跨 scheme 折叠后
+  http→https、80/443 是逐次遭遇的证据，与 010 的 `path` 同判），一次性关闭
+  存量 open `value_conflict`（`close_reason='reconcile:014'`）；批量评分
+  `FieldScoreBatch` 补上声明豁免，与单值路径（`v_field_conflicts` 视图）重新
+  等价；启动时幂等修复存量 `confidence='conflict'` 脏观测。净效果：相关
+  `--json` 里的 open 冲突计数归零。
+
+画布平移/缩放、关系跳转合并邻居、左栏规模行与可见筛选、右栏项目概览、Job
+Console、千分位、域名计数下拉、ProjectManager 对话框 —— 全是前端消费上述契约，
+不占篇幅（git log 记那些）。
+
+---
+
 ## 0.19.0 — 域名视图：`under_domain=` 归属推导 + `with_domain=` 分组注解
 
 **视图层隔离的服务端那半**：每个域名只看自己名下的资产，不拆项目、不加

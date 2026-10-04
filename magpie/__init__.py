@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.19.0"       # 与 pyproject.toml 的 version 保持一致（under_domain / with_domain 域名视图）
+__version__ = "0.20.0"       # 与 pyproject.toml 的 version 保持一致（/graph 口径 + 项目管理归档/删除）
 
 __all__ = ["__version__"]
