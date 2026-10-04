@@ -111,14 +111,14 @@ describe('目录浏览框', () => {
   })
 })
 
-describe('导入对话框的「浏览…」', () => {
+describe('导入对话框的「服务端目录…（高级）」', () => {
   it('选中的路径追加进表单，浏览框关闭', async () => {
     stubFs([])
     const wrapper = mount(ImportDialog, { attachTo: document.body })
     expect(wrapper.find('textarea').element.value).toBe('')
 
     await wrapper.findAll('button')
-      .find((b) => b.text() === '浏览…').trigger('click')
+      .find((b) => b.text().includes('服务端目录')).trigger('click')
     const picker = wrapper.findComponent(FsPicker)
     expect(picker.exists()).toBe(true)
 
@@ -133,11 +133,11 @@ describe('导入对话框的「浏览…」', () => {
     stubFs([])
     const wrapper = mount(ImportDialog, { attachTo: document.body })
     await wrapper.findAll('button')
-      .find((b) => b.text() === '浏览…').trigger('click')
+      .find((b) => b.text().includes('服务端目录')).trigger('click')
     wrapper.findComponent(FsPicker).vm.$emit('pick', 'D:\\recon\\subfinder.txt')
     await wrapper.vm.$nextTick()
     await wrapper.findAll('button')
-      .find((b) => b.text() === '浏览…').trigger('click')
+      .find((b) => b.text().includes('服务端目录')).trigger('click')
     wrapper.findComponent(FsPicker).vm.$emit('pick', 'D:\\recon\\subfinder.txt')
     await wrapper.vm.$nextTick()
     expect(wrapper.find('textarea').element.value)

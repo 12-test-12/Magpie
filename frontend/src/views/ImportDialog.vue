@@ -17,9 +17,20 @@
  *      存不存在并 400 —— 那比让用户等一个"没有匹配到任何文件"的作业好得多。
  *   3. **丢帧要说出来**。SSE 的背压策略允许丢帧（慢消费者不阻塞导入），但
  *      `dropped` 计数会原样显示。
+ *
+ * 拿到路径的**三条路**（0.17.0 起前两条是主流入口）：
+ *
+ *   * **原生选择器 / 拖拽**：浏览器给的是文件**内容**而不是路径（安全模型
+ *     如此），所以内容先走 `POST /uploads` 落进服务端暂存区，再把服务进程
+ *     自己写的绝对路径填回来 —— 选中的与导入读到的出自同一个进程。
+ *   * **服务端目录点选**（`GET /fs`）：不传内容、直接要路径，适合大文件。
+ *   * **手填**：路径按服务进程的工作目录解析，写错在提交前就被拒。
+ *
+ * 上传只是**拿路径**：表单不自动提交，parser / dry-run 这些选项照旧由用户
+ * 看一眼再点「开始导入」。
  */
 import { computed, ref } from 'vue'
-import { watchImport } from '../api.js'
+import { upload, watchImport } from '../api.js'
 import { store } from '../store.js'
 import FsPicker from '../components/FsPicker.vue'
 
@@ -33,12 +44,17 @@ const busy = ref(false)
 const error = ref('')
 const phases = ref([])
 const picker = ref(false)
+const fileInput = ref(null)
+const dragOver = ref(false)
+//: > 0 表示正在上传的文件数（0 = 空闲）。与提交的 `busy` 是两件事：
+//: 上传完路径才进表单，"上传中"点提交会导一个不完整的批次。
+const uploading = ref(0)
 
 const pathList = computed(() =>
   paths.value.split('\n').map((line) => line.trim()).filter(Boolean))
 
 /**
- * 从浏览框选中一个路径：**追加**，不覆盖 —— 手填的与点选的可以混着来。
+ * 从浏览框/上传选中一个路径：**追加**，不覆盖 —— 手填的与点选的可以混着来。
  * 已经在表单里的不加第二行（同一个文件导两遍是纯粹的坏行来源）。
  */
 function addPath(picked) {
@@ -46,6 +62,39 @@ function addPath(picked) {
     paths.value = [...pathList.value, picked].join('\n')
   }
   picker.value = false
+}
+
+/**
+ * 原生选择器 / 拖拽进来的文件 → 上传暂存区 → 路径进表单。
+ * 一次请求带一批（FormData 多个 `files` 字段），后端一批一个子目录。
+ */
+async function handleFiles(list) {
+  const files = Array.from(list || [])
+  dragOver.value = false
+  if (!files.length) return
+  uploading.value = files.length
+  error.value = ''
+  try {
+    const form = new FormData()
+    for (const file of files) form.append('files', file, file.name)
+    const data = await upload('/uploads', form)
+    for (const item of data.files || []) addPath(item.path)
+    append(`已上传 ${data.count} 个文件到暂存区 —— 路径已填入下方，` +
+      '确认解析器选项后点「开始导入」。')
+  } catch (err) {
+    error.value = `上传失败：${err.message}`
+  } finally {
+    uploading.value = 0
+  }
+}
+
+function onDrop(event) {
+  handleFiles(event.dataTransfer && event.dataTransfer.files)
+}
+
+function onPick(event) {
+  handleFiles(event.target.files)
+  event.target.value = ''                 // 同一个文件再选一次也要触发 change
 }
 
 function append(text, level = 'info') {
@@ -120,15 +169,30 @@ function onBatch(payload) {
     <div class="dialog panel">
       <h1>导入</h1>
       <p class="dim small">
-        把 subfinder / httpx 的输出收进来。点「浏览…」在服务端目录树里点选
-        （拿到的直接就是绝对路径），或者手填 —— 手填时**路径按服务进程的工作
-        目录解析**，写错会在提交之前就被拒（而不是变成一个「没有匹配到文件」
-        的作业）。
+        把 subfinder / httpx 的输出收进来。首选：点「选择文件…」弹系统对话框
+        （可多选）或直接把文件拖进来 —— 文件会先传到服务端暂存区换回绝对路径。
+        大文件可用「服务端目录…」在目录树里点选（不传内容），或直接手填 ——
+        手填时**路径按服务进程的工作目录解析**，写错会在提交之前就被拒。
       </p>
+
+      <input ref="fileInput" type="file" multiple hidden
+             @change="onPick" />
+      <div class="drop" :class="{ over: dragOver }"
+           @dragover.prevent="dragOver = true"
+           @dragleave="dragOver = false"
+           @drop.prevent="onDrop">
+        <button type="button" class="ghost" :disabled="uploading > 0"
+                @click="fileInput && fileInput.click()">
+          {{ uploading > 0 ? `正在上传 ${uploading} 个文件…` : '选择文件…' }}
+        </button>
+        <span class="dim small">或把文件拖到这里</span>
+      </div>
 
       <div class="labelrow">
         <label>文件或目录（每行一个）</label>
-        <button type="button" class="ghost" @click="picker = true">浏览…</button>
+        <button type="button" class="ghost" @click="picker = true">
+          服务端目录…（高级）
+        </button>
       </div>
       <textarea v-model="paths" rows="5"
         placeholder="D:\recon\subfinder.txt&#10;D:\recon\httpx.jsonl" />
@@ -168,7 +232,7 @@ function onBatch(payload) {
         </span>
         <span class="spacer" />
         <button class="ghost" @click="emit('close')">关闭</button>
-        <button class="primary" :disabled="busy" @click="submit">
+        <button class="primary" :disabled="busy || uploading > 0" @click="submit">
           {{ busy ? '提交中…' : '开始导入' }}
         </button>
       </div>
@@ -190,6 +254,14 @@ label.check { display: flex; align-items: center; gap: 7px; margin-top: 12px;
               color: var(--dim); font-size: 12px; }
 label.check input { width: auto; }
 textarea, input, select { width: 100%; }
+.drop {
+  display: flex; align-items: center; gap: 10px;
+  margin: 4px 0 6px; padding: 14px 12px;
+  border: 1px dashed var(--line); border-radius: var(--radius-ui);
+  background: var(--bg);
+  transition: border-color .12s, background .12s;
+}
+.drop.over { border-color: var(--accent); background: var(--tint-accent); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .small { font-size: 11px; line-height: 1.6; }
 .phases { margin: 10px 0 0; padding: 8px 10px 8px 26px; max-height: 150px; overflow-y: auto;

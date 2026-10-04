@@ -956,10 +956,11 @@ def _query_syntax(parser) -> dict:
 #: 探针按**模块**问而不是按包名（`pyyaml` 提供的模块叫 `yaml`）。
 EXTRAS_REGISTRY: dict[str, dict[str, Any]] = {
     "api": {
-        "packages": ["fastapi", "uvicorn"],
-        "modules": ("fastapi", "uvicorn"),
-        "purpose": "本地 API 层（FastAPI / uvicorn）—— `magpie app` 起服务用；"
-                   "缺它时 app 入口报可读错误，core / 只读命令不受影响",
+        "packages": ["fastapi", "uvicorn", "python-multipart"],
+        "modules": ("fastapi", "uvicorn", "python_multipart"),
+        "purpose": "本地 API 层（FastAPI / uvicorn / multipart 表单）—— "
+                   "`magpie app` 起服务用；缺它时 app 入口报可读错误，"
+                   "core / 只读命令不受影响",
     },
     "api-yaml": {
         "packages": ["pyyaml"],

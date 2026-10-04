@@ -90,6 +90,18 @@ export const put = (path, payload) => call(path, {
   body: JSON.stringify(payload === undefined ? {} : payload),
 })
 
+/**
+ * 上传文件到暂存区（multipart，`POST /uploads`）—— 返回信封里的 data
+ * （`{files: [{name, path, bytes}], count}`，path 可直接喂 `POST /imports`）。
+ *
+ * **不手设 Content-Type**：multipart 的 boundary 由浏览器生成，人写的头只会
+ * 把它弄坏（这与 post/patch 的 JSON 头是两种相反的纪律）。
+ */
+export const upload = (path, formData) => call(path, {
+  method: 'POST',
+  body: formData,
+})
+
 /** SSE 的 URL —— 唯一一处把 token 放进查询串的地方（EventSource 发不了头）。 */
 export function eventsUrl(importId) {
   return `${API_PREFIX}/imports/${encodeURIComponent(importId)}/events` +

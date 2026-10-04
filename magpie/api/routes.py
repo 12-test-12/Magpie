@@ -45,12 +45,15 @@ import functools
 import io
 import json
 import os
+import secrets
+import shutil
 import sqlite3
 import string
+import time
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -841,6 +844,125 @@ def browse_fs(path: str | None = None) -> dict[str, Any]:
     return ok({"path": str(target),
                "parent": None if parent == target else str(parent),
                "entries": entries})
+
+
+# ---------------------------------------------------------------------------
+# 文件上传（导入对话框的原生「选择文件」与拖拽）
+# ---------------------------------------------------------------------------
+#
+# 为什么与 `/fs` 并存而不是二选一：原生选择器与拖拽给到的是**文件内容**，
+# 不是路径 —— 浏览器出于安全从不给本地绝对路径（理由与 /fs 那节同源）。
+# 唯一不撒谎的做法是让服务进程把内容落进暂存区，再把**它自己写的路径**还给
+# `POST /imports`：界面上"选中的文件"与导入读到的文件，于是出自同一台机器上
+# 的同一个进程。
+#
+# 三条边界，都是刻意的：
+#
+#   1. **一批一个子目录**（`uploads/<时间戳-4hex>/`）：同名不撞、整批可追溯，
+#      出问题时整批一起清。
+#   2. **分块流式落盘 + 超限即删**：单文件限额边写边计数，超了立刻把这一批
+#      回滚并 413 —— 不让一个 10 GiB 的 pcap 把磁盘悄悄吃光。
+#   3. **TTL 清理**：入口顺手删 7 天前的暂存批。暂存只是"等 `POST /imports`
+#      来取的中转"（archive=archived 会把原文复制进数据区），不做 DELETE 端点
+#      —— 没人调的清理端点，比没人调的清理代码更糟。
+
+#: 单文件大小上限（1 GiB）。常量而非配置：超限的语义是 413，而"限额读错了
+#: 环境变量"比"限额是个常量"难查得多。测试用 monkeypatch 改它。
+UPLOAD_MAX_BYTES = 1 << 30
+#: 单次请求的文件数上限 —— 批量是"一次导入一批"，不是"同步整个目录"。
+UPLOAD_MAX_FILES = 50
+#: 暂存批的存活天数：任何一次手动补跑都远在 7 天之内。
+UPLOAD_TTL_DAYS = 7
+#: 分块大小 1 MiB：让"限额"在写到第 1 GiB 时精确成立，而不是整文件驻内存。
+_UPLOAD_CHUNK = 1 << 20
+
+
+def _prune_uploads(root: Path) -> None:
+    """删过期暂存批。**清理失败不阻断上传** —— 它是卫生，不是闸门。"""
+    if not root.is_dir():
+        return
+    cutoff = time.time() - UPLOAD_TTL_DAYS * 86400
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                        shutil.rmtree(entry.path)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+
+def _staged_name(name: str | None, used: set[str]) -> str:
+    """文件名清洗 + 批内去重。
+
+    路径分隔符两种都洗（`../../x` 是攻击，`C:\\a\\b.txt` 只是 Windows 的习惯）；
+    `.` / `..` 落回 `file.bin`（`Path('..').name` 是 `'..'`，直接用会指到上一级）。
+    Windows 文件系统大小写不敏感，重名判定按 casefold —— 否则 `A.txt` 会盖掉
+    `a.txt`，而**静默覆盖一个文件**是导入语义里最不该有的行为。
+    """
+    base = Path(str(name or "").replace("\\", "/")).name.strip()
+    if base in ("", ".", ".."):
+        base = "file.bin"
+    candidate = base
+    n = 1
+    while candidate.casefold() in used:
+        p = Path(base)
+        candidate = f"{p.stem}-{n}{p.suffix}"
+        n += 1
+    used.add(candidate.casefold())
+    return candidate
+
+
+@router.post("/uploads", status_code=201, summary="上传文件到暂存区 → 返回绝对路径")
+async def post_upload(request: Request,
+                      files: list[UploadFile] | None = File(default=None)
+                      ) -> dict[str, Any]:
+    """接收一批文件，落进 `data_dir/uploads/<批>/`。
+
+    返回的 `files[].path` 一律**绝对路径**，可直接填进 `POST /imports` —— 与
+    `/fs` 的 `entries[].path` 是同一条契约的两种取法（点选 vs 上传）。
+    """
+    files = files or []
+    if not files:
+        raise ApiError(400, "E_NO_FILES", "没有收到任何文件",
+                       hint="表单字段名是 files；一次可带多个")
+    if len(files) > UPLOAD_MAX_FILES:
+        raise ApiError(400, "E_TOO_MANY_FILES",
+                       f"一次最多 {UPLOAD_MAX_FILES} 个文件，收到 {len(files)} 个")
+    root = _ctx(request).data_dir / "uploads"
+    _prune_uploads(root)
+    batch = root / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+    saved: list[dict[str, Any]] = []
+    try:
+        batch.mkdir(parents=True, exist_ok=True)
+        used: set[str] = set()
+        for upload_file in files:
+            name = _staged_name(upload_file.filename, used)
+            target = batch / name
+            total = 0
+            with open(target, "wb") as fh:
+                while chunk := await upload_file.read(_UPLOAD_CHUNK):
+                    total += len(chunk)
+                    if total > UPLOAD_MAX_BYTES:
+                        raise ApiError(
+                            413, "E_UPLOAD_TOO_LARGE",
+                            f"{name} 超过单文件上限 {UPLOAD_MAX_BYTES} 字节",
+                            hint="大文件（pcap 等）建议改用「服务端目录…」直接"
+                                 "选路径，不走上传")
+                    fh.write(chunk)
+            saved.append({"name": name, "path": str(target), "bytes": total})
+    except ApiError:
+        # 整批回滚：一次请求要么带回完整的一批，要么什么都别留 —— 半截文件
+        # 比失败更糟，它看起来像一个可以导入的文件。
+        shutil.rmtree(batch, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(batch, ignore_errors=True)
+        raise ApiError(500, "E_UPLOAD_FAILED",
+                       f"暂存区写入失败：{exc.strerror or exc}") from exc
+    return ok({"files": saved, "count": len(saved)})
 
 
 # ---------------------------------------------------------------------------

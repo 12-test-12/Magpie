@@ -12,6 +12,43 @@
 
 ---
 
+## 0.17.0 — 导入对话框：原生选择器 + 拖拽上传 `POST /api/v1/uploads`
+
+**纯新增**一条路由，既有端点的形状一字未动（openapi 快照重新生成：新路径 +
+`info.version` 0.16.0 → 0.17.0）。没有新增迁移（R4 未动）。GUI 的「服务端
+目录…（高级）」与手填两条路原样保留 —— 上传只是第三种拿到绝对路径的方式，
+**不自动提交**：路径填回表单后照旧由用户看一眼选项再点「开始导入」。
+
+### 对外契约（新增，按本节开头的规矩登记）
+
+**`POST /api/v1/uploads`（上传文件到暂存区 → 返回绝对路径）。** 浏览器的原生
+选择器 / 拖拽交出来的是文件**内容**而不是路径（安全模型如此），而
+`POST /imports` 要的是服务进程能解析的绝对路径 —— 内容先落服务端暂存区，由
+**同一个进程**写下它的路径再填回表单，选中的与导入读到的出自同一处（与
+`/fs` 的 `entries[].path` 是同一条契约的两种取法：点选 vs 上传）。
+
+* **请求**：multipart，字段名 `files`，一次可带多个（单请求 ≤ 50 个）。
+* **响应**（`data`，`201`）：`{files: [{name, path, bytes}], count}`。`path`
+  一律**绝对路径**，可直接填进 `POST /imports`；`name` 是洗过的安全文件名 ——
+  路径分隔符（`/` 与 `\`）剥离只留 basename、空 / `.` / `..` 落回 `file.bin`、
+  批内大小写不敏感去重（`A.txt` 撞 `a.txt` → `a-1.txt`，绝不静默覆盖）。
+* **落点与限额**：`data_dir/uploads/<YYYYMMDD-HHMMSS-4hex>/<文件>`（一批一
+  个子目录：同名不撞、整批可追溯）；分块流式落盘，单文件 1 GiB 上限 —— 超限
+  **整批回滚**（半截文件看起来像一个可以导入的文件，比失败更糟）；入口顺手
+  清 7 天前的暂存批（清理失败不阻断上传）。
+* **错误**（信封照旧）：`400 E_NO_FILES`（没带 `files` 字段）、
+  `400 E_TOO_MANY_FILES`（> 50）、`413 E_UPLOAD_TOO_LARGE`（单文件超限，
+  hint 指回「服务端目录…」）、`500 E_UPLOAD_FAILED`（暂存区写入 OSError）。
+  鉴权与其他路由同一道门（router 级 `require_token`）。
+
+**`magpie schema --json` 的 `extras` 登记表同步**：`api` 多一个
+`python-multipart`（`packages` 与 `modules` 两列各 +1）。FastAPI 只在**它自己
+的** `standard` extra 里声明它，裸装 fastapi 时 multipart 路由会在**路由定义
+时** RuntimeError —— 不登记就是"本机好好的、新环境起不来"。`extras` 的键与
+既有条目一字未动（`test_extras_registry_matches_pyproject` 钉两处逐项相等）。
+
+---
+
 ## 0.16.0 — 导入对话框「浏览…」：服务端目录浏览 `GET /api/v1/fs`
 
 **纯新增**一条路由，既有端点的形状一字未动（openapi 快照重新生成：新路径 +

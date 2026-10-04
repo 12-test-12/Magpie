@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "magpie"
-version = "0.16.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
+version = "0.17.0"       # 与 magpie/__init__.py 的 __version__ 保持一致
 # 0.1.0 → 0.2.0 对应 2.7：**纯新增**（magpie/api + SSE + `magpie app`）。
 # `/api/v1` 的响应形状从这一刻起是对外契约 —— 改它要升 minor 并写 CHANGELOG。
 # 0.2.0 → 0.3.0 对应 2.8：GUI 只读画布 + 作业历史/undo/redo 四个端点（**纯新增**）。
@@ -75,7 +75,11 @@ dependencies = []
 # 都在 3.11 上装得动）。钉住能让 openapi 快照更"稳"，但那恰好把它要买的东西
 # 一起钉死了：升级带来的**契约漂移**会一直藏着，直到某天在某个消费者那里爆炸。
 # 让快照在升级时红一次，正是 test_contract_openapi.py 本来要换来的信号。
-api = ["fastapi", "uvicorn"]
+#
+# `python-multipart`（0.17.0 起）：FastAPI 只在**它自己的** `standard` extra 里
+# 声明它，裸装 fastapi 时任何 multipart 表单端点（`POST /uploads`）都会在路由
+# 定义时 RuntimeError —— 那种"本机好好的、新环境起不来"正是登记进 extras 要防的。
+api = ["fastapi", "uvicorn", "python-multipart"]
 # YAML 解析的 extras（名字沿用 3.4 的 `api-yaml`，**不新开**）：3.4 的 OpenAPI
 # YAML、3.7b 的管线定义、4.3 的指纹规则都用它 —— 全部只在**函数体内** lazy
 # import（R6：core 顶层 ⊆ 标准库），缺时报 `MissingExtrasError`（消息里带
