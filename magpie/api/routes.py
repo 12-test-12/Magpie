@@ -224,6 +224,41 @@ def get_meta(conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     })
 
 
+@router.get("/mcp", summary="MCP 接入信息（配置 + 工具清单 + 只读/写划分，0.21.0）")
+def get_mcp(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """接入页的后端：**配置 + 服务端自述 + 工具清单**，由真 `McpServer` 现算。
+
+    为什么不能蹭 `/meta`：这里要暴露的是 db 绝对路径与完整命令表 —— `/meta`
+    刻意不给（见 get_meta 的注释）。为什么每次现开一个 `McpServer`（跑一次
+    `cmd_schema`）：页面上的工具清单与适配器真正 `tools/list` 出来的**逐字节
+    同源** —— 两边各存一份清单必然漂移，这正是 5.2 修掉的头号失败模式。
+
+    `config.mcpServers` 是 Claude Desktop 等客户端的接线片段，`--db` 用绝对
+    路径（客户端按自己的 cwd 解析相对路径，接线建议里从不写相对）。
+    """
+    # 延迟 import（仿 /meta 的延迟组装）：api 启动路径不碰 adapters。
+    from ..adapters import mcp as mcp_adapter
+
+    ctx = _ctx(request)
+    server = mcp_adapter.McpServer(ctx.db_path)
+    tools = [server.registry[name].to_mcp() for name in sorted(server.registry)]
+    db_abs = str(ctx.db_path)
+    return ok({
+        "config": {"mcpServers": {"magpie": {
+            "command": "py",
+            "args": ["-3.13", "-m", "magpie.adapters.mcp", "--db", db_abs],
+        }}},
+        "server": {"name": mcp_adapter.SERVER_NAME,
+                   "version": server.tool_version,
+                   "protocol_version": mcp_adapter.PROTOCOL_VERSION,
+                   "instructions": mcp_adapter.SERVER_INSTRUCTIONS},
+        "tools": tools,
+        "readonly_tools": sorted(mcp_adapter.READONLY_TOOLS),
+        "write_tools": sorted(mcp_adapter.WRITE_TOOLS),
+        "db_path": db_abs,
+    })
+
+
 class ProjectBody(BaseModel):
     name: str
     scope: dict[str, Any] = Field(default_factory=dict)
@@ -508,6 +543,51 @@ def post_lifecycle(body: LifecycleBody, request: Request,
                                  dry_run=body.dry_run)
 
     return ok(ctx.writer.submit(f"lifecycle {lifecycle}", task).result(timeout=120),
+              project_id=project_id)
+
+
+class NoteBody(BaseModel):
+    """`POST /notes` 的体 —— AI 发现通道（0.21.0）。
+
+    **这是 AI 客户端唯一被允许的写**（"非必要不修改"的 HTTP 半边）：一段散文，
+    落 `jobs.kind="ai_note"`，按 job 可撤销。`entity_id` 是 int 而不是 ref ——
+    HTTP 这一层没有 `_resolve_ref` 的键归一化，页面与 MCP 都拿得到整数 id。
+    """
+
+    entity_id: int
+    text: str
+    dry_run: bool = False
+
+
+@router.post("/notes", summary="提交一条 AI 发现（ai_note，可撤销）")
+def post_note(body: NoteBody, request: Request, project: str | None = None,
+              conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """AI 查到的东西回写到页面 —— 与 CLI `add_finding`、MCP `add_finding` 同一份
+    实现（`ops.add_finding`）。三个入口一份语义：append-only contribution
+    （`authorship="manual"` → 详情页「人工写入」分组）、`jobs.kind="ai_note"`、
+    `undo` 一步撤干净。
+
+    校验**在排队之前**做（与 `post_lifecycle` 同一条纪律）：空文本是用法错
+    （400），实体不存在是数据错（404）—— 一个注定失败的请求不该占一次写者。
+    写者里 `ops.add_finding` 自己的守卫仍是第二遍（真正防半途而废的那一遍）。
+    """
+    if not body.text.strip():
+        raise ApiError(400, "E_EMPTY_NOTE", "发现文本不能为空",
+                       hint="AI 的总结要有内容；空字符串不是发现")
+    project_id = _resolve_project(conn, project)
+    if not query.entity_exists(conn, project_id, body.entity_id):
+        raise ApiError(404, "E_ENTITY_NOT_FOUND",
+                       f"实体 {body.entity_id} 不在项目 {project_id} 里",
+                       hint="先 GET /api/v1/entities 拿到 id；跨项目与不存在"
+                            "在这里是同一件事")
+    ctx = _ctx(request)
+    entity_id, text, dry_run = int(body.entity_id), body.text, bool(body.dry_run)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.add_finding(conn_, project_id=project_id, entity_id=entity_id,
+                               text=text, actor="api", dry_run=dry_run)
+
+    return ok(ctx.writer.submit(f"note {entity_id}", task).result(timeout=120),
               project_id=project_id)
 
 
