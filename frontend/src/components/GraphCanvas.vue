@@ -183,9 +183,16 @@ function relayout() {
  * `Shift` + 单击 = **批量选中**（3.8）：那一组 id 就是详情面板里"把选中的并入
  * 这里"与批量改状态的操作对象。走的是浏览器原生的 `shiftKey`，不自己维护一个
  * "上一次点的是谁" —— 那个状态在切换筛选、切换项目、刷新之后都会说谎。
+ *
+ * 聚合卡（`kind:`）单击 = **下钻**（评审二/三：`domain × 30` 点开要看那 30 个
+ * 域名）。聚合卡没有实体身份，所以它不是"选中"，是"展开这一类"——
+ * `store.drillKind` 会按 kinds 服务端重载并旁路聚合。
  */
 function onNodeClick({ node, event }) {
-  if (node.id.startsWith('kind:')) return               // 聚合节点没有身份
+  if (node.id.startsWith('kind:')) {
+    store.drillKind(node.data?.kind || node.id.slice('kind:'.length))
+    return
+  }
   if (event && event.shiftKey) {
     store.toggleSelection(node.data?.entityId ?? node.id)
     return
@@ -240,7 +247,19 @@ defineExpose({ fitView })
     <div v-if="isAggregate" class="aggregate-banner">
       库中共 {{ fmtInt(store.graphTotal) }} · 已载入 {{ fmtInt(store.counts.entities) }}
       个节点 → 聚合为 {{ flowNodes.length }} 张卡（阈值 {{ AGGREGATE_THRESHOLD }}）
-      —— 单个类型内部不再逐个显示
+      —— <b>点一张卡下钻到具体实体</b>
+    </div>
+
+    <!-- 下钻横幅（评审二/三）：常驻出口与三个口径 —— 与域名视图横幅同一纪律：
+         任何"图变小/变样了"的状态都必须有可见的原因和回去的门。 -->
+    <div v-if="store.drill" class="drill-banner">
+      <span class="label">下钻</span>
+      <span class="key mono">{{ store.drill }}</span>
+      <span class="count">
+        库中 {{ fmtInt(store.graphTotal) }} · 已逐个显示
+        {{ fmtInt(store.counts.entities) }} 个
+      </span>
+      <button class="ghost" @click="store.exitDrill()">退出下钻</button>
     </div>
 
     <!-- 域名视图横幅（0.19.0）。裁剪是**服务端**做的，所以必须有个常驻的出口：
@@ -357,6 +376,26 @@ defineExpose({ fitView })
   /* 纯提示条不拦指针：没有它，画布左上角一条区域的拖拽/点选全被吃掉 */
   pointer-events: none;
 }
+/* 下钻横幅：与聚合横幅同槽（两者互斥 —— 下钻中必然不是聚合态），但它带
+   「退出下钻」按钮，所以**要**拦指针；这就是它不复用 aggregate-banner 的原因。 */
+.drill-banner {
+  position: absolute;
+  top: 46px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+  padding: 5px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-ui);
+  background: var(--overlay);
+  font-size: 11px;
+}
+.drill-banner .label { color: var(--dim); }
+.drill-banner .key { color: var(--accent); font-weight: 600; }
+.drill-banner .count { color: var(--dim); }
 .legend {
   position: absolute;
   bottom: 12px;

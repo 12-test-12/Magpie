@@ -28,6 +28,7 @@ import JobsView from './views/JobsView.vue'
 import InboxView from './views/InboxView.vue'
 import DoctorView from './views/DoctorView.vue'
 import RiskView from './views/RiskView.vue'
+import OverviewView from './views/OverviewView.vue'
 import ImportDialog from './views/ImportDialog.vue'
 import ProjectManager from './components/ProjectManager.vue'
 import { store } from './store.js'
@@ -39,6 +40,16 @@ const booted = ref(false)
 const fatal = ref('')
 
 const showDetail = computed(() => store.view === 'explore')
+
+//: 镜头页**动态接线**：`meta.kinds[].lens` 登记了 6 个镜头（assets / services /
+//: vuln / api / traffic / graph），旧版只写死了 3 个分支 —— 左栏点「接口」
+//: 「流量」会 setView 成一个没有任何分支认领的 key，中间直接空白。LensView
+//: 本来就按 `lens` prop 通用（FACETS 按 lens 查表），所以按 `lensKeys` 认领
+//: 即可：登记一个新镜头，页面自己出现 —— 与 `loadLenses` 同一条纪律。
+const activeLensLabel = computed(() => {
+  const row = (store.lensRows || []).find((entry) => entry.key === store.view)
+  return row ? row.label : ''
+})
 
 async function boot() {
   try {
@@ -101,7 +112,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       <LeftPanel />
 
       <section class="center">
-        <template v-if="store.view === 'explore'">
+        <!-- 项目总览（评审十一）= 默认首页。空库时它内部渲染 EmptyGuide ——
+             "从这里开始 / 还没有数据"两张引导卡从此长在首页上，而不是藏在
+             一个要先点进去的画布里。 -->
+        <OverviewView v-if="store.view === 'overview'" @import="importOpen = true" />
+        <template v-else-if="store.view === 'explore'">
           <GraphCanvas>
             <template #empty>
               <EmptyGuide @import="importOpen = true" />
@@ -113,11 +128,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              （`showDetail`）只跟着 `explore` 出现，所以这里不用改它 ——
              它已经是对的。 -->
         <PipelineView v-else-if="store.view === 'pipeline'" />
-        <LensView v-else-if="store.view === 'assets'" lens="assets" label="资产"
-                  @import="importOpen = true" />
-        <LensView v-else-if="store.view === 'services'" lens="services"
-                  label="服务与中间件" @import="importOpen = true" />
-        <LensView v-else-if="store.view === 'vuln'" lens="vuln" label="漏洞"
+        <!-- 镜头页按 `lensKeys` 动态认领（见 activeLensLabel 的注释）。 -->
+        <LensView v-else-if="store.lensKeys.includes(store.view)"
+                  :lens="store.view" :label="activeLensLabel"
                   @import="importOpen = true" />
         <JobsView v-else-if="store.view === 'jobs'" @import="importOpen = true" />
         <InboxView v-else-if="store.view === 'inbox'" />

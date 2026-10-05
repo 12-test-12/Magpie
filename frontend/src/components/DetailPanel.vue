@@ -2,7 +2,13 @@
 /**
  * 右栏：实体详情（计划书 §7.1 的"节点参数面板"）。
  *
- *   概况 / 观测 / 关系 / 时间线 / 标签，观测按 type 分组折叠
+ * 区块主干（GPT 评审八的"安全详情页"）：
+ *
+ *   基本信息 / 来源（观测 + 时间线）/ 风险路径 / 关联资产（域名视图 + 关系）
+ *   / 标签·合并（维护）/ AI分析（复制给 AI，secret 先过二次确认）
+ *
+ * 观测按 origin 分组折叠；敏感观测值默认 `前4位****` 预览（评审七 ——
+ * 见 `looksSensitive` 上方那段：原文从未入库，这里防的是漏网）。
  *
  * 这里的「观测按 type 分组」用的是 `observations.origin`（tool / manual /
  * imported）—— 它是数据层里**真的**存在的分组，不是界面自己按字段名前缀猜的。
@@ -195,6 +201,188 @@ const outRelations = computed(() =>
 const inRelations = computed(() =>
   (detail.value?.relations || []).filter((r) => r.direction === 'in'))
 
+// ---------------------------------------------------------------------------
+// A · 敏感观测值的**呈现层防线**（GPT 评审七）
+// ---------------------------------------------------------------------------
+//
+// 先把事实说清楚：**原文从未入库**。`scan.secret_key` 存的是
+// `规则名:sha256(规则名:值)`，观测值落库的唯一出口 `ingest._value_text` 过
+// `redact_secrets`（前4位****）。这里防的是**漏网**：未登记形态的凭据万一
+// 以原文进了观测，界面默认按 `前4位****` 预览，点「显示」才展开 —— 与后端
+// `mask_secret` 同形。所以也**不做假的"显示原文"**：值本来就是掩码/哈希时
+// （含 `****`）连"敏感"都不判，没有可遮的东西。
+const SENSITIVE_RE = [
+  /gh[pousr]_[A-Za-z0-9]{10,}/,                 // GitHub token 家族
+  /github_pat_[A-Za-z0-9_]{10,}/,
+  /sk-[A-Za-z0-9_-]{10,}/,                      // OpenAI 式密钥
+  /xox[baprs]-[A-Za-z0-9-]{10,}/,               // Slack
+  /AKIA[0-9A-Z]{16}/,                           // AWS Access Key Id
+  /AIza[0-9A-Za-z_-]{30,}/,                     // Google API key
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\./,  // JWT（三段式头.载荷.签名）
+  /\b(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|auth)\s*[=:]\s*\S/i,
+]
+
+/** 这个值要不要默认遮蔽。**保守方向**：只认已知凭据形态，不做熵启发式 ——
+ *  误伤 location 的 JSON / 时间戳会让"显示"按钮变成常驻噪音。 */
+function looksSensitive(value) {
+  const text = String(value ?? '')
+  if (!text || text.includes('****')) return false   // 已是掩码形态：没有可遮的
+  return SENSITIVE_RE.some((re) => re.test(text))
+}
+
+/** 与后端 `mask_secret` 同形：前 4 位 + ****。 */
+function sensitivePreview(value) {
+  return String(value ?? '').slice(0, 4) + '****'
+}
+
+//: 展开状态按观测 id 记（同一份原文在两个实体里出现时互不干扰）。
+const revealed = ref({})
+//: 复制反馈也按观测 id —— 剪贴板操作**成功与失败都必须可见**（与「复制给 AI」
+//: 同款纪律：点了没反应会让人以为复制成功了）。
+const obsCopy = ref({})
+
+function toggleReveal(obs) {
+  revealed.value = { ...revealed.value, [obs.id]: !revealed.value[obs.id] }
+}
+
+async function copyObs(obs) {
+  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard
+  if (!clipboard || typeof clipboard.writeText !== 'function') {
+    obsCopy.value = { ...obsCopy.value,
+                      [obs.id]: { text: '没有剪贴板 API', bad: true } }
+    return
+  }
+  try {
+    await clipboard.writeText(String(obs.value))
+    obsCopy.value = { ...obsCopy.value, [obs.id]: { text: '已复制', bad: false } }
+  } catch (err) {
+    obsCopy.value = { ...obsCopy.value,
+                      [obs.id]: { text: `复制失败：${err.message || err}`, bad: true } }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A · 「复制给 AI」二次确认（GPT 评审七："非常严重的问题"）
+// ---------------------------------------------------------------------------
+//: 只有 `kind === 'secret'` 需要确认 —— 上下文包会带上凭据观测。确认块是
+//: **内联**的（不是弹窗）：本机工具里模态框唯一的效果是训练人无脑点"确定"。
+//: `copyForAI` 内部一字未改（verify_g5 B4a 钉着它的端点与剪贴板形态）。
+const confirmCopy = ref(false)
+const needsConfirm = computed(() => detail.value?.entity?.kind === 'secret')
+
+function onCopyClick() {
+  if (needsConfirm.value && !confirmCopy.value) {
+    confirmCopy.value = true
+    return
+  }
+  copyForAI()
+}
+
+// ---------------------------------------------------------------------------
+// C · 风险路径（GPT 评审九："这个 JWT 到底关联到了什么"）
+// ---------------------------------------------------------------------------
+//
+// 一次显式点击换**一个请求**：`GET /graph/{id}/neighbors?depth=5&limit=500`
+// （服务端 BFS 裁好的子图），客户端在它上面再走一次无向 BFS 找目标 ——
+// 不改后端、不加端点、不碰图（结果只是几枚可点的 chip）。
+//
+// 为什么按钮触发而不自动：右栏选中态的 `get` 调用被「复制给 AI」行为测试
+// 钉死为 1（那条断言守的是"复制不附带别的请求"）—— 自动拉邻居会把它打红，
+// 而它红的原因与复制毫无关系。更重要的理由是**代价**：depth=5 在大库上不是
+// 免费的，不该为每个被点开的实体都付一次。
+//
+// 目标随起点反转：一般实体 → 走到 `domain`（攻击面链路的顶层）；域名 →
+// 走到最近的 `secret`/`vuln`（它的证据侧）。两边答的是同一个问题：
+// **这个东西沿着关系连到了什么**。
+const pathState = ref('idle')     // idle | busy | done | none
+const pathError = ref('')
+const pathNodes = ref([])         // [{id, kind, key, rel}] —— 链，首项是起点
+
+function pathGoalKinds(entity) {
+  return entity.kind === 'domain' ? ['secret', 'vuln'] : ['domain']
+}
+
+function pathGoalText(entity) {
+  return entity.kind === 'domain'
+    ? '从这个域名沿关系走到最近的 secret / vuln（它的证据侧）'
+    : '从这个实体沿关系走到域名（攻击面链路的顶层）'
+}
+
+async function computeRiskPath() {
+  const entity = detail.value?.entity
+  if (!entity || pathState.value === 'busy') return
+  pathState.value = 'busy'
+  pathError.value = ''
+  pathNodes.value = []
+  try {
+    const project = store.project
+      ? `&project=${encodeURIComponent(store.project)}` : ''
+    const payload = await get(
+      `/graph/${entity.id}/neighbors?depth=5&limit=500${project}`)
+    const nodes = payload?.nodes || []
+    const edges = payload?.edges || []
+    const byId = new Map(nodes.map((n) => [String(n.id), n]))
+    const adj = new Map()
+    for (const edge of edges) {
+      const src = String(edge.src)
+      const dst = String(edge.dst)
+      if (!adj.has(src)) adj.set(src, [])
+      if (!adj.has(dst)) adj.set(dst, [])
+      adj.get(src).push([dst, edge])
+      adj.get(dst).push([src, edge])
+    }
+    const start = String(entity.id)
+    const goals = new Set(pathGoalKinds(entity))
+    const seen = new Set([start])
+    const parent = new Map()          // id → { from, edge }
+    let frontier = [start]
+    let goal = null
+    // 逐层 BFS：同一层里先找目标，找不到才展开下一层 —— 链在所有最短路径里
+    // 取第一条（确定性：邻接按边序），不会"每次点都换一条"。
+    while (frontier.length && !goal) {
+      const next = []
+      for (const cur of frontier) {
+        for (const [nid, edge] of adj.get(cur) || []) {
+          if (seen.has(nid)) continue
+          seen.add(nid)
+          parent.set(nid, { from: cur, edge })
+          const node = byId.get(nid)
+          if (node && goals.has(String(node.kind))) { goal = nid; break }
+          next.push(nid)
+        }
+        if (goal) break
+      }
+      frontier = next
+    }
+    if (!goal) {
+      pathState.value = 'none'
+      return
+    }
+    const chain = []
+    let cur = goal
+    while (cur !== start && parent.has(cur)) {
+      const { from, edge } = parent.get(cur)
+      const node = byId.get(cur)
+      chain.unshift({
+        id: node ? node.id : Number(cur),
+        kind: node ? String(node.kind || '') : '',
+        key: node ? String(node.entity_key || `#${cur}`) : `#${cur}`,
+        rel: String(edge.rel || ''),
+      })
+      cur = from
+    }
+    pathNodes.value = [{
+      id: entity.id, kind: String(entity.kind || ''),
+      key: String(entity.entity_key || ''), rel: '',
+    }, ...chain]
+    pathState.value = 'done'
+  } catch (err) {
+    pathError.value = `风险路径计算失败：${err.message}`
+    pathState.value = 'idle'
+  }
+}
+
 function toggleGroup(origin) {
   openGroups.value[origin] = !openGroups.value[origin]
 }
@@ -282,6 +470,18 @@ function selectManual(event) {
 function goTo(rel) {
   store.ensureVisible(rel.other_id)
 }
+
+//: 换实体 = 换上下文：确认块 / 展开态 / 复制反馈 / 风险链全部归零。不重置的
+//: 话，上一个 secret 的"已确认"会让下一个 secret 一击即发 —— 而那正是确认
+//: 要防的事。
+watch(detail, () => {
+  confirmCopy.value = false
+  revealed.value = {}
+  obsCopy.value = {}
+  pathState.value = 'idle'
+  pathError.value = ''
+  pathNodes.value = []
+})
 </script>
 
 <template>
@@ -327,13 +527,15 @@ function goTo(rel) {
       </section>
 
       <p class="faint small hint">
-        点画布上的一个实体，这里显示它的概况 / 观测 / 关系 / 时间线。
-        聚合视图下（节点数超过 200）卡片代表一个类型 —— 在左栏按类型筛选后
-        即可回到逐个实体。
+        点画布上的一个实体，这里显示它的基本信息 / 来源观测 / 风险路径 /
+        关联资产 / AI分析。聚合视图下（节点数超过 200）<b>点一张类型卡即可
+        下钻</b>到逐个实体。
       </p>
     </template>
 
     <template v-else>
+      <!-- 基本信息头（评审八）：key + 类型 + 状态。secret 额外挂 🔒 已掩码 ——
+           身份是哈希、观测值入库前已掩码（原文从未入库），把这件事说在最显眼处。 -->
       <header class="head">
         <div class="title">
           <span class="swatch" :style="{ background: kindColor(detail.entity.kind) }" />
@@ -341,15 +543,153 @@ function goTo(rel) {
         </div>
         <div class="tags">
           <span class="chip accent">{{ detail.entity.kind }}</span>
+          <span v-if="detail.entity.kind === 'secret'" class="chip warn"
+                title="身份 = 规则名:哈希；观测值入库前已掩码，原文从未入库">
+            🔒 已掩码
+          </span>
           <span class="chip">{{ detail.entity.lifecycle }}</span>
           <span class="chip mono">#{{ detail.entity.id }}</span>
         </div>
       </header>
 
+      <!-- 基本信息（评审八的骨架第一格）：出现时间 + 人工保护 + 状态。
+           「状态」按钮从原来的顶级区并进来 —— 详情页的主干是
+           基本信息 / 来源 / 风险 / 关联资产 / AI分析，"状态"不值一个孤零零的
+           顶级区（它就是基本信息的一个字段）。 -->
+      <section>
+        <h2 class="section">基本信息</h2>
+        <dl class="kv">
+          <dt>首次出现</dt><dd class="mono">{{ detail.entity.first_seen || '—' }}</dd>
+          <dt>最近出现</dt><dd class="mono">{{ detail.entity.last_seen || '—' }}</dd>
+          <dt>人工保护</dt>
+          <dd class="mono">
+            {{ detail.manual.protected_fields.length
+              ? detail.manual.protected_fields.join(', ') : '（无）' }}
+          </dd>
+        </dl>
+        <div class="acts lifecycle">
+          <button v-for="value in ['active', 'retired']" :key="value" class="ghost"
+                  :class="{ on: detail.entity.lifecycle === value }"
+                  :disabled="busy || detail.entity.lifecycle === value"
+                  @click="setLifecycle(detail.entity.id, value)">
+            {{ LIFECYCLE_LABEL[value] }}
+          </button>
+        </div>
+        <p class="faint small">
+          改状态是**一个 job**（一次事务，要么全成要么全不成），撤销按钮就在
+          作业历史里 —— 与其它写操作是同一个。
+        </p>
+      </section>
+
+      <section>
+        <h2 class="section">观测（{{ fmtInt(detail.observations.length) }}）</h2>
+        <p v-if="!detail.observations.length" class="warn small">
+          一条观测都没有 —— 这是一个**没测过**的实体。
+        </p>
+        <div v-for="group in grouped" :key="group.origin" class="group">
+          <button class="group-head ghost" @click="toggleGroup(group.origin)">
+            <span class="caret">{{ openGroups[group.origin] ? '▾' : '▸' }}</span>
+            {{ ORIGIN_LABEL[group.origin] || group.origin }}
+            <span class="badge">{{ group.items.length }}</span>
+          </button>
+          <ul v-show="openGroups[group.origin]" class="obs">
+            <!-- 敏感值默认遮蔽（评审七）：命中已知凭据形态的值先给
+                 `前4位****` 预览，「显示」才展开；「复制」始终可用，且成功/
+                 失败都有可见反馈（剪贴板操作不许"点了没反应"）。 -->
+            <li v-for="obs in group.items" :key="obs.id">
+              <span class="field mono">{{ obs.semantic_field }}</span>
+              <template v-if="looksSensitive(obs.value)">
+                <span v-if="!revealed[obs.id]" class="value mono masked">
+                  {{ sensitivePreview(obs.value) }}
+                </span>
+                <span v-else class="value mono">{{ obs.value }}</span>
+                <span class="obs-acts">
+                  <button class="ghost xs" @click="toggleReveal(obs)">
+                    {{ revealed[obs.id] ? '隐藏' : '显示' }}
+                  </button>
+                  <button class="ghost xs" @click="copyObs(obs)">复制</button>
+                </span>
+                <span v-if="obsCopy[obs.id]" class="chip"
+                      :class="obsCopy[obs.id].bad ? 'warn' : 'ok'">
+                  {{ obsCopy[obs.id].text }}
+                </span>
+              </template>
+              <template v-else>
+                <span class="value mono">{{ obs.value }}</span>
+              </template>
+              <span class="chip" :class="{
+                ok: obs.confidence === 'high',
+                warn: obs.confidence === 'low' || obs.confidence === 'conflict',
+              }">{{ obs.confidence }}</span>
+            </li>
+          </ul>
+        </div>
+        <!-- secret 的脚注（评审七）：把"这里没有原文"说清楚 —— 而不是让人
+             以为原文被藏起来了。 -->
+        <p v-if="detail.entity.kind === 'secret'" class="faint small">
+          🔒 这些观测值是入库前掩码后的形态（前4位+****）；身份是
+          规则名:哈希 —— <b>原文从未入库</b>，没有「显示原文」这回事。
+        </p>
+      </section>
+
+      <!-- 来源的第二半：时间线（评审八的「时间」格）—— 紧跟观测，它们说的是
+           同一件事（这个值是什么时候、由谁记下来的）。 -->
+      <section>
+        <h2 class="section">时间线</h2>
+        <ul class="timeline">
+          <li v-for="row in detail.timeline" :key="row.id">
+            <span class="mono at">{{ row.at }}</span>
+            <span class="mono action">{{ row.action }}</span>
+            <span class="faint">{{ row.actor }}</span>
+          </li>
+          <li v-if="!detail.timeline.length" class="dim">（无）</li>
+        </ul>
+      </section>
+
+      <!-- 风险路径（评审九）：一键沿关系走子图 —— Secret → … → Domain。
+           显式按钮触发（理由见 computeRiskPath 的注释），链上的每一段都可点。 -->
+      <section>
+        <h2 class="section">风险路径</h2>
+        <p class="faint small">{{ pathGoalText(detail.entity) }}</p>
+        <div class="acts">
+          <button class="ghost path-btn" :disabled="pathState === 'busy'"
+                  @click="computeRiskPath">
+            {{ pathState === 'busy' ? '正在沿关系搜索…' : '计算风险路径' }}
+          </button>
+          <button v-if="pathState === 'done' || pathState === 'none'"
+                  class="ghost" @click="pathState = 'idle'; pathNodes = []">
+            清除
+          </button>
+        </div>
+        <p v-if="pathError" class="bad small">{{ pathError }}</p>
+        <p v-if="pathState === 'none'" class="dim small">
+          5 跳邻居里没有走到目标 —— 关系数据还不够连出一条链（多导一份
+          httpx / nuclei 输出会更连通）。
+        </p>
+        <div v-if="pathState === 'done' && pathNodes.length" class="chain">
+          <template v-for="(hop, i) in pathNodes" :key="'hop' + hop.id">
+            <!-- 段标 = **进入这一跳**的那条边（重建时 hop.rel 就存的它）——
+                 写成 i-1 会把上一段的标签挪到这一段，最后一跳的关系永远不出
+                 现（riskpath.test 钉着 found_on/resolves_to 两条都在）。 -->
+            <span v-if="i" class="chain-rel mono">{{ pathNodes[i].rel || '→' }}
+              <span class="arrow">↓</span>
+            </span>
+            <button class="chain-node" :style="{ '--band': kindColor(hop.kind) }"
+                    :title="`${hop.kind} · 点击在画布上打开`"
+                    @click="store.ensureVisible(hop.id)">
+              <span class="mono ck">{{ hop.key }}</span>
+              <span class="ckind">{{ hop.kind }}</span>
+            </button>
+          </template>
+        </div>
+      </section>
+
       <!-- 域名视图入口（0.19.0）。**互斥的单按钮**：不在视图里是「只看它的
            资产」，正在看它就是「退出域名视图」—— 两个按钮并排会让人先问
            "我现在在哪"，而一个状态只需要一个动作。看别的域名时按钮回到
-           「只看它的资产」，点了直接换视图（setDomainFocus 是覆盖不是叠加）。 -->
+           「只看它的资产」，点了直接换视图（setDomainFocus 是覆盖不是叠加）。
+           归属它放在「关联资产」名下（评审八）：它回答的正是"这个域名名下
+           有哪些资产"。 -->
       <section v-if="detail.entity.kind === 'domain'">
         <h2 class="section">域名视图</h2>
         <div class="acts">
@@ -383,65 +723,7 @@ function goTo(rel) {
       </section>
 
       <section>
-        <h2 class="section">复制给 AI</h2>
-        <div class="acts">
-          <button class="ghost copy-ai" :disabled="copyBusy" @click="copyForAI">
-            {{ copyBusy ? '正在取上下文…' : '复制给 AI' }}
-          </button>
-          <span v-if="copyFeedback" class="chip ok">{{ copyFeedback }}</span>
-        </div>
-        <p v-if="copyError" class="bad small">{{ copyError }}</p>
-        <template v-if="manualMarkdown">
-          <p class="warn small">
-            下面是上下文包原文 —— 点一下选中，Ctrl/Cmd+C 手动复制。
-          </p>
-          <textarea class="manual mono" readonly rows="8" :value="manualMarkdown"
-                    @click="selectManual"></textarea>
-        </template>
-        <p class="faint small">
-          只把 Markdown 放进本机剪贴板（`navigator.clipboard`），不向任何地方发送。
-        </p>
-      </section>
-
-      <section>
-        <h2 class="section">概况</h2>
-        <dl class="kv">
-          <dt>首次出现</dt><dd class="mono">{{ detail.entity.first_seen || '—' }}</dd>
-          <dt>最近出现</dt><dd class="mono">{{ detail.entity.last_seen || '—' }}</dd>
-          <dt>人工保护</dt>
-          <dd class="mono">
-            {{ detail.manual.protected_fields.length
-              ? detail.manual.protected_fields.join(', ') : '（无）' }}
-          </dd>
-        </dl>
-      </section>
-
-      <section>
-        <h2 class="section">观测（{{ fmtInt(detail.observations.length) }}）</h2>
-        <p v-if="!detail.observations.length" class="warn small">
-          一条观测都没有 —— 这是一个**没测过**的实体。
-        </p>
-        <div v-for="group in grouped" :key="group.origin" class="group">
-          <button class="group-head ghost" @click="toggleGroup(group.origin)">
-            <span class="caret">{{ openGroups[group.origin] ? '▾' : '▸' }}</span>
-            {{ ORIGIN_LABEL[group.origin] || group.origin }}
-            <span class="badge">{{ group.items.length }}</span>
-          </button>
-          <ul v-show="openGroups[group.origin]" class="obs">
-            <li v-for="obs in group.items" :key="obs.id">
-              <span class="field mono">{{ obs.semantic_field }}</span>
-              <span class="value mono">{{ obs.value }}</span>
-              <span class="chip" :class="{
-                ok: obs.confidence === 'high',
-                warn: obs.confidence === 'low' || obs.confidence === 'conflict',
-              }">{{ obs.confidence }}</span>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <section>
-        <h2 class="section">关系（出 {{ fmtInt(outRelations.length) }} / 入 {{ fmtInt(inRelations.length) }}）</h2>
+        <h2 class="section">关联资产（出 {{ fmtInt(outRelations.length) }} / 入 {{ fmtInt(inRelations.length) }}）</h2>
         <ul class="rels">
           <li v-for="rel in outRelations" :key="'o' + rel.id">
             <span class="arrow ok">→</span>
@@ -487,22 +769,6 @@ function goTo(rel) {
       </section>
 
       <section>
-        <h2 class="section">状态</h2>
-        <div class="acts">
-          <button v-for="value in ['active', 'retired']" :key="value" class="ghost"
-                  :class="{ on: detail.entity.lifecycle === value }"
-                  :disabled="busy || detail.entity.lifecycle === value"
-                  @click="setLifecycle(detail.entity.id, value)">
-            {{ LIFECYCLE_LABEL[value] }}
-          </button>
-        </div>
-        <p class="faint small">
-          改状态是**一个 job**（一次事务，要么全成要么全不成），撤销按钮就在
-          作业历史里 —— 与其它写操作是同一个。
-        </p>
-      </section>
-
-      <section>
         <h2 class="section">合并（{{ merges.length }}）</h2>
         <ul class="merges">
           <li v-for="event in merges" :key="event.event_id">
@@ -529,16 +795,53 @@ function goTo(rel) {
       </section>
       <p v-if="opError" class="bad small">{{ opError }}</p>
 
+      <!-- AI分析（评审八的尾格）：「复制给 AI」是这一格今天唯一真的动作 ——
+           取上下文包进本机剪贴板。secret 实体先出确认块（评审七），确认后
+           才走 `copyForAI`（其内部形态被 verify_g5 B4a 钉死，一字未改）。 -->
       <section>
-        <h2 class="section">时间线</h2>
-        <ul class="timeline">
-          <li v-for="row in detail.timeline" :key="row.id">
-            <span class="mono at">{{ row.at }}</span>
-            <span class="mono action">{{ row.action }}</span>
-            <span class="faint">{{ row.actor }}</span>
-          </li>
-          <li v-if="!detail.timeline.length" class="dim">（无）</li>
-        </ul>
+        <h2 class="section">AI分析</h2>
+        <div class="acts">
+          <button class="ghost copy-ai" :disabled="copyBusy" @click="onCopyClick">
+            {{ copyBusy ? '正在取上下文…' : '复制给 AI' }}
+          </button>
+          <span v-if="copyFeedback" class="chip ok">{{ copyFeedback }}</span>
+        </div>
+
+        <!-- 敏感实体的二次确认（评审七）：内联而不是弹窗 —— 本机工具里模态框
+             唯一的效果是训练人无脑点"确定"。 -->
+        <div v-if="needsConfirm && confirmCopy && !copyBusy && !copyFeedback"
+             class="confirm panel">
+          <p class="warn small">
+            <b>即将把敏感凭据放进剪贴板</b> —— 这个实体是 secret，上下文包里
+            可能包含：
+          </p>
+          <ul class="confirm-list">
+            <li>访问令牌 / 会话凭据</li>
+            <li>身份凭据（观测值已掩码，但规则与位置会带上）</li>
+            <li>关联到它的接口与主机</li>
+          </ul>
+          <div class="acts">
+            <button class="ghost" @click="confirmCopy = false">取消</button>
+            <button class="primary copy-ai-confirm" @click="copyForAI">
+              确认复制
+            </button>
+          </div>
+          <p class="faint small">
+            复制是**本机剪贴板**操作，不向任何地方发送。
+          </p>
+        </div>
+
+        <p v-if="copyError" class="bad small">{{ copyError }}</p>
+        <template v-if="manualMarkdown">
+          <p class="warn small">
+            下面是上下文包原文 —— 点一下选中，Ctrl/Cmd+C 手动复制。
+          </p>
+          <textarea class="manual mono" readonly rows="8" :value="manualMarkdown"
+                    @click="selectManual"></textarea>
+        </template>
+        <p class="faint small">
+          只把 Markdown 放进本机剪贴板（`navigator.clipboard`），不向任何地方发送。
+        </p>
       </section>
     </template>
   </aside>
@@ -637,4 +940,61 @@ section + section { margin-top: 18px; }
 .timeline li { display: flex; gap: 7px; padding: 2px 0; }
 .timeline .at { color: var(--faint); font-size: 10px; }
 .timeline .action { color: var(--dim); }
+
+/* --- 敏感观测值（评审七）：预览 + 显示/复制两枚小按钮。 ------------------ */
+.lifecycle { margin-top: 8px; }
+.obs .masked { color: var(--warn); letter-spacing: .06em; }
+.obs-acts { display: inline-flex; gap: 3px; flex: none; }
+.obs-acts .xs { padding: 1px 6px; font-size: 10px; line-height: 15px; }
+
+/* --- 敏感实体的内联确认块（评审七）。 ------------------------------------ */
+.confirm {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius-card);
+  background: var(--panel-2);
+}
+.confirm p { margin: 0 0 6px; }
+.confirm-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+
+/* --- 风险路径链（评审九）。 ---------------------------------------------- */
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+.chain-rel { font-size: 10px; color: var(--faint); }
+.chain-rel .arrow { color: var(--dim); }
+.chain-node {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 100%;
+  padding: 4px 8px 4px 7px;
+  border: 1px solid var(--line-card, var(--line));
+  border-left: 3px solid var(--band, var(--accent));
+  border-radius: var(--radius-ui);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.chain-node:hover { border-color: var(--accent); }
+.chain-node .ck {
+  font-size: 11px;
+  color: var(--fg, inherit);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chain-node .ckind { font-size: 9px; color: var(--faint); }
 </style>

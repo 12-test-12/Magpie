@@ -100,12 +100,20 @@ const _selectedLoading = ref(false)
 const _filter = reactive({ kinds: [], keyword: '', focusId: null, depth: 1,
                            underDomain: null })
 const _logLines = shallowRef([])
-const _view = ref('explore')
+//: 默认页 = **项目总览**（评审十一：安全产品不该一进来就是图，先答"这个项目
+//: 现在怎么样"）。进画布是总览上的一次显式动作（「进入攻击面画布」/左栏导航）。
+const _view = ref('overview')
 const _paletteOpen = ref(false)
 const _drawerOpen = ref(true)
 //: 日志抽屉高度（视觉整改：可拖高）。**会话内记忆**，与聚合卡位置同一待遇
 //: （不入库 —— 布局偏好不是事实）；clamp 在组件里（96–520，见 LogDrawer）。
-const _drawerHeight = ref(190)
+//: 默认 130（评审十二：任务中心常驻 100–150px —— 短到不占画布，又留得下
+//: 一行进度 + 两行最近任务）。
+const _drawerHeight = ref(130)
+//: 聚合下钻（评审二/三）：点聚合卡后要"看具体实体"的那一个 kind。会话级 ——
+//: 它是**显示状态**不是事实，刷新回聚合；置位期间 `_visible` 旁路
+//: `buildAggregate`（否则 endpoint 9,593 会重新聚回一张卡，下钻等于没发生）。
+const _drillKind = ref(null)
 const _activeImportId = ref(null)
 //: 进度数字的口径（0.18.0 多文件）：
 //:   `records` / `badLines` 是**跨文件累计**（= baseRecords/baseBadLines +
@@ -213,7 +221,10 @@ const _visible = computed(() => {
     kinds: _filter.kinds, keyword: _filter.keyword,
     focusId: _filter.focusId, depth: _filter.depth,
   })
-  if (shouldAggregate(filtered.nodes)) {
+  // 下钻中（`drillKind`）**旁路聚合**：这一屏的全部意义就是逐个看那一类
+  // 实体 —— 此时服务端已按 kinds 裁剪（≤500 个，与平时载入窗口同量级），
+  // 再聚一次等于点了没反应。
+  if (!_drillKind.value && shouldAggregate(filtered.nodes)) {
     const grouped = buildAggregate(filtered.nodes, filtered.edges, { saved: _aggLayout })
     return { ...grouped, aggregated: true, entityCount: filtered.nodes.length }
   }
@@ -232,7 +243,12 @@ const _visible = computed(() => {
 // 但页面该开还是开；写在这里而不是让 TopBar 自己维护一份 key 清单，
 // 是因为两份清单迟早分叉，而症状会是某个页签静默掉组。
 export const VIEWS = [
-  { key: 'explore', label: '画布', hint: '探索模式（只读）', group: 'mode' },
+  // 首页（评审十一）：项目总览 —— 资产四象限 / 风险概览 / 重点风险资产。
+  // 排第一：它同时是 TopBar 的第一个页签与默认视图（`_view` 的初值）。
+  { key: 'overview', label: '项目总览', hint: '资产规模 + 风险概览 + 重点风险资产', group: 'mode' },
+  // 重定位（评审四）：这张图画的是攻击面链路（domain → ip → service →
+  // endpoint → secret → vuln），名字要说出来。
+  { key: 'explore', label: '攻击面画布', hint: '探索模式（只读）', group: 'mode' },
   // 编排模式只是 `store.view` 的**一个新取值**（冻结 F5）—— 不新增第二套路由
   // 状态。第二套路由状态的表现是"刷新之后回到另一个页面"，而那在本地工具里
   // 会被当成"偶发"。
@@ -325,6 +341,9 @@ export const store = reactive({
   setFilter,
   toggleKind,
   clearFilter,
+  drill: _drillKind,
+  drillKind,
+  exitDrill,
   setDomainFocus,
   clearDomainFocus,
   tagEntity,
@@ -562,6 +581,9 @@ export async function selectProject(name) {
   // 聚合卡位置是**项目内**的会话记忆：带去别的项目，就是把 A 项目的排版
   // 盖在 B 项目的卡上（kind 相同就能撞键）。
   for (const key of Object.keys(_aggLayout)) delete _aggLayout[key]
+  // 下钻状态同理：B 项目未必有这个 kind，带着它 = 一屏空图 + 一个说不清
+  // 来历的"下钻中"横幅。
+  _drillKind.value = null
   // 域名视图同理：A 项目的域名在 B 项目多半查无此人，带着它换项目 = 一张
   // 永远空着的图 + 一个说不清原因的横幅。
   _filter.underDomain = null
@@ -779,7 +801,42 @@ export async function clearDomainFocus() {
  * `_visible` 同步重算，测试与交互都不等网络），重载把 kinds 推给服务端 ——
  * 截图里筛 `secret` 得到 0 个，就是因为只改了本地、而那 13 个不在前 500 里。
  */
+/**
+ * 聚合卡下钻（评审二/三：「domain × 30」点开要看见那 30 个域名）。
+ *
+ * 两步合成一次动作：
+ *   1. 服务端 `kinds=[kind]` 重载 —— 拿到的**最多 500 个该类型实体**，
+ *      而不是"已载入窗口里恰好摊到的那几个"（窗口裁剪会让下钻看起来少人）；
+ *   2. `_drillKind` 置位 —— `_visible` 从此旁路聚合，哪怕这一类有 9,593 个
+ *      （服务端 limit 兜底 500，与平时的载入窗口同量级，不会炸渲染）。
+ *
+ * 退出走 `exitDrill`（横幅按钮），或任何一次手动改筛选（`toggleKind` /
+ * `clearFilter` 顺带清标记 —— 那时用户已经改了主意，留着下钻状态只会让
+ * "我明明点了取消怎么还是单类型视图"变成一个谜）。
+ */
+export async function drillKind(kind) {
+  const value = String(kind || '').trim()
+  if (!value) return
+  _drillKind.value = value
+  if (_filter.kinds.length !== 1 || _filter.kinds[0] !== value) {
+    _filter.kinds = [value]
+  }
+  pushLog(`下钻 ${value}：聚合卡展开为逐实体视图`, 'activity')
+  await loadGraph()
+}
+
+export async function exitDrill() {
+  if (!_drillKind.value) return
+  const was = _drillKind.value
+  _drillKind.value = null
+  if (_filter.kinds.length === 1 && _filter.kinds[0] === was) {
+    _filter.kinds = []
+    await loadGraph()
+  }
+}
+
 export async function toggleKind(kind) {
+  _drillKind.value = null          // 手动改筛选 = 退出下钻（见 drillKind 注释）
   const set = new Set(_filter.kinds)
   if (set.has(kind)) set.delete(kind)
   else set.add(kind)
@@ -791,6 +848,7 @@ export async function clearFilter() {
   //: kinds / 域名视图都是服务端筛的 —— 只清本地标志不重载，画布上留着的
   //: 还是裁剪过的图。
   const scoped = _filter.underDomain !== null || _filter.kinds.length > 0
+  _drillKind.value = null
   _filter.kinds = []
   _filter.keyword = ''
   _filter.focusId = null

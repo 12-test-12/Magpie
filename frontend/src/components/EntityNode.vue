@@ -67,7 +67,7 @@ const subtitle = computed(() => {
     :style="{ width: NODE_WIDTH + 'px', height: NODE_HEIGHT + 'px', '--band': color }"
     :data-entity-id="data.entityId"
     :data-collapsed="data.collapsed ? '1' : '0'"
-    :title="data.key"
+    :title="data.aggregated ? `点击下钻到具体 ${data.kind}` : data.key"
   >
     <span class="band" />
     <div class="body">

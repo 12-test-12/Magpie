@@ -144,6 +144,11 @@ function onTabsDblClick(event) {
     <!-- 拖高把手：贴在抽屉最上沿的窄条（双击页签栏 = 折叠，把手本身只管拖）。 -->
     <div class="grip" title="拖动调高" @pointerdown="onGripDown" />
     <header class="tabs" @dblclick="onTabsDblClick">
+      <!-- 定位（评审十二）：这是「任务中心」不是日志窗口 —— 名字先摆出来，
+           默认高度（store.drawerHeight 初值 130）留在 100–150px 那一档。 -->
+      <span class="tt" title="导入进度 / agent 活动 / 坏行 —— 底部任务中心">
+        任务中心
+      </span>
       <button v-for="item in [
           { key: 'import', label: '导入作业' },
           { key: 'activity', label: 'agent 活动' },
@@ -279,6 +284,15 @@ function onTabsDblClick(event) {
 }
 .grip:hover::after { background: var(--accent); }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 5px 10px; }
+/* 「任务中心」小标：与页签同排但低一档（它是定位说明，不是又一个页签）。 */
+.tt {
+  font-size: 10px;
+  letter-spacing: .1em;
+  color: var(--faint);
+  padding-right: 6px;
+  border-right: 1px solid var(--line-soft);
+  flex: none;
+}
 .tab { border-color: transparent; color: var(--dim); display: inline-flex; gap: 5px; }
 .tab.active { border-color: var(--accent); color: var(--accent); }
 .spacer { flex: 1; }

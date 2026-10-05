@@ -174,3 +174,72 @@ describe('「复制给 AI」按钮（5.3）', () => {
     wrapper.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// secret 实体的二次确认（评审七："非常严重的问题"）
+// ---------------------------------------------------------------------------
+//
+// 上下文包会带上凭据观测 —— secret 实体上"一点就把凭据铺进剪贴板"是不行的。
+// 这里钉的是**三段式**：首点只出确认块（0 请求 0 剪贴板）→ 确认才走原来的
+// copyForAI（形态与上面 domain 的断言一字不差）→ 取消则一切归零。失败方式
+// 是"确认块渲染了但确认按钮没接线"，只测首点抓不到它。
+describe('secret 实体的「复制给 AI」二次确认（评审七）', () => {
+  const SECRET_DETAIL = {
+    ...DETAIL,
+    entity: { ...DETAIL.entity, kind: 'secret', entity_key: 'gh_token@ci' },
+  }
+
+  it('首点只出确认块：请求 0 次、剪贴板没碰', async () => {
+    store.selectedDetail = SECRET_DETAIL
+    const writeText = vi.fn(async () => {})
+    stubClipboard(writeText)
+    const wrapper = mount(DetailPanel)
+    await wrapper.vm.$nextTick()
+
+    await clickCopy(wrapper)
+
+    expect(wrapper.find('.confirm').exists()).toBe(true)
+    expect(wrapper.find('.copy-ai-confirm').exists()).toBe(true)
+    expect(get).not.toHaveBeenCalled()
+    expect(writeText).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('点「确认复制」才真的走端点 + 进剪贴板（形态与 domain 完全一致）', async () => {
+    store.selectedDetail = SECRET_DETAIL
+    const writeText = vi.fn(async () => {})
+    stubClipboard(writeText)
+    const wrapper = mount(DetailPanel)
+    await wrapper.vm.$nextTick()
+
+    await clickCopy(wrapper)                          // 首点 → 确认块
+    await wrapper.find('.copy-ai-confirm').trigger('click')
+    await flush()
+
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(get).toHaveBeenCalledWith('/agent/context?entity_id=42&depth=1')
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith(MARKDOWN)
+    expect(wrapper.text()).toContain(`已复制 ${MARKDOWN.length} 字`)
+    // 确认块在 copyFeedback 出现后收起 —— 留着它会让人以为还要再确认一次
+    expect(wrapper.find('.confirm').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('点「取消」：确认块收起，一个请求都不发', async () => {
+    store.selectedDetail = SECRET_DETAIL
+    const writeText = vi.fn(async () => {})
+    stubClipboard(writeText)
+    const wrapper = mount(DetailPanel)
+    await wrapper.vm.$nextTick()
+
+    await clickCopy(wrapper)                          // 首点 → 确认块
+    await wrapper.find('.confirm .ghost').trigger('click')   // 取消
+    await flush()
+
+    expect(wrapper.find('.confirm').exists()).toBe(false)
+    expect(get).not.toHaveBeenCalled()
+    expect(writeText).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
