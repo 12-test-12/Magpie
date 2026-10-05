@@ -12,6 +12,43 @@
 
 ---
 
+## 0.21.0 — MCP 接入页 + AI 发现通道：`POST /notes`、`GET /mcp`、CLI/MCP `add_finding`
+
+Magpie 成为 AI 自动渗透测试的底座这一步的三个落点：AI 客户端经 MCP **查看 +
+总结**库内内容（默认只读不变）；AI 渗透中查到的发现经**专用通道**回写，页面
+可见、按作业可撤销（**非必要不修改**）；接入本身在前端有一张「MCP 接入」页
+（配置 + 工具清单 + 页内试用），不再藏在命令行 `-m` 模块里。三个人机入口
+（CLI / HTTP / MCP）落在同一份实现 `ops.add_finding`。无 schema 迁移。
+
+### 对外契约（按本节开头的规矩登记）
+
+* **`POST /api/v1/notes`（新）** —— AI 发现通道。体 `{entity_id, text,
+  dry_run=false}`；200 回 `ai_note.add` 报告（`job_id` / `observation_id` /
+  `semantic_field`（内容寻址 `ai_note:<hash12>`）/ `source="ai:add_finding"` /
+  `text_length`）；空文本 400 `E_EMPTY_NOTE`、实体不存在 404
+  `E_ENTITY_NOT_FOUND`（都在排队之前快速失败）。一次提交 = 一个
+  `jobs.kind="ai_note"` 作业，撤销走既有的 `POST /jobs/{id}/undo`（不新开路）。
+  观测 `origin="manual"` → 详情页「人工写入」分组；source 权限
+  `unverified`（0.6，不占人工 2.0 的权重）。
+* **`GET /api/v1/mcp`（新）** —— 接入信息：`config.mcpServers`（Claude
+  Desktop 等的接线片段，`--db` 为绝对路径）、`server`（name / version /
+  protocol_version / instructions）、`tools`（与适配器 `tools/list` 逐字节
+  同源 —— 每次由真 `McpServer` 现算，不存第二份清单）、`readonly_tools` /
+  `write_tools` 划分、`db_path`。暴露 db 路径与命令表，所以与 `/meta` 分开。
+* **CLI `magpie add_finding <ref> <文本> [--dry-run]`（新）** —— 退出码：
+  空文本 1（`E_USAGE`）；实体不存在 / 键歧义 2（`E_ENTITY_NOT_FOUND` /
+  `E_AMBIGUOUS`…）；`--dry-run` 报告照出、`job_id=null`、库一行不动。文本
+  以 `-` 开头在 MCP 协议面会被 -32602 拒（M1 位置参数防线），CLI 用 `--` 传。
+* **MCP 工具面 +1（写）** —— 新声明 `WRITE_TOOLS = {add_finding}`（恰一个）。
+  三处围栏同步加宽：注册表写分支只放行声明过的写命令（把它的 `access` 伪造成
+  `read` 反而掉面）、启动漂移检查对 `READONLY_TOOLS ∪ WRITE_TOOLS`、
+  `tools/call` 只给写工具开读写连接（其余仍 `PRAGMA query_only`）。
+  `initialize` 的 instructions 仍是「默认只读」+ 点名唯一例外；导入 / undo /
+  合并 / 裁决 / 导出等写操作**一个都不进面**。
+* **前端新页「MCP 接入」**（顶栏「治理」组 / 左栏「分析」组）—— 接线配置
+  （复制成败可见）、工具清单（只读 / 写通道两色徽章）、页内试用（走 HTTP
+  同义端点；`schema` / `timeline` 如实标注「仅 CLI/MCP，无 HTTP 等价」）。
+
 ## 0.20.0 — 画布口径根治 + 项目管理：`/graph` `kinds=`·`total`、`/domains/summary`、归档/硬删
 
 两张截图（筛 `secret` 得 0、筛 `endpoint` 显示 437 而左栏 9,593）是同一根因的

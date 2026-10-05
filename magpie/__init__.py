@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.20.0"       # 与 pyproject.toml 的 version 保持一致（/graph 口径 + 项目管理归档/删除）
+__version__ = "0.21.0"       # 与 pyproject.toml 的 version 保持一致（MCP 接入页 + AI 发现通道）
 
 __all__ = ["__version__"]

@@ -304,6 +304,30 @@
         "title": "MergeBody",
         "type": "object"
       },
+      "NoteBody": {
+        "description": "`POST /notes` 的体 —— AI 发现通道（0.21.0）。\n\n**这是 AI 客户端唯一被允许的写**（\"非必要不修改\"的 HTTP 半边）：一段散文，\n落 `jobs.kind=\"ai_note\"`，按 job 可撤销。`entity_id` 是 int 而不是 ref ——\nHTTP 这一层没有 `_resolve_ref` 的键归一化，页面与 MCP 都拿得到整数 id。",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "text"
+        ],
+        "title": "NoteBody",
+        "type": "object"
+      },
       "ProjectBody": {
         "properties": {
           "name": {
@@ -455,7 +479,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.20.0"
+    "version": "0.21.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2468,6 +2492,27 @@
         "summary": "镜头页（assets|services|api|vuln|traffic|graph）"
       }
     },
+    "/api/v1/mcp": {
+      "get": {
+        "description": "接入页的后端：**配置 + 服务端自述 + 工具清单**，由真 `McpServer` 现算。\n\n为什么不能蹭 `/meta`：这里要暴露的是 db 绝对路径与完整命令表 —— `/meta`\n刻意不给（见 get_meta 的注释）。为什么每次现开一个 `McpServer`（跑一次\n`cmd_schema`）：页面上的工具清单与适配器真正 `tools/list` 出来的**逐字节\n同源** —— 两边各存一份清单必然漂移，这正是 5.2 修掉的头号失败模式。\n\n`config.mcpServers` 是 Claude Desktop 等客户端的接线片段，`--db` 用绝对\n路径（客户端按自己的 cwd 解析相对路径，接线建议里从不写相对）。",
+        "operationId": "get_mcp_api_v1_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Mcp Api V1 Mcp Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "MCP 接入信息（配置 + 工具清单 + 只读/写划分，0.21.0）"
+      }
+    },
     "/api/v1/meta": {
       "get": {
         "operationId": "get_meta_api_v1_meta_get",
@@ -2486,6 +2531,65 @@
           }
         },
         "summary": "版本 / schema / 类型登记表 / 可用解析器"
+      }
+    },
+    "/api/v1/notes": {
+      "post": {
+        "description": "AI 查到的东西回写到页面 —— 与 CLI `add_finding`、MCP `add_finding` 同一份\n实现（`ops.add_finding`）。三个入口一份语义：append-only contribution\n（`authorship=\"manual\"` → 详情页「人工写入」分组）、`jobs.kind=\"ai_note\"`、\n`undo` 一步撤干净。\n\n校验**在排队之前**做（与 `post_lifecycle` 同一条纪律）：空文本是用法错\n（400），实体不存在是数据错（404）—— 一个注定失败的请求不该占一次写者。\n写者里 `ops.add_finding` 自己的守卫仍是第二遍（真正防半途而废的那一遍）。",
+        "operationId": "post_note_api_v1_notes_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Post Note Api V1 Notes Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "提交一条 AI 发现（ai_note，可撤销）"
       }
     },
     "/api/v1/paste": {
