@@ -1421,6 +1421,100 @@ def set_lifecycle(conn: sqlite3.Connection, *, project_id: int,
         return report
 
 
+def add_finding(conn: sqlite3.Connection, *, project_id: int, entity_id: int,
+                text: str, actor: str = "cli", dry_run: bool = False,
+                _shared_txn: bool = False) -> dict[str, Any]:
+    """AI 发现通道：把一段散文提交为实体上的观测（0.21.0 · `jobs.kind="ai_note"`）。
+
+    设计要点（缺一不可，理由写在这里免得后人"简化"）：
+
+    * **append-only + 可撤销免费**：事实以 contribution 落库（INV-01，唯一写入口
+      `store.add_contribution`），撤销走 `ops.undo(job_id)` 的 supersession ——
+      undo/redo 对 job kind 是通用的，这里一行撤销代码都不需要。
+    * **`authorship="manual"`**：`store.recompute` 看到 manual 贡献就把
+      `observations.origin` 翻成 `manual` → DetailPanel 的「人工写入」分组
+      自然展示，且 `manual_owned` 把实体锚成 GC 保护对象。
+    * **source 是 `unverified`（0.6）不是 `manual`（2.0）**：AI 的话不该拿
+      人工录入的最高权重 —— `confidence.AUTHORITY_TERM` 是唯一数据源。
+    * **`semantic_field` 内容寻址（`ai_note:<sha256前12>`）**：字段名随文本走。
+      固定字段名会让同一实体的第二条发现撞 `v_field_conflicts`（>1 distinct
+      value），在下一次 import 的 `reconcile_conflicts` 里变成假 Inbox 项；
+      声明 multivalue 又要一次迁移（禁止）。每段文本一个字段 → 结构上不可能
+      冲突；同一段文本重复提交 → 同字段同值仍是 1 个 distinct value，无冲突。
+    * **刻意不调** `reconcile_conflicts` / `refresh_unknown_fields` / scope 系列
+      （ingest 专属）与 `log_activity`（ACTION_NAMESPACE 冻结；`job.start` /
+      `job.finish` / `contribution.add` 已覆盖审计）。也不写 `work_journal` ——
+      追加型事实的撤销走 supersession，不走工作层回放。
+    """
+    store.require_row_factory(conn, caller="ops.add_finding")
+    note = (text or "").strip()
+    if not note:
+        raise InvariantError("发现文本不能为空")
+
+    with batch_txn(conn, dry_run, _shared_txn):
+        # ---- 1. 前置校验（写第一行之前）----
+        row = conn.execute(
+            "SELECT kind FROM entities WHERE id=? AND project_id=?",
+            (entity_id, project_id)).fetchone()
+        if row is None:
+            # 跨项目访问与不存在是同一句话的两种原因：都必须响亮失败
+            # （与 set_lifecycle 同一条纪律，消息形状保持一致）。
+            raise InvariantError(
+                f"实体 {entity_id} 不在项目 {project_id} 里（不存在或属于别的项目）")
+        kind = str(row["kind"])
+        # 展示 key 走 store.display_key —— GUI / MCP / 搜索层的强制入口，
+        # 自己拼 alias 会绕过 canonical / merge 的物化结果。
+        entity_key = store.display_key(conn, entity_id)
+        if not entity_key:
+            raise InvariantError(f"实体 {entity_id} 没有可用的 entity_key")
+
+        job_id = _identity_job(conn, project_id, "ai_note", None, actor)
+
+        # ---- 2. 证据链：raw_file → evidence（两列 NOT NULL 的代价）----
+        digest = sha256_hex(note)
+        raw_id = add_raw_file(conn, project_id=project_id,
+                              locator_uri=f"ai-note://{job_id}/note-{digest[:12]}.txt",
+                              content=note)
+        evidence_id = add_evidence(
+            conn, project_id=project_id, raw_file_id=raw_id,
+            locator={"kind": "ai_note", "job_id": job_id,
+                     "entity_id": entity_id, "offset": 0, "length": len(note)},
+            snippet=note, quality_class="medium", recovery_state="full")
+        source_id = store.register_source(conn, name="ai:add_finding",
+                                          authority_level="unverified",
+                                          tool="add_finding", actor=actor)
+
+        # ---- 3. 身份一致性守卫：key 解析必须回到同一个 id ----
+        # add_observation 内部按 key upsert；若 alias 层把 key 解到别的实体，
+        # 这里先炸，而不是悄悄把发现写到别人身上。
+        resolved = store.resolve_entity(conn, project_id, entity_key)
+        if resolved != entity_id:
+            raise InvariantError(
+                f"INV-05 变体: 实体 {entity_id} 的 key {entity_key!r} "
+                f"解析到 {resolved}，不一致")
+
+        # ---- 4. 事实：observation 贡献（authorship=manual）----
+        semantic_field = f"ai_note:{digest[:12]}"
+        obs_id = add_observation(
+            conn, project_id=project_id, job_id=job_id, evidence_id=evidence_id,
+            source_id=source_id, entity_key=entity_key, kind=kind,
+            semantic_field=semantic_field, value=note, value_kind="string",
+            authorship="manual", observed_at_source="manual")
+
+        # ---- 5. 缓存层重建（origin → manual 就在这一步发生）----
+        touched = _recompute_subjects_of_job(conn, job_id)
+        store.recompute(conn, delta=touched)
+
+        finish_job(conn, job_id, "done", actor=actor)
+        return {"op": "ai_note.add", "dry_run": bool(dry_run),
+                # 干跑不给 job_id（同 set_lifecycle：它会随 ROLLBACK 消失，
+                # 交出去等于给一个换回 500 的把手）。
+                "job_id": None if dry_run else job_id,
+                "entity_id": entity_id, "observation_id": obs_id,
+                "semantic_field": semantic_field, "source": "ai:add_finding",
+                "text_length": len(note)}
+
+
 def _replay_work_journal(conn: sqlite3.Connection, job_id: int, *, direction: str,
                          actor: str) -> list[dict[str, Any]]:
     """把 J 写下的工作层日志按 `direction` 放回去（undo→before / redo→after）。
