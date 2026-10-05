@@ -7,23 +7,136 @@
 > **仅用于自有资产与已获授权的目标**，不用于未授权扫描。
 > 工具本身**不主动发起任何网络请求** —— 唯一例外是默认关闭的 `magpie ask`（显式开启才出站，出站前先做敏感信息掩码）。
 
+当前版本 **0.20.0**。
+
 ---
 
-## 功能概览
+## 它能干什么
 
-| 能力 | 说明 |
-|------|------|
-| 分层数据层 | 事实层 append-only；`entities / observations / relations` 是 `recompute` 可全量重建的缓存层；身份层（别名 / merge）、工作层、审计层，全部在一份 SQLite schema 里 |
-| 解析导入 | 14 种解析器：nmap、httpx、nuclei、ffuf、dirsearch、katana、gau、har、curl、fingerprint、openapi、postman、domainlist、tshark（pcap 抓包）。嗅探仲裁自动选型；仲裁不出结果的文件**不猜**，进 Inbox 待人工裁决 |
-| 撤销 / 重做 | 每个文件一个作业，undo / redo 粒度到文件；支持干跑预览（`--dry-run` 报告与真跑同构、事实一行不写）、rekey、merge / unmerge、批量撤销 |
-| GUI 双模式 | **探索模式**（只读实体关系画布：拖拽 / 折叠 / 筛选 / 标注）+ **编排模式**（可编辑管线定义：增删步骤、连依赖、存取复用、批量跑、整体撤销）；另有导入对话框（服务端目录点选）、镜头页、实体详情、作业历史（含 undo / redo 干跑预览）、Inbox、数据体检、风险页 |
-| 命令行 | 只读 10 条（`ls` `lens` `show` `diff` `doctor` `schema` `timeline` `export` `risk` `init`）+ 写 4 条（`project` `import` `undo` `redo`）；`--json` 信封是默认输出，退出码表 0–5 与 HTTP 状态一一对应 |
-| HTTP API | FastAPI + SSE 进度事件；只绑回环、随机端口、一次性 token、不开 CORS 通配；OpenAPI 快照测试钉住契约，改了形状测试当场红 |
-| MCP 适配器 | stdio 只读工具面（`ls` `lens` `show` `diff` `doctor` `schema` `timeline` `jobs` `risk` `agent_context`），清单从 schema 契约派生，agent 接上即用 |
-| 风险评分 | 可解释评分：`sum(因子贡献) == 总分` 是测试钉住的恒等式，每个因子带证据；攻击面按主机汇总服务 / 端点 / 未处置漏洞 |
-| 时间线 / 导出 | `magpie timeline` 按时间语义排序的项目事件线；`magpie export` 打包导出，**默认脱敏**（`--full` 才带归档原文并给可见告警） |
-| LLM 问答 | `magpie ask` —— 全工具**唯一出站点，默认关闭**；开启后发请求前打横幅告警，载荷先过 detect_secrets 掩码 |
-| 一条命令验证 | `py -3.13 check.py`：11 条静态红线 + 全量单测 + 各阶段设计验证脚本，一条命令出结论 |
+### 1. 把乱七八糟的工具产物收进来
+
+- **14 种解析器**：nmap、httpx、nuclei、ffuf、dirsearch、katana、gau、har、curl、fingerprint、openapi、postman、domainlist、tshark（pcap 抓包）。
+- 嗅探仲裁**自动选型**，不用告诉它"这是什么文件"；仲裁拿不准的**不猜**，进 Inbox 待人工裁决（退出码 3）。
+- 每个文件一个**作业**：增量导入、干跑预览（`--dry-run` 报告与真跑同构、事实一行不写）。
+
+### 2. 统一的实体与关系模型
+
+- 分层数据层：事实层 append-only；`entities / observations / relations` 是 `recompute` 可全量重建的缓存层；身份层（别名 / merge）、工作层、审计层，全在一份 SQLite schema 里。
+- 缓存坏了不是灾难，是可验证的中间态。
+
+### 3. 整体撤销 / 重做
+
+- undo / redo 粒度到**文件**；支持 rekey、merge / unmerge、批量撤销。
+- 事实层只追加 retract 抑制，不删贡献、不改贡献；undo / redo 严格互逆。
+
+### 4. 看数据：四个入口一份数据
+
+| 入口 | 适合谁 | 说明 |
+|------|--------|------|
+| **GUI 画布** | 人 | **探索模式**（只读实体关系画布：拖拽 / 折叠 / 筛选 / 标注）+ **编排模式**（可编辑管线：增删步骤、连依赖、批量跑、整体撤销）；另有导入对话框、镜头页、实体详情、作业历史、Inbox、数据体检、风险页 |
+| **命令行** | 脚本 / 快查 | 只读 11 条（`ls` `lens` `show` `search` `diff` `doctor` `risk` `schema` `timeline` `export` `init`）+ 写 4 条（`project` `import` `undo` `redo`）+ `jobs` / `ask`；`--json` 信封是默认输出，退出码 0–5 与 HTTP 状态一一对应 |
+| **HTTP API** | 集成 | FastAPI + SSE 进度事件；只绑回环、随机端口、一次性 token、不开 CORS 通配；OpenAPI 快照测试钉住契约 |
+| **MCP 适配器** | AI agent | stdio 只读工具面（`ls` `lens` `show` `diff` `doctor` `schema` `timeline` `jobs` `risk` `agent_context`），清单从 schema 契约派生，agent 接上即用 |
+
+### 5. 风险与攻击面
+
+- 可解释评分：`sum(因子贡献) == 总分` 是测试钉住的恒等式，每个因子带证据。
+- 攻击面按主机汇总服务 / 端点 / 未处置漏洞；`magpie risk` 与 `GET /api/v1/risk` 同一段代码。
+
+### 6. 时间线 / 导出
+
+- `magpie timeline`：按时间语义排序的项目事件线。
+- `magpie export`：打包导出，**默认脱敏**（`--full` 才带归档原文并给可见告警）。
+
+### 7. LLM 问答（默认关闭）
+
+- `magpie ask` 是全工具**唯一出站点**；`MAGPIE_ASK_ENABLE=1` + `MAGPIE_ASK_URL` 显式配置才出站，发请求前打横幅告警，载荷先过 detect_secrets 掩码。
+
+---
+
+## 怎么启动
+
+### 第 0 步：环境
+
+- **Python ≥ 3.11**；开发与验证一律用 `py -3.13`（本机 PATH 上的 `python` 是另一个版本，别混用）。
+- 只用 CLI / MCP？**不需要任何第三方依赖**（core 红线 R6：纯标准库）。
+- 起 GUI / API 才需要 extras `api`；跑测试台架再加 `dev`。
+
+### 第 1 步：安装
+
+```bash
+py -3.13 -m pip install -e ".[api]"        # 起 GUI / API
+py -3.13 -m pip install -e ".[api,dev]"    # 外加测试台架（pytest）
+py -3.13 -m pip install -e .               # 只用 CLI / MCP（零第三方依赖）
+```
+
+装完后 `magpie` 命令在 PATH 上；不想装也行，`py -3.13 -m magpie.cli …` 完全等价。
+
+### 第 2 步：初始化（一次性）
+
+```bash
+magpie init                                 # 建库 / 升级 schema → .magpie/magpie.db（只建 schema，不建项目）
+magpie project create 靶场 --include '*.example.com'   # 建项目（scope 决定"什么算在范围里"）
+```
+
+### 第 3 步：导数据、看结果
+
+```bash
+magpie import ./raw/nmap.xml                # 导文件或目录；解析器自动仲裁
+magpie import ./raw --dry-run               # 先干跑看报告：事实一行不写
+magpie ls --human                           # 看实体（默认 JSON 信封，--human 转表格）
+magpie jobs --human                         # 看作业历史（undo / redo 的凭据在这）
+magpie undo <job>                           # 撤销某个文件的导入；magpie redo <job> 复原
+```
+
+### 第 4 步：起服务（GUI + HTTP API，同一份数据）
+
+```bash
+magpie app                                  # 默认 127.0.0.1 随机端口，打印带 token 的 URL 并自动开浏览器
+magpie app --port 8000 --token 固定token --no-browser   # 常用选项
+```
+
+- 启动后终端会打印 `URL`（含一次性 token）、`API` 前缀、`DB` 路径；Ctrl-C 停止。
+- **只绑回环**：`--host 0.0.0.0` 会被直接拒绝 —— 对外暴露请走 Docker 的 `-p` 显式决定。
+- GUI 源码在 `frontend/`，产物**已入库**，`magpie app` **不要求装 node**。
+
+### MCP 接线（给 AI agent 用）
+
+```bash
+py -3.13 -m magpie.adapters.mcp --db D:/path/.magpie/magpie.db
+```
+
+Claude Desktop 等客户端的 `mcpServers` 示例见该命令的 `--help`；只读，写操作不在其射程。接线建议用绝对路径（`--db` 相对路径按客户端 cwd 解析）。
+
+### 不想装 Python？两条路
+
+**Docker 部署**（数据落在卷里）：
+
+```bash
+docker compose up -d
+docker compose logs -f magpie            # token 在日志里
+# 浏览器打开 http://localhost:8000/?token=<token>
+```
+
+固定 token 用 `MAGPIE_TOKEN` 环境变量（不设则每次启动随机生成）。镜像里的产品仍**只绑回环** —— 容器内由 `socat` 转发，对外暴露与否由 `-p` 显式决定。
+
+**分发包**：推 `main` 触发 GitHub Actions，Release 页的滚动 prerelease **`edge`** 永远是最新一份双平台（Windows / Linux）PyInstaller 包，解压即用、不装 Python 也能跑；`v*` tag 挂正式 Release。
+
+### 前端开发模式（改 GUI 才需要）
+
+```bash
+cd frontend
+# 需要 PATH 上有真实 node 目录（Windows 下 cmd 跑 postinstall 时尤其注意）
+npm install
+npm run dev              # Vite 开发服务器
+npm run build            # 构建；产物入 magpie/api/web/，改完必须一并提交
+```
+
+### 一条命令验证
+
+```bash
+py -3.13 check.py        # 11 条静态红线 + 全量单测 + 各阶段设计验证脚本，一条命令出结论
+```
 
 ---
 
@@ -74,36 +187,8 @@ bench/                  性能契约（MAGPIE_PERF_STRICT=1）
 packaging/              PyInstaller 打包与解压冒烟
 docker/ · Dockerfile · docker-compose.yml
 check.py · verify_g*.py 验证入口与各阶段出口 Gate
-Magpie-*.md · v3.2-design.md · CHANGELOG.md   设计与计划文档（见文末索引）
+Magpie-*.md · v3.2-design.md · CHANGELOG.md   设计与计划文档
 ```
-
----
-
-## 快速开始
-
-### 安装
-
-```bash
-py -3.13 -m pip install -e ".[api]"        # 起 GUI / API
-py -3.13 -m pip install -e ".[api,dev]"    # 外加测试台架（pytest）
-```
-
-
-### Docker 部署
-
-别人拿去就能跑（不需要 Python / node，数据落在卷里）：
-
-```bash
-docker compose up -d
-docker compose logs -f magpie            # token 在日志里
-# 浏览器打开 http://localhost:8000/?token=<token>
-```
-
-固定 token 用 `MAGPIE_TOKEN` 环境变量（不设则每次启动随机生成）。镜像里的产品仍**只绑回环** —— 容器内由 `socat` 转发，对外暴露与否由 `-p` 显式决定。
-
-### 分发包
-
-推 `main` 触发 GitHub Actions，Release 页的滚动 prerelease **`edge`** 永远是最新一份双平台（Windows / Linux）PyInstaller 包，解压即用、不装 Python 也能跑；`v*` tag 挂正式 Release。
 
 ---
 
@@ -116,7 +201,7 @@ docker compose logs -f magpie            # token 在日志里
 
 **数据可信**
 
-- 事实层 append-only，一切缓存都可 `recompute` 全量重建 —— 缓存坏了不是灾难，是可验证的中间态。
+- 事实层 append-only，一切缓存都可 `recompute` 全量重建。
 - 单写者：core 唯一写入口 + API 进程级单写线程；SSE 有界队列、丢帧可数。
 - 导入按文件成作业、undo 粒度到文件；解析器仲裁拿不准的进 Inbox，人工裁决（退出码 3）。
 
@@ -128,22 +213,6 @@ docker compose logs -f magpie            # token 在日志里
 
 - 服务只绑 `127.0.0.1`（绑 `0.0.0.0` 会被**拒绝**）、随机端口、一次性 token、静态资源零外部引用。
 - 导出默认脱敏、ask 出站前掩码 —— 明文永不外传，与"明文永不落库"是同一道防线。
-
----
-
-
-## 文档索引
-
-| 文件 | 作用 |
-|------|------|
-| `Magpie-项目计划书.md` | 产品蓝图与路线图（**排期以它为准**） |
-| `v3.2-design.md` | 数据层设计冻结 + 修正记录（r2/r3/r4） |
-| `Magpie-搭建思路.md` | 逐阶段的施工顺序与注意事项 |
-| `Magpie-编排模式设计冻结.md` | 编排模式（管线定义）的设计 |
-| `CHANGELOG.md` | 对外契约变更史（当前 0.16.0） |
-| `frontend/README.md` | 前端两条硬纪律（零出站、探索模式只读） |
-
-> 纪律：**排期前先跑一遍，别信文档。**
 
 ---
 
