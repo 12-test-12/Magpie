@@ -4,6 +4,10 @@
 
     **G5 = ① MCP 默认只读（专项断言）；② 上下文包零出站。**
 
+（0.21.0 起工具面加了唯一写通道 `add_finding` —— A 段的"只读"断言按
+`READONLY_TOOLS ∪ WRITE_TOOLS` 的口径加宽：只读断言只对只读工具成立，
+写工具由 A2e 单独证明"只动自己的副本"。）
+
 外加每阶段出口的常规全量复验（C 段接线 + `check.py` / `check.py bench` +
 fresh clone —— 后两条跑在本脚本之外，结论附在交付评论里）。
 
@@ -13,16 +17,21 @@ G3/G4：**断言不许手抄清单**（一切清单从真注册表 / 真代码�
 取值都要真跑红过**（一次性实测证据写在交付评论，不进本脚本）、**扫描器自己写**
 （不拿被考的人的实现去验被考的人的结论）。
 
-**专项① · MCP 默认只读（A 段）** —— 五个子断言各堵一种失效方式：
+**专项① · MCP 默认只读 + 唯一写通道（A 段）** —— 六个子断言各堵一种失效方式：
 
-  A1 **工具清单从真实注册表算**：`build_registry(真契约)` ≡ `READONLY_TOOLS`
-     （双向分开报，红的含义不同），外加"派生真的跟契约走"的牙齿 —— 喂一份
-     改过分类的契约，注册表必须变。手抄的清单在那条牙齿下不会变，当场红。
-  A2 **逐工具调用前后库快照不变**：全部注册工具 × 空实参 / 最小实参两轮，
-     快照 = **逐表行数 + 整表内容 sha256**（表和视图都算，审计 / 作业那几张
+  A1 **工具清单从真实注册表算**：`build_registry(真契约)` ≡
+     `READONLY_TOOLS ∪ WRITE_TOOLS`（双向分开报，红的含义不同），外加
+     "派生真的跟契约走"的牙齿 —— 喂一份改过分类的契约，注册表必须变
+     （含"把 add_finding 的 access 伪造成 read → 必须掉面"，A1e）。
+     手抄的清单在那条牙齿下不会变，当场红。
+  A2 **只读工具调用前后库快照不变**：全部**只读**注册工具 × 空实参 / 最小
+     实参两轮（写工具在循环里被排除 —— 排除的正当性由 A2e 证明），快照 =
+     **逐表行数 + 整表内容 sha256**（表和视图都算，审计 / 作业那几张
      表 `activity_log` / `jobs` / `work_journal` 必须在场，否则"审计没变"是
      空转的 0）。非空转：至少一次调用 ok。牙齿：对库副本经**产品自己的写入口**
      （`ops.create_project`，R1 的唯一写入口）写一笔，快照必须变。
+     **A2e**：写工具（恰一个）在库副本上真调一次 → 副本快照变 + `ok`，
+     证明"排除出 A2b 没藏东西、写通道真的能写"。
   A3 **AST 断言**：`magpie/adapters/**` 无写入口 import（`core.ops` /
      `core.store` / `cli.write` / `sqlite3`）—— 扫描器本脚本自己写（相对
      import 按 PEP 328 解析成绝对名再比），牙齿在 D2。
@@ -407,13 +416,14 @@ def section_a() -> None:
 
     # --- A1 清单从真实注册表算（不手抄）+ 派生跟契约走的牙齿 ---
     derived = derive_manifest(schema_data)
-    check("A1a 工具清单从真实注册表算：build_registry(真契约) ≡ 声明的只读清单"
-          "（实际 ⊆ 声明 —— 防白名单提前扩张）",
-          set(derived) <= set(mcp.READONLY_TOOLS),
-          f"多出来的：{sorted(set(derived) - set(mcp.READONLY_TOOLS))}")
+    declared = set(mcp.READONLY_TOOLS) | set(mcp.WRITE_TOOLS)
+    check("A1a 工具清单从真实注册表算：build_registry(真契约) ≡ 声明"
+          "（READONLY ∪ WRITE，实际 ⊆ 声明 —— 防白名单提前扩张）",
+          set(derived) <= declared,
+          f"多出来的：{sorted(set(derived) - declared)}")
     check("A1b 反方向：声明 ⊆ 实际（防声明空转 —— 死声明同样红）",
-          set(mcp.READONLY_TOOLS) <= set(derived),
-          f"声明了却没实现：{sorted(set(mcp.READONLY_TOOLS) - set(derived))}")
+          declared <= set(derived),
+          f"声明了却没实现：{sorted(declared - set(derived))}")
     # 牙齿①：契约把 ls 标成 write → 派生必须丢掉 ls（手抄的清单不会变）
     doctored = json.loads(json.dumps(schema_data))
     doctored["commands"]["ls"]["access"] = "write"
@@ -430,6 +440,16 @@ def section_a() -> None:
           "「新增命令进面」必须是显式决定（撞上声明即红的机制在 A1a/b）",
           "import" in grown and set(grown) != set(mcp.READONLY_TOOLS),
           f"import 进面={'import' in grown}")
+    # 牙齿③（0.21.0）：把 add_finding 的 access 伪造成 read → 写工具名只从
+    # 写分支进面，读分支必须丢弃它；两边都进不来 = 注册表缺它 = 漂移闸红。
+    doctored3 = json.loads(json.dumps(schema_data))
+    doctored3["commands"]["add_finding"]["access"] = "read"
+    doctored3["commands"]["add_finding"]["mutates_db"] = False
+    disguised = derive_manifest(doctored3)
+    check("A1e 牙齿③：把 add_finding 的 access 伪造成 read，派生必须丢掉它 —— "
+          "改一张契约收买不了写命令的分类",
+          "add_finding" not in disguised,
+          f"伪装后仍进面={'add_finding' in disguised}")
 
     # --- A2 逐工具调用前后库快照不变（各表行数 + 审计/作业记录） ---
     try:
@@ -441,7 +461,11 @@ def section_a() -> None:
               audit_tables <= set(before) and len(before) >= 20,
               f"表数={len(before)} 缺={sorted(audit_tables - set(before))}")
         envelopes, failures = [], []
-        for name in sorted(server.registry):
+        # **写工具在循环里被排除（0.21.0）** —— 它拿读写连接，跑了就会动快照。
+        # 排除的正当性由 A2e 证明（写工具真能写，且只写自己的副本）。
+        readonly_names = [name for name in sorted(server.registry)
+                          if name not in mcp.WRITE_TOOLS]
+        for name in readonly_names:
             tool = server.registry[name]
             for arguments in ({}, _round2_args(tool)):
                 response = server.handle(
@@ -456,8 +480,9 @@ def section_a() -> None:
                 except (KeyError, IndexError, json.JSONDecodeError) as exc:
                     failures.append(f"{name}{arguments} → 信封解析失败：{exc}")
         after = db_snapshot(db_path)
-        check("A2b 全部注册工具 × 两轮调用后，库快照（行数+内容哈希）逐表不变 —— "
-              "工具面只读，审计与作业记录一个字节没动",
+        check("A2b 全部**只读**注册工具 × 两轮调用后，库快照（行数+内容哈希）"
+              "逐表不变 —— 写工具除外（其边界由 A2e 单独证），审计与作业记录"
+              "一个字节没动",
               not failures and before == after,
               "；".join(failures[:3]) if failures else
               (f"快照变了：{sorted(k for k in before if before[k] != after.get(k))}"
@@ -465,8 +490,9 @@ def section_a() -> None:
         ok_count = sum(1 for env in envelopes if env.get("ok"))
         check("A2c 非空转：至少一次 tools/call 真的读到了数据（全员失败的"
               "「只读」是空转绿）",
-              ok_count >= 1 and len(envelopes) == 2 * len(server.registry),
-              f"ok={ok_count}/{len(envelopes)}（注册 {len(server.registry)} 个工具）")
+              ok_count >= 1 and len(envelopes) == 2 * len(readonly_names),
+              f"ok={ok_count}/{len(envelopes)}"
+              f"（只读 {len(readonly_names)} 个 / 注册 {len(server.registry)} 个）")
         # 牙齿：对库**副本**经产品自己的写入口写一笔，快照必须变。
         from magpie.core import ops                                  # noqa: PLC0415
         teeth_db = WORK / "a" / "teeth.db"
@@ -482,6 +508,41 @@ def section_a() -> None:
               " —— 没检出写=上面的只读断言是假的",
               db_snapshot(teeth_db) != pre,
               "写入被快照检出" if db_snapshot(teeth_db) != pre else "快照没变")
+        # A2e（0.21.0）：写工具（恰一个）在**库副本**上走完整协议真调一次 ——
+        # 副本快照必须变（它真能写，A2b 的排除不是把"写不进去"藏进了排除里）、
+        # 主库快照必须不变（它只动自己拿到的那个库）。
+        write_db = WORK / "a" / "write-tool.db"
+        shutil.copy2(db_path, write_db)
+        write_pre = db_snapshot(write_db)
+        main_pre = db_snapshot(db_path)
+        write_server = mcp.McpServer(write_db)
+        listed = write_server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "ls", "arguments": {"limit": 1}}})
+        ref = ""
+        try:
+            listed_env = json.loads(listed["result"]["content"][0]["text"])
+            ref = str(listed_env["data"]["entities"][0]["id"])
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            ref = ""
+        write_resp = write_server.handle(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "add_finding",
+                        "arguments": {"ref": ref, "text": "G5 出口的写通道探针"}}})
+        write_env: dict = {}
+        try:
+            write_env = json.loads(write_resp["result"]["content"][0]["text"])
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+            pass
+        write_after = db_snapshot(write_db)
+        main_after = db_snapshot(db_path)
+        check("A2e 写工具 add_finding 在库副本上真调：ok 信封 + 副本快照变 + "
+              "主库不变 —— 排除出 A2b 没藏东西，写通道只动自己的库",
+              bool(ref) and write_env.get("ok") is True
+              and bool((write_env.get("data") or {}).get("job_id"))
+              and write_after != write_pre and main_after == main_pre,
+              f"ref={ref!r} ok={write_env.get('ok')} "
+              f"副本变={write_after != write_pre} 主库变={main_after != main_pre}")
     except Exception as exc:                                          # noqa: BLE001
         check("A2 工具面快照断言（McpServer 启动）", False,
               f"{type(exc).__name__}: {exc}")
@@ -505,11 +566,13 @@ def section_a() -> None:
     try:
         live = mcp.McpServer(db_path)
         actual = frozenset(live.registry)
-        check("A4 双向清单校验（McpServer 真启动）：实际注册 ≡ READONLY_TOOLS —— "
-              "两个方向各一条，红的含义不同",
-              actual <= mcp.READONLY_TOOLS and mcp.READONLY_TOOLS <= actual,
-              f"多={sorted(actual - set(mcp.READONLY_TOOLS))} "
-              f"缺={sorted(set(mcp.READONLY_TOOLS) - actual)}")
+        declared_live = mcp.READONLY_TOOLS | mcp.WRITE_TOOLS
+        check("A4 双向清单校验（McpServer 真启动）：实际注册 ≡ 声明"
+              "（READONLY ∪ WRITE）—— 两个方向各一条，红的含义不同",
+              actual <= declared_live and declared_live <= actual
+              and mcp.READONLY_TOOLS.isdisjoint(mcp.WRITE_TOOLS),
+              f"多={sorted(actual - declared_live)} "
+              f"缺={sorted(declared_live - actual)}")
     except Exception as exc:                                          # noqa: BLE001
         check("A4 双向清单校验（McpServer 真启动）", False,
               f"{type(exc).__name__}: {exc}")
@@ -534,8 +597,9 @@ def section_a() -> None:
         live_names = [t.get("name") for t in
                       listing.get("result", {}).get("tools", [])]
         check("A5c tools/list 的名字集合 ≡ 本进程从真契约实算的清单"
-              "（跨进程同一份事实）",
-              live_names == sorted(set(derived)) == sorted(mcp.READONLY_TOOLS),
+              "（跨进程同一份事实；0.21.0 起 = 只读 ∪ 唯一写通道）",
+              live_names == sorted(set(derived))
+              == sorted(mcp.READONLY_TOOLS | mcp.WRITE_TOOLS),
               f"live={live_names}")
         result = call.get("result", {})
         envelope = {}

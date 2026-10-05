@@ -1,6 +1,9 @@
-"""MCP（Model Context Protocol）适配器 —— stdio 传输、只读工具面、零第三方依赖。
+"""MCP（Model Context Protocol）适配器 —— stdio 传输、只读为主 + 唯一写通道、零第三方依赖。
 
-它让 agent 经 MCP **只读**地使用这份数据（5.1 / LARI-43）。四条设计裁定：
+它让 agent 经 MCP 使用这份数据（5.1 / LARI-43 / 0.21.0 AI 发现通道）：
+**默认只读** —— 工具面除 `add_finding` 外全部只读，写操作里唯一对 AI 开放的
+是"提交一段散文发现"（`jobs.kind="ai_note"`，可撤销），其余（导入 / undo /
+合并 / 裁决 / 导出…）仍然不进面。四条设计裁定：
 
 1. **传输只有 stdio**（本地子进程、换行分帧的 JSON-RPC 2.0）。HTTP / SSE 传输
    是出站的邻居 —— R7 对谁都不豁免，这里连"以后也许要"的口都不开。
@@ -14,21 +17,25 @@
    引第三方进 core（R6 的精神）。
 
 3. **工具面从 5.2 的 schema 契约派生，不手抄**。清单来自 ``magpie schema
-   --json`` 的 ``commands``（只取 ``access == "read"`` 的一半，剔除
-   ``EXCLUDED_READ_COMMANDS``），描述来自同一份契约的 ``query_syntax``，参数枚举
+   --json`` 的 ``commands``（``access == "read"`` 的一半剔除
+   ``EXCLUDED_READ_COMMANDS``；``access == "write"`` 的只放行
+   ``WRITE_TOOLS`` 里那一个），描述来自同一份契约的 ``query_syntax``，参数枚举
    来自 ``enums``，服务版本来自 ``tool_version``；参数的形状（type / nargs /
    choices）从**真的那个 argparse parser** 算 —— 契约的 ``query_syntax`` 与它逐项
    相等，由 5.2 的契约测试钉住。手抄一份工具清单正是 5.2 修掉的头号失败模式：
    下次新增命令 / 改分类，``tests/test_readonly.py`` 的双向清单断言与
    ``McpServer`` 启动时的漂移检查当场红。
 
-4. **读侧复用唯一实现**。命令类工具把参数还原成 argv，走 ``cli/read.py`` 的
-   ``RUNNERS`` —— 与 ``magpie`` 命令同一段代码、同一个
+4. **读侧复用唯一实现，写侧只多一条**。命令类工具把参数还原成 argv，走
+   ``cli/read.py`` 的 ``RUNNERS`` —— 与 ``magpie`` 命令同一段代码。读工具拿
    ``Database(read_only=True)`` 连接（``PRAGMA query_only`` 是数据库自己执行的
-   只读，不是自觉）。``agent_context`` 没有 CLI 命令，按 ``api/routes.py`` 的
-   同款组合调 ``core/query.py``（收敛断言在 ``tests/test_protocol.py``）。
-   **本文件不碰 SQL，也不 import 写入口** —— ``tests/test_static.py`` 的 AST
-   断言覆盖 ``magpie/adapters/**`` 全部源码。
+   只读，不是自觉）；``add_finding`` 是唯一拿读写连接的工具，写入范围由
+   ``ops.add_finding`` 自己的守卫钉死（只追加 ai_note contribution，非必要
+   不修改）。``agent_context`` 没有 CLI 命令，按 ``api/routes.py`` 的同款组合调
+   ``core/query.py``（收敛断言在 ``tests/test_protocol.py``）。
+   **本文件不碰 SQL，也不 import 写入口**（写经已导入的 ``RUNNERS`` 表进 CLI
+   runner，与读同一条路）—— ``tests/test_static.py`` 的 AST 断言覆盖
+   ``magpie/adapters/**`` 全部源码。
 
 错误与信封与 CLI / ``/api/v1`` 逐字同形（GUI / CLI / **MCP** 是 ``envelope.py``
 点名的三个消费者）：成功带 ``meta``，失败不带；分叉按 ``error.code``。
@@ -67,12 +74,16 @@ SERVER_NAME = "magpie"
 
 #: initialize 的 ``instructions``。信封怎么读、按什么分叉 —— agent 建立会话的
 #: 第一眼就该看到，而不是等第一次报错才发现有 error.code 这回事。
+#: **「只读」二字不许删**（``tests/test_protocol.py`` 钉着）：它说的仍然是
+#: "默认只读"这一事实 —— 例外只有 ``add_finding`` 一条，且必须点名。
 SERVER_INSTRUCTIONS = (
-    "Magpie 只读 MCP 适配器。工具面全部只读（导入 / undo / 合并 / 裁决 / 导出等"
-    "写操作不在本阶段）。tools/call 的结果是与 CLI --json 与 /api/v1 逐字同形的"
-    " JSON 信封：成功 {\"ok\": true, \"data\": …, \"meta\": {db, took_ms,"
-    " schema_version}}，失败 {\"ok\": false, \"error\": {code, message, hint?}}"
-    "（失败没有 meta）。分叉按 error.code，不要按 message 文本。")
+    "Magpie MCP 适配器：**默认只读**。除唯一写工具 add_finding（提交一条 AI 发现，"
+    "jobs.kind=ai_note，可撤销）外，工具面全部只读；导入 / undo / 合并 / 裁决 / "
+    "导出等写操作不进面，AI 非必要不修改库里的内容。tools/call 的结果是与 CLI "
+    "--json 与 /api/v1 逐字同形的 JSON 信封：成功 {\"ok\": true, \"data\": …, "
+    "\"meta\": {db, took_ms, schema_version}}，失败 {\"ok\": false, \"error\": "
+    "{code, message, hint?}}（失败没有 meta）。分叉按 error.code，不要按 "
+    "message 文本。")
 
 #: JSON-RPC 标准错误码（-32700 … -32603）。
 PARSE_ERROR = -32700
@@ -94,7 +105,8 @@ INTERNAL_ERROR = -32603
 #:     "工具面悄悄长出一个操作"必须是显式决定，不是顺手；
 #:   * 声明里多出一个名字 → 同样红 —— "声明了一堆没实现的"也不许。
 #:
-#: 写工具（G5 之后的议题）不进这份清单，也不该有人往里加。
+#: 写工具不进这份清单（见下面的 ``WRITE_TOOLS``）；往这里加写工具名会与它
+#: 相撞，同样红。
 READONLY_TOOLS = frozenset({
     "ls",          # 实体列表 / 具名查询（§3.5 的搜索式读取）
     "lens",        # 镜头
@@ -108,18 +120,34 @@ READONLY_TOOLS = frozenset({
     "agent_context",  # 上下文包（↔ GET /api/v1/agent/context）
 })
 
+#: **声明的写工具清单（0.21.0 起，恰一个）**。与 ``READONLY_TOOLS`` 同一条
+#: 双向纪律：注册表的写半边必须逐项等于它，``McpServer`` 启动时对**并集**
+#: 再验一遍漂移。它的语义边界比"允许写"窄得多：
+#:
+#:   * 只有 ``add_finding`` —— AI 查到的东西回写页面（append-only 散文，
+#:     ``jobs.kind="ai_note"``，按 job 可撤销）。**非必要不修改**是这条通道
+#:     的设计前提；导入 / undo / 合并 / 裁决 / 导出等仍然一个都不进面。
+#:   * 扩它必须走全套测试拆分（``tests/test_readonly.py`` 的写半边断言、
+#:     "写工具只动自己副本"的用例、verify_g5 的 A2e）—— 三个集合测试会正确地
+#:     先红，只准加宽，不准删。
+#:   * 写工具是唯一拿**读写连接**的工具（``read_only=False``），所以它必须
+#:     自带"只动自己该动的"的证明 —— 证明在 ``tests/test_readonly.py``。
+WRITE_TOOLS = frozenset({
+    "add_finding",  # 提交一条 AI 发现（↔ CLI `add_finding` ↔ POST /api/v1/notes）
+})
+
 #: 契约里 ``access == "read"`` 但**明确不进工具面**的命令 → 不进面的理由。
 #: 判据是任务书明文：导出落盘不进工具面；search 在 §8 之前永远
 #: ``E_NOT_IMPLEMENTED``，一个恒红的工具对 agent 是噪声（响亮失败属于 CLI 契约，
 #: 那边有退出码表要守）；ask 是**出站**命令（5.4，R7 唯一白名单出站点）——
-#: MCP 只读，出站一律不进工具面。清单被剔除这件事本身也受双向断言保护 ——
-#: 少剔一个、多剔一个都会红。
+#: 出站与工具面（读的一半 + 唯一写通道）无关，一律不进。清单被剔除这件事本身
+#: 也受双向断言保护 —— 少剔一个、多剔一个都会红。
 EXCLUDED_READ_COMMANDS: dict[str, str] = {
     "export": "导出落盘（写文件系统）—— 任务书明文不进工具面",
     "search": "计划书 §8 尚未实现（E_NOT_IMPLEMENTED 恒红对 agent 是噪声）；"
               "搜索式读取由 ls 的 --q 与具名查询承担",
     "ask": "出站命令（5.4：唯一出站点，需 MAGPIE_ASK_ENABLE 显式开启）—— "
-           "MCP 只读，出站一律不进工具面（5.4 任务书明文）",
+           "出站与工具面无关，一律不进工具面（5.4 任务书明文）",
 }
 
 #: 参数名 → ``enums`` 契约键。argparse 只给 ``--lifecycle`` 设了 choices，``lens``
@@ -172,7 +200,7 @@ class Tool:
 
 
 def _tool_name(command: str) -> str:
-    """契约命令键 → MCP 工具名（嵌套命令的空格折成下划线；写命令永远到不了这）。"""
+    """契约命令键 → MCP 工具名（嵌套命令的空格折成下划线）。"""
     return command.replace(" ", "_")
 
 
@@ -262,14 +290,33 @@ def build_registry(schema_data: dict[str, Any]) -> dict[str, Tool]:
     registry: dict[str, Tool] = {}
     for key in sorted(schema_data["commands"]):
         entry = schema_data["commands"][key]
-        if entry.get("access") != "read":
-            continue                                 # 只取 read 那一半
-        if key in EXCLUDED_READ_COMMANDS:
-            continue                                 # 明文剔除（理由见常量注释）
+        access = entry.get("access")
         name = _tool_name(key)
+        if access == "read":
+            if key in EXCLUDED_READ_COMMANDS:
+                continue                             # 明文剔除（理由见常量注释）
+            if name in WRITE_TOOLS:
+                # 写工具**只从写分支进面**。有人把契约里它的 access 伪造成
+                # read（tests/test_readonly.py 钉着这条）→ 读分支丢弃它、写
+                # 分支也进不来 → 注册表缺它 → 启动漂移检查响亮失败。伪装不会
+                # 让一个写命令拿到"读工具"的待遇（读写连接的判定按名字走，
+                # 但进面与否先由分支决定）。
+                continue
+        elif access == "write":
+            # 写半边**只放行声明过的那一个**（WRITE_TOOLS）。契约里其它写命令
+            # （import / undo / merge / …）在这里被挡 —— 挡的判据与读半边的
+            # 声明清单同一条纪律：进面 = 改声明，改声明 = 全套测试先红。
+            if name not in WRITE_TOOLS:
+                continue
+        else:
+            continue                                 # access 缺失/未知：不进面
         schema, params = _input_schema(nodes[key], enums)
-        description = (syntax.get(key) or {}).get("help") \
-            or f"magpie {key}（只读）"
+        if access == "read":
+            description = (syntax.get(key) or {}).get("help") \
+                or f"magpie {key}（只读）"
+        else:
+            description = (syntax.get(key) or {}).get("help") \
+                or f"magpie {key}（写通道：AI 发现）"
         registry[name] = Tool(name=name, description=description,
                               input_schema=schema, command=key, params=params)
     registry[AGENT_CONTEXT_TOOL] = _agent_context_tool()
@@ -487,13 +534,14 @@ class McpServer:
         self.schema = self._load_schema()
         self.tool_version = self.schema["tool_version"]      # ← 契约 tool_version 键
         registry = build_registry(self.schema)
-        missing = READONLY_TOOLS - set(registry)
-        extra = set(registry) - READONLY_TOOLS
+        declared = READONLY_TOOLS | WRITE_TOOLS
+        missing = declared - set(registry)
+        extra = set(registry) - declared
         if missing or extra:
             raise RuntimeError(
-                f"MCP 工具清单与声明的只读清单（READONLY_TOOLS）漂移："
+                f"MCP 工具清单与声明（READONLY_TOOLS ∪ WRITE_TOOLS）漂移："
                 f"缺 {sorted(missing)}、多 {sorted(extra)}。新增工具进面必须先改"
-                f" READONLY_TOOLS 并过双向清单断言；写工具不在本步射程。")
+                f"对应清单并过双向清单断言（写工具还须过写半边的全套拆分）。")
         self.registry = registry
 
     def _load_schema(self) -> dict[str, Any]:
@@ -580,13 +628,16 @@ class McpServer:
     def _tools_call(self, params: dict[str, Any]) -> dict[str, Any]:
         name = params.get("name")
         if not isinstance(name, str) or name not in self.registry:
-            raise _InvalidParams(f"未知工具：{name!r} —— 清单见 tools/list（只读）")
+            raise _InvalidParams(f"未知工具：{name!r} —— 清单见 tools/list"
+                                 "（默认只读，写只有 add_finding）")
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise _InvalidParams("arguments 必须是对象")
         tool = self.registry[name]
         started = time.perf_counter()
-        db = Database(self.db_path, read_only=True)
+        # 连接级别的读写边界就在这一个布尔上：写工具（恰一个）拿读写连接，
+        # 其余全部 `PRAGMA query_only` —— 数据库自己执行的只读，不是自觉。
+        db = Database(self.db_path, read_only=tool.name not in WRITE_TOOLS)
         try:
             try:
                 data = self._invoke(tool, arguments, db)
@@ -639,11 +690,13 @@ class McpServer:
                 exit_code=EXIT_USAGE,
                 hint="位置参数不许以 '-' 开头；要看帮助请用 CLI 的 "
                      "`magpie <命令> --help`，协议面不打印帮助文本。") from exc
-        if str(args.command) in WRITABLE:
-            # 双保险：注册表只从 read 一半派生，理论上到不了这 —— 到了就是缺陷，
-            # 响亮失败而不是"反正只读连接也写不进去"。
+        if str(args.command) in WRITABLE and tool.name not in WRITE_TOOLS:
+            # 双保险：注册表只放行 WRITE_TOOLS 里的写命令，理论上到不了这 ——
+            # 到了就是缺陷，响亮失败（此时连接恰好也是读写打开的，不能靠
+            # "反正只读连接也写不进去"兜底）。
             raise RuntimeError(
-                f"写命令 {args.command!r} 进了 MCP 工具面（分发层 WRITABLE 挡下）")
+                f"写命令 {args.command!r} 进了 MCP 工具面但不在 WRITE_TOOLS "
+                f"（分发层 WRITABLE 挡下）")
         runner = RUNNERS[_runner_key(args)]
         ctx = Context(args=args, db=db, parser=parser)
         data, _human = runner(args, ctx)
@@ -686,15 +739,18 @@ def main(argv: list[str] | None = None) -> int:
     """``python -m magpie.adapters.mcp`` 的入口。接线示例在 ``--help`` 里。"""
     parser = argparse.ArgumentParser(
         prog="python -m magpie.adapters.mcp",
-        description="MCP（Model Context Protocol）适配器 —— stdio 传输的只读工具面。"
+        description="MCP（Model Context Protocol）适配器 —— stdio 传输，"
+                    "默认只读工具面 + 唯一写通道 add_finding。"
                     " 不发起任何网络请求（红线 R7）；HTTP / SSE 传输不实现。",
         epilog=("接线示例（Claude Desktop 等 MCP 客户端）：\n"
                 '  "mcpServers": {"magpie": {"command": "py",\n'
                 '    "args": ["-3.13", "-m", "magpie.adapters.mcp",\n'
                 '             "--db", "D:/path/.magpie/magpie.db"]}}\n\n'
-                "工具面只读（READONLY_TOOLS），从 magpie schema --json 的 commands"
-                " 键派生；写操作（import / undo / 合并 / 裁决 / 导出）不在本步"
-                " 射程。--db 相对路径按客户端的 cwd 解析，接线建议用绝对路径。"),
+                "工具面从 magpie schema --json 的 commands 键派生：读的一半"
+                "（READONLY_TOOLS，剔除 export/search/ask）+ 写的恰好一个"
+                "（WRITE_TOOLS = add_finding，提交 AI 发现、可撤销）；其余写操作"
+                "（import / undo / 合并 / 裁决 / 导出）不在本步射程。"
+                " --db 相对路径按客户端的 cwd 解析，接线建议用绝对路径。"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", metavar="<文件>", default=None,
                         help="数据库文件（默认 <data-dir>/magpie.db）")

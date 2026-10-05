@@ -18,6 +18,7 @@ result、内层 CLI 信封、meta 的键集合）。任何一处形状漂移，�
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from io import StringIO
 from pathlib import Path
@@ -43,6 +44,15 @@ def _envelope_of(result: dict) -> dict:
     content = result["content"][0]
     assert set(content) == {"type", "text"} and content["type"] == "text"
     return json.loads(content["text"])
+
+
+def _call_tool(server: mcp.McpServer, name: str, arguments: dict) -> dict:
+    """tools/call 一次 → 外层 result（协议级错误在这里炸）。"""
+    response = server.handle(_request(0, "tools/call",
+                                      {"name": name, "arguments": arguments}))
+    assert response is not None and "result" in response, \
+        f"{name} 掉到了协议级错误：{response}"
+    return response["result"]
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +86,8 @@ def test_golden_chain_initialize_list_call(loaded_db):
     # 4) tools/list —— 结构、名字集合、派生出的参数形状
     listing = server.handle(_request(3, "tools/list", {}))
     tools = listing["result"]["tools"]
-    assert [t["name"] for t in tools] == sorted(mcp.READONLY_TOOLS)
+    # 0.21.0：工具面 = 只读 ∪ 唯一写通道（写面恰一个，双向断言在 test_readonly）
+    assert [t["name"] for t in tools] == sorted(mcp.READONLY_TOOLS | mcp.WRITE_TOOLS)
     for tool in tools:
         assert set(tool) == {"name", "description", "inputSchema"}
         assert tool["description"], tool["name"]
@@ -279,7 +290,7 @@ def test_serve_frames_one_response_per_line(loaded_db):
     first, second = (json.loads(line) for line in lines)
     assert first["result"] == {}
     assert [t["name"] for t in second["result"]["tools"]] == \
-        sorted(mcp.READONLY_TOOLS)
+        sorted(mcp.READONLY_TOOLS | mcp.WRITE_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -320,3 +331,83 @@ def test_agent_context_converges_with_the_api_route(loaded_db):
         "上下文包 payload 与 API 分叉"
     assert theirs["data"]["markdown"] == mine["data"]["markdown"], \
         "上下文包 Markdown 与 API 分叉 —— 两份渲染没跟上"
+
+
+# ---------------------------------------------------------------------------
+# add_finding：与 POST /api/v1/notes 收敛（写侧组合不许各写各的）
+# ---------------------------------------------------------------------------
+
+
+def test_add_finding_converges_with_the_notes_route(loaded_db, tmp_path):
+    """MCP `add_finding` 与 `POST /api/v1/notes` 必须落出同一形状的结果。
+
+    两个人机入口一份实现（都落 `ops.add_finding`）—— 收敛只能靠断言钉：
+    **两份同源库副本**，一边走 MCP 协议、一边走 TestClient，落完之后比三件事：
+    报告的键集合与内容寻址字段、作业的 kind/state、观测的 origin。
+    哪边改了组合或改了落库语义，先红的都是这条（与 agent_context 那条同款）。
+
+    extras.api 缺失时 fastapi import 不了 —— 那是 4.5 的"缺失路径"，跳过；
+    fastapi 在而路由坏了则必须红（不是跳过）。
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from magpie.api.app import create_app
+
+    mcp_db = tmp_path / "via-mcp.db"
+    http_db = tmp_path / "via-http.db"
+    shutil.copy2(loaded_db, mcp_db)
+    shutil.copy2(loaded_db, http_db)
+    headers = {"Authorization": "Bearer convergence-token"}
+    text = "同一条发现：/api/debug 未鉴权"
+
+    # -- HTTP 一半 ------------------------------------------------------------
+    app = create_app(db_path=http_db, data_dir=tmp_path / "data",
+                     token="convergence-token")
+    with TestClient(app) as client:
+        entities = client.get("/api/v1/entities?limit=5",
+                              headers=headers).json()["data"]
+        assert entities, "夹具库里没有实体"
+        entity_id = int(entities[0]["id"])
+
+        posted = client.post("/api/v1/notes", headers=headers,
+                             json={"entity_id": entity_id, "text": text})
+        assert posted.status_code == 200, posted.text
+        http_report = posted.json()["data"]
+        http_job = client.get(f"/api/v1/jobs/{http_report['job_id']}",
+                              headers=headers).json()["data"]["job"]
+        http_obs = client.get(f"/api/v1/entities/{entity_id}",
+                              headers=headers).json()["data"]["observations"]
+    http_origin = [o["origin"] for o in http_obs
+                   if int(o["id"]) == int(http_report["observation_id"])]
+
+    # -- MCP 一半 -------------------------------------------------------------
+    server = mcp.McpServer(mcp_db)
+    result = server.handle(_request(1, "tools/call",
+                                    {"name": "add_finding",
+                                     "arguments": {"ref": str(entity_id),
+                                                   "text": text}}))
+    assert result is not None and "result" in result, result
+    mcp_result = result["result"]
+    assert mcp_result["isError"] is False, mcp_result
+    mcp_report = _envelope_of(mcp_result)["data"]
+
+    mcp_job = _envelope_of(_call_tool(server, "jobs",
+                                      {"job": str(mcp_report["job_id"])}))["data"]["job"]
+    mcp_obs = _envelope_of(_call_tool(server, "show",
+                                      {"ref": str(entity_id)}))["data"]["observations"]
+    mcp_origin = [o["origin"] for o in mcp_obs
+                  if int(o["id"]) == int(mcp_report["observation_id"])]
+
+    # -- 收敛断言 -------------------------------------------------------------
+    assert set(mcp_report) == set(http_report), \
+        f"两个入口的报告形状分叉：MCP {sorted(mcp_report)} vs HTTP {sorted(http_report)}"
+    assert mcp_report["op"] == http_report["op"] == "ai_note.add"
+    assert mcp_report["semantic_field"] == http_report["semantic_field"], \
+        "同一段文本在两个入口落成了不同字段 —— 内容寻址不收敛"
+    assert mcp_report["source"] == http_report["source"] == "ai:add_finding"
+    assert mcp_report["text_length"] == http_report["text_length"]
+    assert (mcp_job["kind"], mcp_job["state"]) == \
+           (http_job["kind"], http_job["state"]) == ("ai_note", "done")
+    assert http_origin == mcp_origin == ["manual"], \
+        f"origin 不收敛：MCP {mcp_origin} vs HTTP {http_origin}"
