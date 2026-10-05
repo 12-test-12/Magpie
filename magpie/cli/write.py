@@ -67,7 +67,7 @@ from .envelope import (
 #: 而这种错误只在真跑时出现。
 #:
 #: 注意 `jobs` **不在**这张表里 —— 它是只读的，只是与作业历史放在一起便于对照。
-WRITE_COMMANDS = ("project", "import", "undo", "redo")
+WRITE_COMMANDS = ("project", "import", "undo", "redo", "add_finding")
 
 #: 作业历史默认返回多少条。**与 2.7 的 `routes.DEFAULT_JOB_LIMIT` 一致** ——
 #: 作业是"最近发生了什么"，一次导入就会产生 N 条（每个文件一条），翻页在这里
@@ -625,6 +625,47 @@ def _undo_redo_human(data: dict, job: dict) -> list[str]:
     return lines
 
 
+def cmd_add_finding(args, ctx) -> tuple[dict, list[str]]:
+    """`magpie add_finding <ref> <文本> [--dry-run]` —— 提交一条 AI 发现（0.21.0）。
+
+    **↔ `POST /api/v1/notes` 与 MCP 工具 `add_finding`，三个人机入口一份实现**
+    （都落在 `ops.add_finding`）。发现以 `jobs.kind="ai_note"` 落库：
+    append-only contribution（`authorship="manual"` → 页面「人工写入」分组）、
+    按 job 可撤销、**非必要不修改** —— 本命令是 AI 客户端唯一被允许的写。
+
+    退出码：空文本 → 1（用法错）；实体不存在 / 键解析歧义 → 2（数据错，
+    `E_INVARIANT` / `E_AMBIGUOUS` 由 `_resolve_ref` 与 ops 的守卫给出）。
+    """
+    from ..core.store import InvariantError
+    from .read import _resolve_ref              # 延迟：read.py 顶部 import 本模块
+
+    text = str(args.text)
+    if not text.strip():
+        raise CliError("E_USAGE", "发现文本不能为空", exit_code=EXIT_USAGE)
+
+    conn: sqlite3.Connection = ctx.conn()
+    project_id = resolve_project(conn, args.project)
+    entity_id = _resolve_ref(conn, project_id, str(args.ref))
+    try:
+        report = ops.add_finding(conn, project_id=project_id,
+                                 entity_id=entity_id, text=text,
+                                 actor="cli", dry_run=bool(args.dry_run))
+    except InvariantError as exc:
+        raise CliError("E_INVARIANT", str(exc), exit_code=EXIT_DATA) from exc
+
+    data = dict(report)
+    human = [
+        f"{'【干跑】' if data['dry_run'] else ''}发现已提交到实体 #{entity_id}",
+        f"  job: {data['job_id'] or '（干跑不留痕）'}  kind=ai_note"
+        f"  字段: {data['semantic_field']}",
+        f"  源: {data['source']}（unverified —— AI 的话不占人工权重）"
+        f"  长度: {data['text_length']} 字符",
+        "  撤销: `magpie undo <job>`（与导入作业同一条 undo 通路）" if not data["dry_run"]
+        else "  干跑：事实一行未写。",
+    ]
+    return data, human
+
+
 def cmd_undo(args, ctx) -> tuple[dict, list[str]]:
     """`magpie undo <job> [--dry-run]` —— 撤销一个作业（↔ `POST /jobs/{id}/undo`）。"""
     return _undo_redo(args, ctx, op="undo")
@@ -767,5 +808,5 @@ def _tri_state(raw: Any) -> bool | None:
                    exit_code=EXIT_USAGE)
 
 
-__all__ = ["WRITE_COMMANDS", "cmd_import", "cmd_jobs", "cmd_project_create",
-           "cmd_redo", "cmd_undo"]
+__all__ = ["WRITE_COMMANDS", "cmd_add_finding", "cmd_import", "cmd_jobs",
+           "cmd_project_create", "cmd_redo", "cmd_undo"]

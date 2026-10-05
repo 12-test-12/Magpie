@@ -1349,4 +1349,6 @@ RUNNERS = {
     "undo": write.cmd_undo,
     "redo": write.cmd_redo,
     "jobs": write.cmd_jobs,
+    # -- 0.21.0：AI 发现通道（CLI / HTTP / MCP 三入口一份实现）-----------------
+    "add_finding": write.cmd_add_finding,
 }

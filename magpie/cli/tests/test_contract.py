@@ -836,8 +836,10 @@ def _subparsers(parser) -> dict:
 #: 依赖的东西）。刻意不是"全集相等"：那条断言在 `test_schema_..._real_parser`
 #: 里已经逐项做过了，这里再钉一次是为了让"加命令时顺手删掉一条老的"也能红。
 #: 5.4 起含 `ask`（新命令按纪律进这张表 —— 5.4 任务书判据 4）。
+#: 0.21.0 起含 `add_finding`（AI 发现通道，写命令）。
 RUNNER_COMMANDS = {"init", "ls", "lens", "show", "search", "diff", "doctor", "schema",
-                   "project create", "import", "undo", "redo", "jobs", "risk", "ask"}
+                   "project create", "import", "undo", "redo", "jobs", "risk", "ask",
+                   "add_finding"}
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +896,9 @@ def test_every_registered_command_is_dispatchable(empty_db):
         # 那不是"没被分发"（argparse 用法错 / E_NOT_IMPLEMENTED）—— 它正是
         # 这条命令被分发后**默认态的正确答案**，退出码与形状见 test_ask.py。
         "ask": ("ask", "问题"),
+        # 0.21.0：空库无项目 → E_PROJECT_REQUIRED（同 timeline/export 的判据：
+        # 业务失败 ≠ 没被分发）。
+        "add_finding": ("add_finding", "1", "hello"),
     }
     assert set(invocations) == set(RUNNERS), "有命令没被这条测试覆盖到"
 

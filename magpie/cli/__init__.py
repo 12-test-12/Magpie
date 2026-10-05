@@ -381,10 +381,29 @@ def build_parser() -> argparse.ArgumentParser:
                       help=f"列表最多返回多少条（默认 {write.DEFAULT_JOB_LIMIT}，"
                            f"上限 {write.MAX_JOB_LIMIT}）")
 
+    # -- 0.21.0：AI 发现通道 ---------------------------------------------------
+    # 位置参数（不是 --text）：`_input_schema` 把无默认值的位置参数归入 required，
+    # 于是 MCP 那侧的 inputSchema 自动要求 ref/text，不必再手写一份必填清单。
+    # ⚠ 文本若以 `-` 开头，MCP 的 `_argv_for` 会以 -32602 拒绝（M1 防线）——
+    # 工具描述里写明；命令行侧用 `magpie add_finding <ref> -- <文本>` 规避。
+    addf = sub.add_parser(
+        "add_finding", parents=[_LOCATION, _FORMAT, _PROJECT],
+        help="提交一条 AI 发现（jobs.kind=ai_note，按 job 可撤销）",
+        description="把一段散文提交为实体上的观测：append-only"
+                    "（authorship=manual → GUI「人工写入」分组）、"
+                    "源 unverified（AI 不占人工权重）、`magpie undo <job>` 可撤。"
+                    "与 POST /api/v1/notes、MCP 工具 add_finding 同一份实现"
+                    "（ops.add_finding）。")
+    addf.add_argument("ref", metavar="<id|key>", help="目标实体（id 或 entity_key）")
+    addf.add_argument("text", metavar="<文本>", help="发现内容（整段引用；"
+                      "以 - 开头时命令行请用 -- 分隔）")
+    addf.add_argument("--dry-run", action="store_true",
+                      help="干跑：报告与真跑同构，事实一行不写")
+
     parser.epilog = (
         "只读：init、ls、lens、show、diff、doctor、schema、timeline、export、risk。"
-        "写：project create、import、undo、redo、jobs（jobs 是读的，与作业历史"
-        "放在一起便于对照）。本地服务：app。"
+        "写：project create、import、undo、redo、add_finding"
+        "（jobs 是读的，与作业历史放在一起便于对照）。本地服务：app。"
         "出站：ask —— 本工具唯一的出站点，**默认关闭**，"
         "MAGPIE_ASK_ENABLE=1 + MAGPIE_ASK_URL=<http(s)://…> 显式开启才发请求。"
         "export 默认脱敏（不带原文正文），--full 才带 stored 归档原文并给可见告警。"

@@ -763,3 +763,71 @@ def test_dry_run_never_creates_the_archive_directory(project, tmp_path):
     assert code == 0, payload
     assert not (fresh / "raw").exists(), "干跑建了归档目录"
     assert not (fresh / "reports").exists(), "干跑落了报告副本"
+
+
+# ---------------------------------------------------------------------------
+# add_finding（0.21.0 · AI 发现通道）
+# ---------------------------------------------------------------------------
+
+
+def test_add_finding_lands_in_one_undoable_job(project):
+    """happy path：导入 → 发现落到实体上 → kind=ai_note → `undo` 一步撤干净。"""
+    _imported(project, SUB)
+    # 拿一个真实存在的实体 key（`ls` 的输出是别的命令的判据，
+    # 与本文件 import 用例同一条纪律）。
+    listed = ok_data("ls", *project["proj"], *project["base"], "--json")
+    assert listed["count"] > 0, listed
+    entity_ref = listed["entities"][0]["entity_key"]
+
+    data = ok_data("add_finding", entity_ref, "子域 example.org 302 跳转到 www",
+                   *project["proj"], *project["base"], "--json")
+    assert data["op"] == "ai_note.add" and data["job_id"] is not None
+    assert data["semantic_field"].startswith("ai_note:")
+    assert data["source"] == "ai:add_finding"
+
+    job = ok_data("jobs", str(data["job_id"]), *project["base"], "--json")["job"]
+    assert job["kind"] == "ai_note" and job["state"] == "done" and job["applied"] == 1
+
+    # 页面链路：`show` 必须看得见，origin=manual（GUI「人工写入」分组的来源）。
+    detail = ok_data("show", entity_ref, *project["proj"],
+                     *project["base"], "--json")
+    hit = [o for o in detail["observations"]
+           if int(o["id"]) == int(data["observation_id"])]
+    assert hit and hit[0]["origin"] == "manual", hit
+
+    # 撤销与导入作业同一条通路。
+    undone = ok_data("undo", str(data["job_id"]), *project["base"], "--json")
+    assert undone["report"]["integrity"]["ok"]
+
+
+def test_add_finding_dry_run_writes_nothing(project):
+    """干跑同构：报告照出、`job_id` 为 None、库一行不动。"""
+    _imported(project, SUB)
+    listed = ok_data("ls", *project["proj"], *project["base"], "--json")
+    entity_ref = listed["entities"][0]["entity_key"]
+    before = effective(project["db"])
+
+    code, payload = envelope("add_finding", entity_ref, "干跑的发现",
+                             "--dry-run", *project["proj"], *project["base"], "--json")
+    assert code == 0 and payload["ok"], payload
+    data = payload["data"]
+    assert data["dry_run"] is True and data["job_id"] is None
+    assert data["op"] == "ai_note.add"
+    assert effective(project["db"]) == before, "干跑把库改了"
+
+
+def test_add_finding_empty_text_is_exit_1(project):
+    """空文本 = 用法错（退出码 1 ↔ 400），不是数据错也不是静默接受。"""
+    # 文本校验先于 ref 解析 —— 空文本在任何库状态上都是用法错（退出码 1）。
+    code, error = err_of("add_finding", "1", "   ",
+                         *project["proj"], *project["base"], "--json")
+    assert code == 1 and error["code"] == "E_USAGE", error
+
+
+def test_add_finding_unknown_entity_is_exit_2(project):
+    """实体不存在 = 数据错（退出码 2 ↔ 404），且一个字都不写。"""
+    before = effective(project["db"])
+    code, error = err_of("add_finding", "99999", "找不到的实体",
+                         *project["proj"], *project["base"], "--json")
+    assert code == 2 and error["code"] == "E_ENTITY_NOT_FOUND", error
+    assert effective(project["db"]) == before, "失败还动了库"
