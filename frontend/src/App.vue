@@ -27,6 +27,7 @@ import PipelineView from './views/PipelineView.vue'
 import JobsView from './views/JobsView.vue'
 import InboxView from './views/InboxView.vue'
 import DoctorView from './views/DoctorView.vue'
+import McpView from './views/McpView.vue'
 import RiskView from './views/RiskView.vue'
 import OverviewView from './views/OverviewView.vue'
 import ImportDialog from './views/ImportDialog.vue'
@@ -136,6 +137,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <InboxView v-else-if="store.view === 'inbox'" />
         <RiskView v-else-if="store.view === 'risk'" />
         <DoctorView v-else-if="store.view === 'doctor'" />
+        <McpView v-else-if="store.view === 'mcp'" />
       </section>
 
       <DetailPanel v-if="showDetail" />

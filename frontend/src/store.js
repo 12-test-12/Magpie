@@ -262,6 +262,9 @@ export const VIEWS = [
   { key: 'jobs', label: '作业历史', hint: '导入 / undo / redo', group: 'gov' },
   { key: 'inbox', label: 'Inbox', hint: '待裁决', group: 'gov' },
   { key: 'doctor', label: '数据体检', hint: '完整性 / 孤儿 / 未测', group: 'gov' },
+  // 0.21.0：MCP 接入页 —— 配置（接线片段）+ 工具清单（与适配器 tools/list
+  // 同源）+ 页内试用。AI 客户端经这一页接进来；写面只有 add_finding 一个。
+  { key: 'mcp', label: 'MCP 接入', hint: '本机 MCP 配置 + 工具清单 + 页内试用', group: 'gov' },
 ]
 
 //: 镜头的人读名字与**展示顺序**（计划书 §3.5 的六个）。两者都是**界面**的事：

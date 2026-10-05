@@ -67,6 +67,9 @@ const NAV_GROUP = {
   traffic: 'analysis',
   vuln: 'security', risk: 'security', inbox: 'security',
   doctor: 'analysis',
+  // 0.21.0：MCP 接入归「分析」—— 它是给 AI/人看这份库的入口，不是攻击面。
+  // 漏映射的键会默认落进第一个组（攻击面），页面会静默站错队。
+  mcp: 'analysis',
   jobs: 'tasks', pipeline: 'tasks',
 }
 const NAV_GROUP_LABELS = [
