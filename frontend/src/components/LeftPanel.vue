@@ -50,6 +50,11 @@ function kindFilter(kind) {
   return store.filter.kinds.includes(kind)
 }
 
+function onKindClick(kind) {
+  store.setView('explore')
+  store.toggleKind(kind)
+}
+
 const noKinds = computed(() => !lensRows.value.some(
   (row) => row.data && row.data.kinds && row.data.kinds.length))
 
@@ -222,7 +227,7 @@ function openPipeline(id) {
             class="krow"
             :class="{ active: kindFilter(row.kind) }"
             :title="kindFilter(row.kind) ? `取消筛选：${row.kind}` : `只看画布上的 ${row.kind}`"
-            @click="store.toggleKind(row.kind)"
+            @click="onKindClick(row.kind)"
           >
             <span class="ktop">
               <span class="swatch" :style="{ background: kindColor(row.kind) }" />
@@ -242,7 +247,7 @@ function openPipeline(id) {
             class="krow"
             :class="{ active: kindFilter(row.kind) }"
             :title="kindFilter(row.kind) ? `取消筛选：${row.kind}` : `只看画布上的 ${row.kind}`"
-            @click="store.toggleKind(row.kind)"
+            @click="onKindClick(row.kind)"
           >
             <span class="ktop">
               <span class="swatch" :style="{ background: kindColor(row.kind) }" />

@@ -119,6 +119,7 @@ function cell(row, column) {
   border-radius: 8px;
 }
 .body { position: relative; }
+.grid { table-layout: fixed; }
 .rows { position: absolute; top: 0; left: 0; width: 100%; }
 .group-row td {
   padding: 0 8px;

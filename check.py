@@ -91,6 +91,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 UNIT = [
     [sys.executable, "-m", "pytest", "magpie/core/tests", "-q"],
     # 2.7 的验收网（不是"跑一遍看看"）：契约快照 / 只绑回环 / SSE 背压 / 写者唯一。
@@ -1628,9 +1639,12 @@ def lint() -> int:
 
 def run(steps: list, label: str) -> int:
     print(f"=== {label} ===", flush=True)
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     for step in steps:
         print(f"$ {' '.join(step)}", flush=True)
-        code = subprocess.call(step, cwd=str(ROOT))
+        code = subprocess.call(step, cwd=str(ROOT), env=env)
         if code != 0:
             print(f"!! 失败（退出码 {code}）: {' '.join(step)}", flush=True)
             return code

@@ -63,6 +63,7 @@ sec27.txt
 # `.idea/` 由 IDE 生成；`_scratch/` 是调试与复验的临时目录（含 magpie-data）。
 # 两者都出现过在 `git status` 里并**两次**被误当成待提交内容，故显式忽略。
 .idea/
+.vscode/
 _scratch/
 parent.json
 issues.json

@@ -43,7 +43,9 @@ function move(step) {
 
 function choose(node) {
   if (!node) return
-  store.selectEntity(node.data.entityId ?? node.id)
+  const id = node.data?.entityId ?? node.id
+  store.setView('explore')
+  store.ensureVisible(id)
   store.paletteOpen = false
 }
 </script>

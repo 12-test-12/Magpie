@@ -138,6 +138,9 @@ onMounted(load)
 watch(() => store.view, (value) => {
   if (value === 'jobs') load()
 })
+watch(() => store.project, () => {
+  if (store.view === 'jobs') load()
+})
 </script>
 
 <template>

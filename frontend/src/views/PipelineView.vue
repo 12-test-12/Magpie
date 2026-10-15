@@ -18,7 +18,7 @@
  * （落到既有的 `ingest`），撤销调的是 `POST /runs/{id}/undo`（落到既有的 `job`
  * 粒度 undo）。界面上多出来的只有"一次跑了很多作业"这个**分组**。
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import PipelineCanvas from '../components/PipelineCanvas.vue'
 import { store } from '../store.js'
 import { AUTHORITY_LEVELS, SOURCE_KINDS, stepById } from '../pipeline.js'
@@ -48,6 +48,11 @@ function run(fn) {
 
 onMounted(() => {
   if (!pipeline.value.list.length) store.loadPipelines()
+  if (pipeline.value.definition === null) store.newPipelineDraft()
+})
+
+watch(() => store.project, async () => {
+  await store.loadPipelines()
   if (pipeline.value.definition === null) store.newPipelineDraft()
 })
 
@@ -260,7 +265,7 @@ async function redo(runId) {
           <h2 class="section">运行历史</h2>
           <ul class="runs">
             <li v-for="item in pipeline.runs" :key="item.id">
-              <span class="mono">#{item.id}</span>
+              <span class="mono">#{{ item.id }}</span>
               <span :class="item.state">{{ item.state }}</span>
               <span class="dim mono">{{ item.job_count }} 个作业</span>
               <span class="dim mono">{{ item.applied ? '生效中' : '已撤销' }}</span>

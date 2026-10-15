@@ -58,29 +58,29 @@ const maxContribution = computed(() => {
   return list.length ? Math.max(...list.map((f) => f.contribution)) : 1
 })
 const unmapped = computed(() => {
-  if (!surface.value) return []
-  return surface.value.totals.unmapped_open_vulns
+  if (!surface.value || !surface.value.totals) return []
+  return surface.value.totals.unmapped_open_vulns || []
 })
 
 //: `vuln_by_state` 的直排（open 6、fixed 2…）—— 分布是后端算好的，这里只拼文字。
 const stateText = computed(() => {
   if (!facts.value) return ''
-  const entries = Object.entries(facts.value.vuln_by_state)
+  const entries = Object.entries(facts.value.vuln_by_state || {})
   return entries.length ? entries.map(([k, v]) => `${k} ${v}`).join('、') : '无'
 })
 
 //: 一行因子的依据：首条 label + "等 N 条"（evidence 最多展开 50 条，
 //: 计数以 evidence_total 为准 —— 与 CLI --human 同一个口径）。
 function evidenceText(factor) {
-  const first = factor.evidence[0]
+  const first = factor.evidence && factor.evidence[0]
   if (!first) return ''
   const rest = factor.evidence_total > 1 ? ` 等 ${factor.evidence_total} 条` : ''
   return `${first.label}${rest}`
 }
 
 function hostServices(row) {
-  return row.services.map((s) => s.products.length
-    ? `${s.key}（${s.products.join('、')}）` : s.key).join('、')
+  return (row.services || []).map((s) => (s.products && s.products.length
+    ? `${s.key}（${s.products.join('、')}）` : s.key)).join('、')
 }
 </script>
 

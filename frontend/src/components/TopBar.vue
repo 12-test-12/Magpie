@@ -16,18 +16,48 @@ defineProps({
   version: { type: String, default: '' },
 })
 
-/** 按 `group` 归组（保持 VIEWS 声明顺序），给模板用来插组间分隔线。 */
+const LENS_ORDER = ['assets', 'services', 'api', 'traffic', 'vuln', 'graph']
+
+/** 按 `group` 归组（保持 VIEWS 声明顺序），给模板用来插组间分隔线。
+ *  动态补齐：若后端 `/meta` 登记了更多镜头（如 api / traffic / graph），
+ *  同步进 'lens' 组，避免顶栏漏页签。 */
 const viewGroups = computed(() => {
   const order = []
   const byGroup = {}
+  const seen = new Set()
+
+  const push = (groupName, item) => {
+    if (seen.has(item.key)) return
+    seen.add(item.key)
+    if (!byGroup[groupName]) {
+      byGroup[groupName] = []
+      order.push(groupName)
+    }
+    byGroup[groupName].push(item)
+  }
+
   for (const item of store.VIEWS) {
     const name = item.group || 'other'
-    if (!byGroup[name]) {
-      byGroup[name] = []
-      order.push(name)
-    }
-    byGroup[name].push(item)
+    push(name, item)
   }
+
+  for (const row of store.lensRows || []) {
+    push('lens', {
+      key: row.key,
+      label: row.label,
+      hint: `镜头：${row.label}`,
+      group: 'lens',
+    })
+  }
+
+  if (byGroup.lens) {
+    byGroup.lens.sort((a, b) => {
+      const ia = LENS_ORDER.indexOf(a.key)
+      const ib = LENS_ORDER.indexOf(b.key)
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
+    })
+  }
+
   return order.map((name) => ({ name, items: byGroup[name] }))
 })
 
@@ -92,11 +122,10 @@ const emit = defineEmits(['import', 'palette', 'manage'])
     <button class="primary" @click="emit('import')">导入</button>
 
     <!--
-      只读徽标**常驻**，不是悬停才出现。CLI 后置之后这是唯一的用户界面，
-      而它本阶段只做只读探索 —— 与其让人拖完一个节点再怀疑"我是不是改了数据"，
-      不如一开始就说清楚。
+      只读 / 编排状态徽标常驻。编排模式下提示可编辑，其余视图为只读探索模式。
     -->
-    <span class="chip" title="本阶段只做只读探索模式，编排模式尚未开工">🔒 只读</span>
+    <span v-if="store.view === 'pipeline'" class="chip accent" title="编排模式：可编辑管线定义与步骤依赖">✎ 编排</span>
+    <span v-else class="chip" title="本阶段只做只读探索模式">🔒 只读</span>
   </header>
 </template>
 

@@ -562,6 +562,13 @@ export async function reload() {
 }
 
 export async function selectProject(name) {
+  // 换项目时清空未提交的布局攒批，避免上个项目的节点坐标被 debounced patch 送到新项目
+  if (layoutTimer) {
+    clearTimeout(layoutTimer)
+    layoutTimer = null
+  }
+  pendingLayout.clear()
+
   _project.value = name
   _selectedId.value = null
   _selectedDetail.value = null
@@ -1085,8 +1092,9 @@ export async function submitImport({ paths, parser, dryRun, archive }) {
 // 在模块求值时就引用了它们，而 `const` 此刻还在 TDZ 里（会抛
 // "Cannot access 'listJobs' before initialization"）。函数声明会提升，
 // 于是"导出面在 store 之前"这件事不会变成一个只在 import 时才炸的坑。
-export function listJobs(limit = 100) {
-  return get(`/jobs?limit=${limit}`)
+export async function listJobs(limit = 100) {
+  const query = await _projectQuery()
+  return get(`/jobs?limit=${limit}${query ? `&${query}` : ''}`)
 }
 
 export function jobDetail(jobId) {

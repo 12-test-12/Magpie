@@ -188,8 +188,8 @@ async function enrich() {
 
 function pick(row) {
   selected.value = row
-  store.selectEntity(row.id)
   store.setView('explore')
+  store.ensureVisible(row.id)
 }
 
 const FACET_LABELS = { severity: '严重度', state: '状态' }
