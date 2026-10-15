@@ -103,8 +103,9 @@ const _logLines = shallowRef([])
 //: 默认页 = **项目总览**（评审十一：安全产品不该一进来就是图，先答"这个项目
 //: 现在怎么样"）。进画布是总览上的一次显式动作（「进入攻击面画布」/左栏导航）。
 const _view = ref('overview')
+const _dataRevision = ref(0)
 const _paletteOpen = ref(false)
-const _drawerOpen = ref(true)
+const _drawerOpen = ref(false)
 //: 日志抽屉高度（视觉整改：可拖高）。**会话内记忆**，与聚合卡位置同一待遇
 //: （不入库 —— 布局偏好不是事实）；clamp 在组件里（96–520，见 LogDrawer）。
 //: 默认 130（评审十二：任务中心常驻 100–150px —— 短到不占画布，又留得下
@@ -255,6 +256,10 @@ export const VIEWS = [
   { key: 'pipeline', label: '编排', hint: '管线编排（可编辑）', group: 'mode' },
   { key: 'assets', label: '资产', hint: '镜头：域名 / IP / 主机 / 网段', group: 'lens' },
   { key: 'services', label: '服务与中间件', hint: '镜头：服务 / 产品', group: 'lens' },
+  { key: 'api', label: 'API 接口', hint: '按主机与路径下钻', group: 'lens' },
+  { key: 'js', label: 'JS 资源', hint: '已导入的 JS 地址索引', group: 'lens' },
+  { key: 'evidence', label: '证据', hint: '原始定位、归档与脱敏预览', group: 'lens' },
+  { key: 'notes', label: '研究笔记', hint: '现有发现通道中的笔记', group: 'lens' },
   { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）', group: 'lens' },
   // 5.5：风险评分 + 攻击面概览。**纯读侧派生**（GET /risk），与镜头平级 ——
   // 它回答的是"这些事实合起来意味着什么"，不是又一个镜头。
@@ -300,6 +305,7 @@ export const store = reactive({
   filter: _filter,
   logLines: _logLines,
   view: _view,
+  dataRevision: _dataRevision,
   paletteOpen: _paletteOpen,
   drawerOpen: _drawerOpen,
   drawerHeight: _drawerHeight,
@@ -506,7 +512,9 @@ export async function loadLenses() {
   }
 }
 
+let graphGeneration = 0
 export async function loadGraph() {
+  const generation = ++graphGeneration
   if (!_project.value && _projectsLoaded) {
     // loadProjects 之后仍没选中 = 0 个活跃项目（空库 / 全部归档）：**别问
     // 服务端要图** —— 不带 project 的 `/graph` 在这种库里是 400
@@ -524,6 +532,7 @@ export async function loadGraph() {
   _loadError.value = ''
   try {
     const query = await _projectQuery()
+    if (generation !== graphGeneration) return
     const domain = _filter.underDomain
       ? `&under_domain=${encodeURIComponent(_filter.underDomain)}` : ''
     //: kinds 进 URL（0.20.0）：与 under_domain 同一条纪律 —— 筛 secret 时那 13
@@ -531,6 +540,7 @@ export async function loadGraph() {
     const kinds = _filter.kinds.length
       ? `&kinds=${encodeURIComponent(_filter.kinds.join(','))}` : ''
     const data = await get(`/graph?limit=500${query ? `&${query}` : ''}${domain}${kinds}`)
+    if (generation !== graphGeneration) return
     _raw.nodes = data.nodes || []
     _raw.edges = data.edges || []
     _raw.layout = data.layout || {}
@@ -539,13 +549,14 @@ export async function loadGraph() {
     _raw.total = Number.isFinite(Number(data.total))
       ? Number(data.total) : _raw.nodes.length
   } catch (err) {
+    if (generation !== graphGeneration) return
     _loadError.value = err.message
     _raw.nodes = []
     _raw.edges = []
     _raw.layout = {}
     _raw.total = 0
   } finally {
-    _loading.value = false
+    if (generation === graphGeneration) _loading.value = false
   }
 }
 
@@ -558,7 +569,10 @@ export async function reload() {
   await loadMeta()
   // 标签词表与图/镜头一起取（三个都是"这个库里现在有什么"）—— 串行会让首屏
   // 多两个 RTT，而它们之间没有先后依赖。
-  await Promise.all([loadGraph(), loadLenses(), loadTags()])
+  // The research workspace does not need graph rows. Load its bounded window
+  // only when the user explicitly enters the canvas.
+  await Promise.all([_view.value === 'explore' ? loadGraph() : Promise.resolve(), loadLenses(), loadTags()])
+  _dataRevision.value++
 }
 
 export async function selectProject(name) {
@@ -570,6 +584,9 @@ export async function selectProject(name) {
   pendingLayout.clear()
 
   _project.value = name
+  graphGeneration++
+  _raw.nodes = []; _raw.edges = []; _raw.layout = {}; _raw.total = 0
+  _loadError.value = ''; _loading.value = false
   _selectedId.value = null
   _selectedDetail.value = null
   _selectedMerges.value = []
@@ -1355,6 +1372,7 @@ export function setView(key) {
   // 就不该丢 —— 也正因为如此，这里不需要一个阻塞式确认弹窗（那种弹窗唯一的
   // 效果是训练人无脑点"确定"）。
   _view.value = key
+  if (key === 'explore') loadGraph()
   if (key === 'pipeline' && _pipeline.definition === null && !_pipeline.loading) {
     // 第一次进编排模式：把列表取回来，并开一份空草稿，别让画布是一片什么都没有
     // 的空白 —— 空白会被读成"坏了"。

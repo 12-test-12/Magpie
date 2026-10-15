@@ -1,22 +1,15 @@
 <script setup>
 /**
- * n8n 式外壳（计划书 §7.1）：
- *
- *   顶部 项目切换 + 导入 + Ctrl+K + 体检 + Inbox 徽标
- *   左栏 类型面板 + 镜头切换
- *   中间 画布 / 镜头页 / 作业历史 / Inbox / 体检
- *   右栏 实体详情（只在画布页）
- *   底部 日志抽屉
- *
- * 首屏的请求是 `projects → meta → (graph ∥ lenses)`：镜头清单由
- * `meta.kinds[].lens` 推导，所以它必须排在 `lenses` 前面（3.2 之前的两者并行
- * 是"镜头写死在代码里"才成立的前提）。除此之外没有瀑布 —— 多一层就多一个
- * RTT，而这是"首屏 < 1.5s"这条契约里**界面能控制的那一半**；另一半是服务端
- * 与浏览器的，见 `bench/test_perf_web.py` 里对口径的说明。
+ * Research workspace shell: business navigation and bounded master/detail views.
+ * Canvas and pipeline retain their existing contextual panels and contracts.
+ * Boot loads projects/meta/lens counts; graph rows are fetched on explicit entry.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import TopBar from './components/TopBar.vue'
 import LeftPanel from './components/LeftPanel.vue'
+import WorkspaceNav from './components/WorkspaceNav.vue'
+import WorkspaceView from './views/WorkspaceView.vue'
+import { workspacePages } from './workspace.js'
 import DetailPanel from './components/DetailPanel.vue'
 import LogDrawer from './components/LogDrawer.vue'
 import CommandPalette from './components/CommandPalette.vue'
@@ -110,7 +103,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
     </div>
 
     <main v-else>
-      <LeftPanel />
+      <LeftPanel v-if="['explore', 'pipeline'].includes(store.view)" />
+      <WorkspaceNav v-else />
 
       <section class="center">
         <!-- 项目总览（评审十一）= 默认首页。空库时它内部渲染 EmptyGuide ——
@@ -129,6 +123,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              （`showDetail`）只跟着 `explore` 出现，所以这里不用改它 ——
              它已经是对的。 -->
         <PipelineView v-else-if="store.view === 'pipeline'" />
+        <WorkspaceView v-else-if="workspacePages[store.view]" :category="store.view" @import="importOpen = true" />
         <!-- 镜头页按 `lensKeys` 动态认领（见 activeLensLabel 的注释）。 -->
         <LensView v-else-if="store.lensKeys.includes(store.view)"
                   :lens="store.view" :label="activeLensLabel"

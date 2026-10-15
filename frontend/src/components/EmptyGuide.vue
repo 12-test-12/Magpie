@@ -61,12 +61,12 @@ async function createProject() {
     <template v-if="!hasProjects">
       <EmptyState
         title="从这里开始"
-        desc="Magpie 不主动扫描任何东西 —— 它把你已有的工具输出（subfinder / httpx…）收进来，整理成一张能看的图。打开画布就能看见手上有什么、它们怎么连起来。"
+        desc="Magpie 把已有工具输出整理为可回查的研究数据。创建项目、导入文件，然后在资产、API 和证据工作区逐步下钻。"
       >
         <ol class="steps">
           <li><b>建一个项目</b>：项目 = 一次评估的范围，数据按项目隔离。</li>
           <li><b>导入文件</b>：`subfinder.txt` / `httpx.jsonl`，一次可以选多个。</li>
-          <li><b>回画布</b>：`domain → ip`、`service → product` 会连起来。</li>
+          <li><b>开始研究</b>：按主机浏览资产与 API，打开来源证据；关系可在画布中查看。</li>
         </ol>
         <div class="row">
           <input v-model="name" placeholder="项目名，例如 acme-2026q3"
@@ -82,7 +82,7 @@ async function createProject() {
     <template v-else-if="!hasEntities">
       <EmptyState
         title="项目建好了，还没有数据"
-        desc="导入一份真实输出就能看到画布动起来。路径填绝对路径（服务进程按它自己的工作目录解析相对路径）。导入会在底部日志抽屉里实时显示进度、阶段与坏行 —— 那些是数据层的真实计数，不是界面上估的。"
+        desc="导入工具输出或陌生格式文件，再通过资产、API 和证据工作区检查结果。陌生格式可先预览并确认映射；导入报告会说明已映射、未理解和失败的内容。"
       >
         <ol class="steps">
           <li>`subfinder -d example.com -o subfinder.txt`</li>

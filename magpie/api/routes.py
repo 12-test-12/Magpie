@@ -57,7 +57,7 @@ from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, pipeline, query, risk, store, universal
+from ..core import ingest, ops, pipeline, query, risk, store, universal, workspace
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -151,6 +151,43 @@ def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
 
 def _ctx(request: Request):
     return request.app.state.ctx
+
+
+@router.get("/workspace/summary", summary="研究工作台项目摘要（真实计数）")
+@_translating
+def workspace_summary(project: str | None = None,
+                      conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(workspace.summary(conn, _resolve_project(conn, project)))
+
+
+@router.get("/workspace/browse", summary="按主机/路径聚合并分页下钻")
+@_translating
+def workspace_browse(project: str | None = None, category: str = "assets",
+                     mode: str = "host", q: str = "", host: str | None = None,
+                     prefix: str | None = None, method: str = "", source: str = "",
+                     cursor: str | None = None, limit: int = 50,
+                     conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(workspace.browse(conn, _resolve_project(conn, project), category=category,
+                               mode=mode, q=q, host=host, prefix=prefix, method=method,
+                               source=source, cursor=cursor, limit=limit))
+
+
+@router.get("/workspace/entities/{entity_id}", summary="有界实体详情与有效证据链")
+@_translating
+def workspace_entity(entity_id: int, project: str | None = None,
+                     section: str = "observations", cursor: str | None = None,
+                     limit: int = 20,
+                     conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(workspace.entity_detail(conn, _resolve_project(conn, project), entity_id,
+                                      section=section, cursor=cursor, limit=limit))
+
+
+@router.get("/workspace/evidence/{evidence_id}", summary="证据定位与受管归档的脱敏预览")
+@_translating
+def workspace_evidence(evidence_id: int, request: Request, project: str | None = None,
+                       conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(workspace.evidence_detail(conn, _resolve_project(conn, project), evidence_id,
+                                        _ctx(request).data_dir))
 
 
 def _resolve_project(conn: sqlite3.Connection, project: str | int | None) -> int:

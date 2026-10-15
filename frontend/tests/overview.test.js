@@ -88,6 +88,9 @@ function stubBackend({ projects, graph }) {
     '/projects': projects,
     '/graph': graph,
     '/risk': RISK,
+    '/workspace/summary': { assets: 3, services: 1, api: 4, evidence: 6,
+      pending: 1, findings: 3, failed_jobs: 0, recent_jobs: [],
+      count_basis: '当前未合并实体（含退役）；证据含历史记录' },
     '/lenses/assets': { lens: 'assets', total: 3,
                         kinds: [{ kind: 'domain', identity_rule: '', produced_by: [],
                                   count: 2 },
@@ -150,25 +153,25 @@ describe('项目总览是默认首页（评审十一）', () => {
     expect(html).toContain('攻击面安全总览')
     expect(html).toContain('进入攻击面画布')
 
-    // 四象限固定四个 kind（域名/IP/服务/接口），各带 kind 原文
-    const quads = wrapper.findAll('.quad')
+    // 工作台摘要直接来自服务端；卡片可进入对应业务页面。
+    const quads = wrapper.findAll('.metric-card')
     expect(quads).toHaveLength(4)
     const quadText = quads.map((q) => q.text())
-    expect(quadText[0]).toContain('域名')
-    expect(quadText[0]).toContain('domain')
-    expect(quadText[1]).toContain('ip')
-    expect(quadText[2]).toContain('service')
-    expect(quadText[3]).toContain('endpoint')
+    expect(quadText[0]).toContain('资产')
+    expect(quadText[1]).toContain('服务')
+    expect(quadText[2]).toContain('API')
+    expect(quadText[3]).toContain('来源证据')
 
     // 风险概览：分数与事实来自 /risk（界面不自算）
-    expect(html).toContain('风险概览')
-    expect(wrapper.find('.score').text()).toBe('42')
-    expect(html).toContain('未决 Inbox')
+    expect(html).toContain('待关注事项')
+    expect(quads[0].find('strong').text()).toBe('3')
+    expect(html).toContain('工具发现 · 待核实')
 
     // 重点风险资产：有未处置漏洞的进榜，0 漏洞的主机不进
-    const hosts = wrapper.find('.hosts')
-    expect(hosts.text()).toContain('victim.example.com')
-    expect(hosts.text()).not.toContain('quiet.example.com')
+    expect(html).toContain('扫描器命中不等同于已确认漏洞')
+    expect(html).toContain('未提供时间差分')
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/workspace/summary'))).toBe(true)
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/risk'))).toBe(false)
     wrapper.unmount()
   })
 

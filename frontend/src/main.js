@@ -12,6 +12,7 @@ import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import '@vue-flow/controls/dist/style.css'
 import './styles/tokens.css'
+import './styles/workspace.css'
 
 import App from './App.vue'
 

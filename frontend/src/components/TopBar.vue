@@ -1,191 +1,23 @@
 <script setup>
-/**
- * 顶部外壳（计划书 §7.1 的映射）。
- *
- *   n8n 的「工作流名 + Save + Run」 → 项目切换 + 导入（=Run）+ 搜索 + 体检 + Inbox 徽标
- *
- * "Run" 的位置放**导入**，因为它就是唯一的"执行"动作 —— 这个工具不发起扫描，
- * 它把别的工具的**输出**收进来。把它叫 Run 还是叫导入不影响它排在最右边；
- * 别在它旁边再放一个"运行"，那会让人以为这里能发起扫描。
- */
 import { computed } from 'vue'
 import { store } from '../store.js'
 import { fmtInt } from '../format.js'
 
-defineProps({
-  version: { type: String, default: '' },
-})
-
-const LENS_ORDER = ['assets', 'services', 'api', 'traffic', 'vuln', 'graph']
-
-/** 按 `group` 归组（保持 VIEWS 声明顺序），给模板用来插组间分隔线。
- *  动态补齐：若后端 `/meta` 登记了更多镜头（如 api / traffic / graph），
- *  同步进 'lens' 组，避免顶栏漏页签。 */
-const viewGroups = computed(() => {
-  const order = []
-  const byGroup = {}
-  const seen = new Set()
-
-  const push = (groupName, item) => {
-    if (seen.has(item.key)) return
-    seen.add(item.key)
-    if (!byGroup[groupName]) {
-      byGroup[groupName] = []
-      order.push(groupName)
-    }
-    byGroup[groupName].push(item)
-  }
-
-  for (const item of store.VIEWS) {
-    const name = item.group || 'other'
-    push(name, item)
-  }
-
-  for (const row of store.lensRows || []) {
-    push('lens', {
-      key: row.key,
-      label: row.label,
-      hint: `镜头：${row.label}`,
-      group: 'lens',
-    })
-  }
-
-  if (byGroup.lens) {
-    byGroup.lens.sort((a, b) => {
-      const ia = LENS_ORDER.indexOf(a.key)
-      const ib = LENS_ORDER.indexOf(b.key)
-      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib)
-    })
-  }
-
-  return order.map((name) => ({ name, items: byGroup[name] }))
-})
-
+defineProps({ version: { type: String, default: '' } })
 const emit = defineEmits(['import', 'palette', 'manage'])
+const label = computed(() => store.VIEWS.find(v => v.key === store.view)?.label || store.lensRows.find(v => v.key === store.view)?.label || store.view)
 </script>
 
 <template>
-  <header class="bar">
-    <div class="brand">
-      <span class="logo">Magpie</span>
-      <span class="mono faint v">{{ version }}</span>
-    </div>
-
-    <label class="project">
-      <span class="faint">项目</span>
-      <select
-        :value="store.project"
-        @change="store.selectProject($event.target.value)"
-      >
-        <option v-if="!store.projects.length" value="">（还没有项目）</option>
-        <option v-for="p in store.projects" :key="p.id" :value="p.name">
-          {{ p.name }}（{{ fmtInt(p.counts.entities) }} 实体）
-        </option>
-      </select>
-    </label>
-
-    <!-- 项目管理（0.20.0 · Yakit 式）：建 / 归档↔恢复 / 删除收在这一个对话框里。
-         下拉只管"切"这一个高频动作 —— 四个动作摊在顶栏上，每个都要人先想
-         "这是不是我要的那个"。 -->
-    <button class="ghost manage" title="项目管理：新建 / 归档 / 恢复 / 删除"
-            @click="emit('manage')">管理</button>
-
-    <!-- 按 `item.group` 分组、组间加分隔线：模式 / 镜头 / 治理。
-         左栏是"当前上下文的二级导航"，顶栏是全局页 —— 分隔线让这层
-         从属关系看得见，而不是两排长得一样的按钮互相抢。 -->
-    <nav class="views">
-      <template v-for="(group, gi) in viewGroups" :key="group.name">
-        <span v-if="gi" class="divider" aria-hidden="true" />
-        <button
-          v-for="item in group.items"
-          :key="item.key"
-          class="ghost tab"
-          :class="{ active: store.view === item.key }"
-          :title="item.hint"
-          @click="store.setView(item.key)"
-        >
-          {{ item.label }}
-          <span v-if="item.key === 'inbox' && store.openInboxCount"
-                class="badge hot">{{ store.openInboxCount }}</span>
-        </button>
-      </template>
-    </nav>
-
-    <span class="spacer" />
-
-    <!-- 窄窗（≤1200px）只留 🔍 图标：完整文案在 title 里，键盘还是 Ctrl+K。 -->
-    <button class="ghost search" title="搜索（Ctrl+K）" @click="emit('palette')">
-      🔍<span class="search-text"> 搜索 <span class="mono faint">Ctrl+K</span></span>
-    </button>
-    <!-- 「体检」按钮删掉了：nav 里已有数据体检页签，两个入口指向同一页 ——
-         多出来的那个只会让人猜"这两个体检有什么不一样"。 -->
-    <button class="primary" @click="emit('import')">导入</button>
-
-    <!--
-      只读 / 编排状态徽标常驻。编排模式下提示可编辑，其余视图为只读探索模式。
-    -->
-    <span v-if="store.view === 'pipeline'" class="chip accent" title="编排模式：可编辑管线定义与步骤依赖">✎ 编排</span>
-    <span v-else class="chip" title="本阶段只做只读探索模式">🔒 只读</span>
+  <header class="workspace-topbar">
+    <div class="brand"><span class="brand-symbol">m<span>●</span></span><strong>Magpie</strong><small class="mono faint">{{ version }}</small></div>
+    <div class="topbar-divider" />
+    <label class="project"><span class="dim">项目</span><select :value="store.project" aria-label="当前项目" @change="store.selectProject($event.target.value)"><option v-if="!store.projects.length" value="">（还没有项目）</option><option v-for="p in store.projects" :key="p.id" :value="p.name">{{ p.name }}（{{ fmtInt(p.counts.entities) }} 实体）</option></select></label>
+    <button class="ghost" title="项目管理：新建 / 归档 / 恢复 / 删除" @click="emit('manage')">管理</button>
+    <div class="topbar-location"><span class="faint">/</span> {{ label }}</div>
+    <span class="topbar-spacer" />
+    <button class="ghost topbar-search" title="搜索（Ctrl+K）" @click="emit('palette')">⌕ <span>搜索</span><kbd>Ctrl K</kbd></button>
+    <span v-if="store.view === 'pipeline'" class="chip accent">✎ 编排</span><span v-else class="chip" title="探索模式只读画布；笔记与导入通过各自入口操作">🔒 只读浏览</span>
+    <button class="primary" @click="emit('import')">＋ 导入</button>
   </header>
 </template>
-
-<style scoped>
-.bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
-  background: var(--chrome);
-  border-bottom: 1px solid var(--line);
-  flex: none;
-  /* 不换行（第二行顶栏比第一行溢出更难读）；溢出的压力全部交给 .views
-     的横向滚动 —— 见下面的注释。 */
-  flex-wrap: nowrap;
-  white-space: nowrap;
-}
-.brand { display: flex; align-items: baseline; gap: 8px; }
-.logo { font-size: 15px; font-weight: 600; letter-spacing: .04em; }
-.v { font-size: 11px; }
-.project { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.project select { min-width: 170px; }
-/* .views 是**唯一允许横向溢出**的段：页签多了出滚动条（隐藏滚动条样式，
-   滚轮/触控板照常滚），而不是把整条顶栏挤变形。min-width:0 是 flex 子项
-   收缩的前提 —— 没有它 overflow-x 永远不触发。 */
-.views {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: 8px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.views::-webkit-scrollbar { display: none; }
-.search-text { display: inline; }
-@media (max-width: 1200px) {
-  .search-text { display: none; }
-}
-/* 组间竖线 —— 「模式 | 镜头 | 治理」的层级一眼可分 */
-.divider {
-  width: 1px;
-  height: 16px;
-  background: var(--line);
-  margin: 0 7px;
-  flex: none;
-}
-.tab {
-  border-color: transparent;
-  color: var(--dim);
-  display: inline-flex;
-  gap: 5px;
-  border-radius: 999px;
-  padding: 4px 11px;
-}
-.tab:hover:not(:disabled) { background: var(--tint-hover); border-color: transparent; }
-.tab.active {
-  background: var(--tint-accent);
-  border-color: transparent;
-  color: var(--accent);
-}
-.spacer { flex: 1; }
-</style>

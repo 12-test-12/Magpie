@@ -121,8 +121,8 @@ describe('整壳冒烟', () => {
     expect(html).toContain('导入')                        // 顶部 Run
     expect(html).toContain('只读')                        // 只读徽标常驻
     expect(html).toContain('探索模式')                    // 画布上的模式徽标
-    expect(html).toContain('domain')                      // 左栏类型面板
-    expect(html).toContain('service')
+    expect(html).toContain('资产')                        // 工作台业务导航
+    expect(html).toContain('服务与中间件')
     expect(html).toContain('Inbox')
     expect(html).toContain('导入作业')                    // 底部抽屉页签
     expect(html).not.toContain('URL 里没有 token')

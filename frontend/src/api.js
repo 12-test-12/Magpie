@@ -70,7 +70,7 @@ export async function call(path, options = {}) {
   return body.data
 }
 
-export const get = (path) => call(path)
+export const get = (path, options = {}) => call(path, options)
 
 export const post = (path, payload) => call(path, {
   method: 'POST',

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import secrets
+import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +13,14 @@ from pathlib import Path
 
 def main():
     root = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--workspace', default='', help='Optional isolated workspace name inside .magpie-dev')
+    args = parser.parse_args()
+    if args.workspace and not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}', args.workspace):
+        parser.error('workspace must contain only letters, digits, underscores or hyphens')
+    data_dir = root / '.magpie-dev'
+    if args.workspace:
+        data_dir /= args.workspace
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if not npm or not (root / "frontend/node_modules/vite").exists():
         print("Install frontend dependencies first: cd frontend && npm install", flush=True)
@@ -26,7 +36,7 @@ def main():
     children = []
     try:
         children.append(subprocess.Popen([
-            sys.executable, "-m", "magpie.cli", "app", "--data-dir", str(root / ".magpie-dev"),
+            sys.executable, "-m", "magpie.cli", "app", "--data-dir", str(data_dir),
             "--port", "8765", "--token", token, "--no-browser"], cwd=root))
         time.sleep(2)
         if children[0].poll() is not None:
@@ -34,7 +44,7 @@ def main():
             return 1
         children.append(subprocess.Popen([npm, "run", "dev", "--", "--port", "5173", "--strictPort"],
                                          cwd=root / "frontend"))
-        print(f"\nBrowser test URL: {url}\nIndependent data: {root / '.magpie-dev'}", flush=True)
+        print(f"\nBrowser test URL: {url}\nIndependent data: {data_dir}", flush=True)
         print("Vue edits reload automatically. Restart this command after Python edits. Ctrl+C stops both servers.", flush=True)
         while all(p.poll() is None for p in children):
             time.sleep(0.5)
