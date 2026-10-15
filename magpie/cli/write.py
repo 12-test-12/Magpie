@@ -470,9 +470,9 @@ def cmd_import(args, ctx) -> tuple[dict, list[str]]:
         # 这种结果），但它必须**看得见** —— 脚本拿着一个成功的退出码往下走时，
         # "导了 0 个"与"导了一批"的唯一区别就是报告里这一点。
         notes.append(
-            "没有匹配到任何可导入的文件。给目录时按扩展名过滤"
-            f"（{'、'.join(ingest.INPUT_SUFFIXES)}）—— "        # noqa: SLF001
-            "要导一个扩展名不在这个清单里的文件，直接写它的路径。")
+            "没有匹配到任何可导入的文件。目录先按扩展名筛选"
+            f"（{'、'.join(ingest.INPUT_SUFFIXES)}），再探测陌生后缀的结构化记录；"  # noqa: SLF001
+            "跳过明细见 report.discovery_skipped。也可以直接选择文件进行预览。")
 
     #  回显的输入路径也过掩码（4.2 判据 ①，向量 B）：`report` 里的 path 在
     #  `ingest_file` 已经掩过，但 JSON 信封的 `paths` 是从命令行实参直接来的

@@ -152,6 +152,8 @@ class IngestOptions:
     #: `<report_dir>/<job_id>.json`（没有 job 时用 sha256 前缀）留一份 `ingest_file`
     #: 的原样报告。理由见 `_write_report`。
     report_dir: Path | None = None
+    mapping: dict[str, str] | None = None
+    expected_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.archive not in ("archived", "external"):
@@ -160,6 +162,9 @@ class IngestOptions:
             raise ValueError(f"batch_size 必须 >= 1，收到 {self.batch_size!r}")
         # 绝对化：归档 locator 要写成 file:// URI，相对路径表达不了（也不该表达）
         self.data_dir = Path(self.data_dir).resolve()
+        if self.mapping is not None:
+            from .universal import validate_mapping
+            self.mapping = validate_mapping(self.mapping)
         if self.report_dir is not None:
             self.report_dir = Path(self.report_dir).resolve()
 
@@ -268,12 +273,13 @@ class Counters:
 # ---------------------------------------------------------------------------
 
 
-def discover(paths: Sequence[str | Path], *, recursive: bool = True
+def discover(paths: Sequence[str | Path], *, recursive: bool = True,
+             skipped: list[dict[str, str]] | None = None
              ) -> tuple[list[Path], list[str]]:
     """把"用户给的一串路径"展开成文件列表。返回 (files, problems)。
 
-    目录按扩展名过滤（`INPUT_SUFFIXES`），避免把 .db / .png 之类拖进来。
-    problems 是**可读**的跳过原因，不抛异常。
+    常见扩展名直接纳入，陌生后缀通过有界内容探测补充。
+    problems 只记无法展开的输入；正常跳过放在可选 skipped 通道，不能变成路径错误。
     """
     files: list[Path] = []
     problems: list[str] = []
@@ -282,8 +288,12 @@ def discover(paths: Sequence[str | Path], *, recursive: bool = True
         if p.is_dir():
             walker = p.rglob("*") if recursive else p.glob("*")
             for child in sorted(walker):
-                if child.is_file() and _looks_like_input(child):
-                    files.append(child)
+                if child.is_file():
+                    if _looks_like_input(child):
+                        files.append(child)
+                    elif skipped is not None:
+                        skipped.append({"path": str(child), "reason":
+                            "扩展名未命中，内容探测未发现支持的结构化记录；可直接选择文件预览"})
         elif p.is_file():
             files.append(p)
         else:
@@ -299,7 +309,25 @@ def discover(paths: Sequence[str | Path], *, recursive: bool = True
 
 
 def _looks_like_input(path: Path) -> bool:
-    return path.suffix.lower() in INPUT_SUFFIXES
+    if path.suffix.lower() in INPUT_SUFFIXES or path.suffix.lower() in (".xml", ".yaml", ".yml", ".har", ".http"):
+        return True
+    if not path.suffix:
+        return True
+    # Unknown suffixes are probed by content; binary artifacts remain excluded.
+    probe = probe_file(path)
+
+    if probe.binary:
+        return False
+    from .universal import decode, detect
+    sample = _sample_text(path, probe)
+    fmt = detect(sample)
+    if fmt == "text":
+        return False
+    try:
+        # A delimiter-only header is not evidence of any importable record.
+        return next(decode(sample, fmt), None) is not None
+    except (ValueError, RecursionError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -999,7 +1027,8 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
     否则第 2 个 step 看不见第 1 个 step 写下的事实。默认 `False`：一次调用一条
     命令的入口（CLI / GUI / API 的导入）行为与以前逐字节相同。
     """
-    files, problems = discover(paths)
+    discovery_skipped: list[dict[str, str]] = []
+    files, problems = discover(paths, skipped=discovery_skipped)
     parsers, source_pkg = load_parsers()
     reports: list[dict[str, Any]] = []
     #: 干跑才谈"谁来持边界"：真跑的事务边界就是文件边界，取消语义依赖它。
@@ -1046,6 +1075,7 @@ def ingest_paths(conn: sqlite3.Connection, opts: IngestOptions,
         "available_parsers": [f"{c.tool}@{c.format_version}" for c in parsers],
         "data_dir": str(opts.data_dir),
         "problems": problems,
+        "discovery_skipped": discovery_skipped,
         "files": reports,
         "totals": totals,
         "job_ids": [rep["job_id"] for rep in reports if rep.get("job_id")],
@@ -1141,6 +1171,8 @@ def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
     except OSError as exc:
         return _problem_report(path, f"读不到文件：{exc}")
     probe = probe_file(path)
+    if opts.expected_sha256 and digest != opts.expected_sha256:
+        return _problem_report(path, "文件内容与预览不一致，请重新预览并确认映射")
 
     # --- 阶段 4.5：二进制短路 ---
     # 二进制内容不能喂给嗅探器：样本解码本身就没有意义（"binary" 不是编码）。
@@ -1153,7 +1185,12 @@ def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
 
     # --- 阶段 6：嗅探（只读样本）→ 仲裁 ---
     ranked = sniff_rank(_sample_text(path, probe), path.name, parsers)
-    if opts.parser:
+    if opts.parser == "generic" or opts.mapping is not None:
+        from .universal import parser_for
+        parser_cls = parser_for(opts.mapping)
+        arbitration = {"adopted": {"tool": "generic", "format_version": parser_cls.format_version},
+                       "reason": "人工选择通用映射", "ranking": ranked, "forced": True}
+    elif opts.parser:
         picked = next((c for c in parsers if str(c.tool) == opts.parser), None)
         if picked is None:
             return _problem_report(
@@ -1170,6 +1207,14 @@ def _ingest_file(conn: sqlite3.Connection, opts: IngestOptions, path: Path, *,
         arbitration = arbitrate(ranked)
         parser_cls = (None if arbitration["adopted"] is None
                       else _resolve_parser(parsers, arbitration["adopted"]))
+        if parser_cls is None and (not ranked or float(ranked[0]["score"]) < SNIFF_ADOPT_SCORE):
+            from .universal import can_auto_extract, parser_for
+            # Only structurally recognized formats automatically use the fallback.
+            # Ambiguous native parsers and unstructured text still require review.
+            if can_auto_extract(_sample_text(path, probe)):
+                parser_cls = parser_for()
+                arbitration["adopted"] = {"tool": "generic", "format_version": parser_cls.format_version}
+                arbitration["reason"] = "原生解析未命中，按格式进行通用提取；未理解内容见覆盖报告"
 
     fingerprint = (None if parser_cls is None
                    else f"{parser_cls.tool}@{parser_cls.format_version}")
@@ -1206,6 +1251,7 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
     """解析 → 写入 → 冲突 → 报告 → 收尾。**唯一的写入路径**。"""
     ctx = ParseContext(project_id=opts.project_id, source_name=source_name,
                        source_override=opts.source_name, _cancel=opts.cancel_check)
+    ctx.input_filename = path.name
     counters = Counters()
     conflicts_before = _open_value_conflicts(conn, opts.project_id)
     cancelled = False
@@ -1420,6 +1466,10 @@ def _run_job(conn: sqlite3.Connection, opts: IngestOptions, path: Path, digest: 
     }
     if parse_error:
         report["parse_error"] = parse_error
+    if hasattr(ctx, "import_coverage"):
+        report["import_coverage"] = ctx.import_coverage
+        if parse_error:
+            report["import_coverage"]["error"] = parse_error
     if definition_drift:
         report["definition_drift"] = definition_drift
     if not opts.dry_run:
@@ -1442,13 +1492,15 @@ def _evidence_for_line(conn: sqlite3.Connection, opts: IngestOptions, raw_id: in
     真原文按 locator 回归档文件取（`recovery_state` 的语义不变）。
     """
     lineno = int(ctx.current_line)
-    if lineno not in cache:
+    record_locator = getattr(ctx, "record_locator", {})
+    cache_key = (lineno, record_locator.get("record_path")) if record_locator else lineno
+    if cache_key not in cache:
         snippet = str(normalize.redact_secrets(ctx.current_line_text))[:512]
-        cache[lineno] = ops.add_evidence(
+        cache[cache_key] = ops.add_evidence(
             conn, project_id=opts.project_id, raw_file_id=raw_id,
-            locator={"line": lineno, "file": Path(ctx.source_name).name},
+            locator={"line": lineno, "file": Path(ctx.source_name).name, **record_locator},
             snippet=snippet, quality_class="high")
-    return cache[lineno]
+    return cache[cache_key]
 
 
 def _scan_and_write(conn: sqlite3.Connection, opts: IngestOptions, job_id: int,
@@ -1588,6 +1640,12 @@ def parser_drift_report(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         fingerprint = str(row["fingerprint"])
         registered = row["definition_hash"]
         cls = current.get(fingerprint)
+        if cls is None and fingerprint.startswith("generic@1-") and len(fingerprint) == 26:
+            suffix = fingerprint.removeprefix("generic@1-")
+            if all(c in "0123456789abcdef" for c in suffix):
+                from .universal import parser_for
+                # Mapping is in the fingerprint; all variants share one implementation.
+                cls = parser_for()
         if cls is not None and registered not in (None, store.UNHASHED_PARSER):
             actual = _definition_hash(cls)
             if str(registered) != actual:

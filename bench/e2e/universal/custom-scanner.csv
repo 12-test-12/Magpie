@@ -1,0 +1,3 @@
+destination,response,custom_tag
+https://portal.example.com/api/users,200,needs-review
+https://portal.example.com/api/export,403,private-api

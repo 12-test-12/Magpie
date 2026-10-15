@@ -33,10 +33,17 @@ import { computed, ref } from 'vue'
 import { upload, watchImport } from '../api.js'
 import { store } from '../store.js'
 import FsPicker from '../components/FsPicker.vue'
+import UniversalImport from '../components/UniversalImport.vue'
+import ImportCoverage from '../components/ImportCoverage.vue'
 
 const emit = defineEmits(['close'])
 
 const paths = ref('')
+const universalOpen = ref(false)
+const universalReady = ref(null)
+const reportNeedsReview = computed(() => (store.importReport?.report?.files || []).some(file =>
+  ['partial', 'failed', 'needs_confirmation', 'cancelled'].includes(file.state) ||
+  ['mapped_partial', 'unrecognized', 'record_error'].some(key => Number(file.import_coverage?.[key]) > 0)))
 const parser = ref('')
 const archive = ref('archived')
 const dryRun = ref(false)
@@ -103,6 +110,11 @@ function append(text, level = 'info') {
 }
 
 async function submit() {
+  if (universalOpen.value && (!universalReady.value || pathList.value.length !== 1 ||
+      pathList.value[0] !== universalReady.value.path)) {
+    error.value = '通用映射一次处理一个文件，请预览并确认映射。'
+    return
+  }
   if (!pathList.value.length) {
     error.value = '至少填一个文件或目录。'
     return
@@ -112,7 +124,9 @@ async function submit() {
   phases.value = []
   try {
     const record = await store.submitImport({
-      paths: pathList.value, parser: parser.value.trim(),
+      paths: pathList.value, parser: universalOpen.value ? 'generic' : parser.value.trim(),
+      mapping: universalOpen.value ? universalReady.value.mapping : undefined,
+      expectedSha256: universalOpen.value ? universalReady.value.sha256 : undefined,
       dryRun: dryRun.value, archive: archive.value,
     })
     append(`已提交 ${record.import_id}（${pathList.value.length} 个路径）—— ` +
@@ -261,6 +275,12 @@ function onBatch(payload) {
       </div>
 
       <label class="check">
+        <input v-model="universalOpen" type="checkbox" @change="universalReady = null" />
+        陌生工具 / 自定义字段：先预览与确认映射
+      </label>
+      <UniversalImport v-if="universalOpen" :path="pathList.length === 1 ? pathList[0] : ''"
+                       @ready="universalReady = $event" />
+      <label class="check">
         <input v-model="dryRun" type="checkbox" />
         dry-run（跑完不落库，只出报告）
       </label>
@@ -280,6 +300,9 @@ function onBatch(payload) {
         事件流是一条时间线，报告才是按文件归档的那份。
       -->
       <div v-if="store.importReport && store.importReport.report" class="report">
+        <p v-if="reportNeedsReview" class="warn" role="status">
+          处理已结束，但仍有错误、未识别或未完整映射的数据。请检查逐文件状态与覆盖明细；任务结束不代表数据全部理解。
+        </p>
         <div class="labelrow">
           <label>导入报告 · {{ store.importReport.state }}</label>
         </div>
@@ -299,6 +322,16 @@ function onBatch(payload) {
             </tr>
           </tbody>
         </table>
+        <template v-for="(f, i) in store.importReport.report.files || []" :key="`coverage-${i}`">
+          <ImportCoverage v-if="f.import_coverage" :coverage="f.import_coverage" />
+        </template>
+        <details v-if="(store.importReport.report.discovery_skipped || []).length" class="warn small">
+          <summary>目录扫描跳过 {{ store.importReport.report.discovery_skipped.length }} 个文件（未执行导入）</summary>
+          <p v-for="(item, i) in store.importReport.report.discovery_skipped.slice(0, 200)" :key="i">
+            {{ item.path }} · {{ item.reason }}
+          </p>
+          <p v-if="store.importReport.report.discovery_skipped.length > 200">仅显示前 200 项，完整清单在导入报告中。</p>
+        </details>
         <p v-if="(store.importReport.problems || []).length" class="warn small">
           提示：{{ store.importReport.problems.join('；') }}
         </p>

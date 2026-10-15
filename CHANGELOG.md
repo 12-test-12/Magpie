@@ -12,6 +12,17 @@
 
 ---
 
+## 0.22.0 — 通用导入、字段映射与本地浏览器联调
+
+- 新增 `POST /api/v1/import-preview`：只读格式、字段映射和覆盖预览，返回原文哈希、结构签名与有界明细。
+- 新增 `GET/POST /api/v1/import-profiles`：项目内保存可复用的声明式映射，不保存样例值。
+- 新增 `GET /api/v1/jobs/{job_id}/import-report`：读取持久化导入报告。
+- `POST /imports` 新增可选 `mapping` 与 `expected_sha256`；`parser=generic` 显式选择通用解析。输入哈希变化时拒绝沿用预览。
+- 通用文件报告新增 `import_coverage`，输入记录分类与字段计数独立于原有事实记录计数。原生解析优先，模糊仲裁仍需人工确认。
+- 批次报告新增 `discovery_skipped`，正常跳过的目录文件单独列明，不再误计为路径错误。
+- 通用解码支持 JSON/JSONL/CSV/TSV/Text/XML，上限 16 MiB；未知字段、错误行及截断情况明确显示。解析与写入继续复用既有 Evidence / Contribution / Undo 管线。
+- 新增 `dev.py` 本地 Vite + API 联调入口，测试数据隔离到 `.magpie-dev/`，无需 GitHub 打包。无 schema 迁移。
+
 ## 0.21.0 — MCP 接入页 + AI 发现通道：`POST /notes`、`GET /mcp`、CLI/MCP `add_finding`
 
 Magpie 成为 AI 自动渗透测试的底座这一步的三个落点：AI 客户端经 MCP **查看 +

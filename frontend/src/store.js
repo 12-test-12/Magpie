@@ -1077,9 +1077,11 @@ export async function loadImportReport(importId) {
   return _importReport.value
 }
 
-export async function submitImport({ paths, parser, dryRun, archive }) {
+export async function submitImport({ paths, parser, dryRun, archive, mapping, expectedSha256 }) {
   const body = { paths, dry_run: Boolean(dryRun), archive: archive || 'archived' }
   if (parser) body.parser = parser
+  if (mapping !== undefined) body.mapping = mapping
+  if (expectedSha256) body.expected_sha256 = expectedSha256
   if (_project.value) body.project = _project.value
   const record = await post('/imports', body)
   _activeImportId.value = record.import_id

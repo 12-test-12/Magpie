@@ -75,6 +75,10 @@ function localVueErrorReference() {
 export default defineConfig({
   plugins: [localVueErrorReference(), vue()],
   base: '/web/',
+  server: {
+    host: '127.0.0.1',
+    proxy: { '/api': 'http://127.0.0.1:8765' },
+  },
   build: {
     outDir: fileURLToPath(new URL('../magpie/api/web', import.meta.url)),
     emptyOutDir: true,

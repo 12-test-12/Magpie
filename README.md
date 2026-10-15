@@ -7,7 +7,7 @@
 > **仅用于自有资产与已获授权的目标**，不用于未授权扫描。
 > 工具本身**不主动发起任何网络请求** —— 唯一例外是默认关闭的 `magpie ask`（显式开启才出站，出站前先做敏感信息掩码）。
 
-当前版本 **0.20.0**。
+当前版本 **0.22.0**。
 
 ---
 
@@ -123,6 +123,22 @@ docker compose logs -f magpie            # token 在日志里
 **分发包**：推 `main` 触发 GitHub Actions，Release 页的滚动 prerelease **`edge`** 永远是最新一份双平台（Windows / Linux）PyInstaller 包，解压即用、不装 Python 也能跑；`v*` tag 挂正式 Release。
 
 ### 前端开发模式（改 GUI 才需要）
+
+本地浏览器联调（无需 GitHub 打包）：安装 API 依赖及 `frontend` 的 npm 依赖后，
+用可用的 Python ≥ 3.11 运行 `dev.py`。例如本机已建立的开发环境：
+
+```powershell
+.\.venv-dev\Scripts\python.exe dev.py
+```
+
+命令打印带随机 token 的本地浏览器地址，前端在 5173 端口热更新，通过同源代理访问
+8765 端口的 API。测试数据单独保存到 `.magpie-dev/`；修改 Python 后重启此命令，
+Ctrl+C 停止两项服务。正式项目仍按原启动方式运行。
+
+测试通用导入：新建测试项目 → 导入 → 选择或填入文件 → 勾选“陌生工具 / 自定义字段”
+→ 预览 → 修改映射 → 再预览 → 确认映射 → 开始导入。样例见 `bench/e2e/universal/`。
+通用处理目前限制 16 MiB，支持 JSON/JSONL/CSV/TSV/Text/XML；YAML、原始 HTTP
+与压缩包不在通用解码范围内。已知工具继续使用原生解析器，模糊情况仍需人工判断。
 
 ```bash
 cd frontend

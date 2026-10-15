@@ -57,7 +57,7 @@ from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, pipeline, query, risk, store
+from ..core import ingest, ops, pipeline, query, risk, store, universal
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -835,6 +835,58 @@ class ImportBody(BaseModel):
     dry_run: bool = False
     archive: str = "archived"
     project: str | None = None
+    mapping: dict[str, str] | None = None
+    expected_sha256: str | None = None
+
+
+class ImportPreviewBody(BaseModel):
+    path: str
+    project: str | None = None
+    mapping: dict[str, str] = Field(default_factory=dict)
+    expected_sha256: str | None = None
+
+
+@router.post("/import-preview", summary="只读通用映射预览与覆盖报告（上限 16 MiB）")
+@_translating
+def preview_import(body: ImportPreviewBody, conn: sqlite3.Connection = Depends(get_conn)):
+    project_id = _resolve_project(conn, body.project)
+    try:
+        result = universal.preview(Path(body.path), body.mapping)
+    except (OSError, ValueError) as exc:
+        raise ApiError(400, "E_IMPORT_PREVIEW", str(exc)) from exc
+    if body.expected_sha256 and result["sha256"] != body.expected_sha256:
+        raise ApiError(409, "E_INPUT_CHANGED", "文件内容已变化，请重新预览")
+    return ok(result, project_id=project_id)
+
+
+class ImportProfileBody(BaseModel):
+    project: str | None = None
+    name: str
+    structure_signature: str
+    mapping: dict[str, str]
+
+
+@router.get("/import-profiles", summary="项目内保存的字段映射配置")
+@_translating
+def import_profiles(request: Request, project: str | None = None,
+                    conn: sqlite3.Connection = Depends(get_conn)):
+    project_id = _resolve_project(conn, project)
+    return ok(universal.load_profiles(_ctx(request).data_dir, project_id), project_id=project_id)
+
+
+@router.post("/import-profiles", summary="保存可复用的字段映射（不保存数据样例）")
+@_translating
+def save_import_profile(body: ImportProfileBody, request: Request,
+                        conn: sqlite3.Connection = Depends(get_conn)):
+    project_id = _resolve_project(conn, body.project)
+    try:
+        universal.validate_mapping(body.mapping)
+        result = _ctx(request).writer.submit("save import profile", lambda _: universal.save_profile(
+            _ctx(request).data_dir, project_id, body.name,
+            body.structure_signature, body.mapping)).result(timeout=30)
+    except ValueError as exc:
+        raise ApiError(400, "E_IMPORT_PROFILE", str(exc)) from exc
+    return ok(result, project_id=project_id)
 
 
 @router.post("/imports", status_code=202, summary="提交导入 → 返回导入请求 id")
@@ -858,9 +910,20 @@ def post_import(body: ImportBody, request: Request,
                        f"这些路径不存在：{missing}",
                        hint="路径按服务进程的工作目录解析；GUI 请用绝对路径")
     project_id = _resolve_project(conn, body.project)
+    if body.mapping is not None:
+        try:
+            universal.validate_mapping(body.mapping)
+        except ValueError as exc:
+            raise ApiError(400, "E_IMPORT_MAPPING", str(exc)) from exc
+    if body.expected_sha256:
+        if len(targets) != 1 or not Path(targets[0]).is_file():
+            raise ApiError(400, "E_IMPORT_MAPPING", "确认预览后一次只能导入一个文件")
+        if ingest.sha256_file(Path(targets[0]))[0] != body.expected_sha256:
+            raise ApiError(409, "E_INPUT_CHANGED", "文件内容已变化，请重新预览")
     record = ctx.imports.create(project_id=project_id, paths=targets,
                                 parser=body.parser, source=body.source,
-                                dry_run=body.dry_run, archive=body.archive)
+                                dry_run=body.dry_run, archive=body.archive, mapping=body.mapping,
+                                expected_sha256=body.expected_sha256)
     data = record.as_dict()
     data["events"] = f"{API_PREFIX}/imports/{record.id}/events"
     return ok(data, project_id=project_id)
@@ -1240,6 +1303,18 @@ class JobAction(BaseModel):
     """
 
     dry_run: bool = False
+
+
+@router.get("/jobs/{job_id}/import-report", summary="读取持久化导入报告及通用覆盖明细")
+@_translating
+def saved_import_report(job_id: int, request: Request,
+                        conn: sqlite3.Connection = Depends(get_conn)):
+    job = query.job_row(conn, job_id)
+    try:
+        report = universal.saved_report(_ctx(request).data_dir, job_id)
+    except (OSError, ValueError) as exc:
+        raise ApiError(404, "E_IMPORT_REPORT", str(exc)) from exc
+    return ok(report, project_id=int(job["project_id"]))
 
 
 @router.post("/jobs/{job_id}/undo", summary="撤销一个作业（dry_run = 干跑预览）")

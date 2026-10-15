@@ -126,6 +126,31 @@
             "title": "Dry Run",
             "type": "boolean"
           },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Sha256"
+          },
+          "mapping": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping"
+          },
           "parser": {
             "anyOf": [
               {
@@ -168,6 +193,85 @@
           }
         },
         "title": "ImportBody",
+        "type": "object"
+      },
+      "ImportPreviewBody": {
+        "properties": {
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Sha256"
+          },
+          "mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Mapping",
+            "type": "object"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "ImportPreviewBody",
+        "type": "object"
+      },
+      "ImportProfileBody": {
+        "properties": {
+          "mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Mapping",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project"
+          },
+          "structure_signature": {
+            "title": "Structure Signature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "structure_signature",
+          "mapping"
+        ],
+        "title": "ImportProfileBody",
         "type": "object"
       },
       "JobAction": {
@@ -479,7 +583,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.21.0"
+    "version": "0.22.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -1864,6 +1968,120 @@
         "summary": "邻居（BFS，depth 层）"
       }
     },
+    "/api/v1/import-preview": {
+      "post": {
+        "operationId": "preview_import_api_v1_import_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "只读通用映射预览与覆盖报告（上限 16 MiB）"
+      }
+    },
+    "/api/v1/import-profiles": {
+      "get": {
+        "operationId": "import_profiles_api_v1_import_profiles_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "项目内保存的字段映射配置"
+      },
+      "post": {
+        "operationId": "save_import_profile_api_v1_import_profiles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportProfileBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "保存可复用的字段映射（不保存数据样例）"
+      }
+    },
     "/api/v1/imports": {
       "get": {
         "operationId": "list_imports_api_v1_imports_get",
@@ -2330,6 +2548,43 @@
           }
         },
         "summary": "作业详情（含 explain_job_scope）"
+      }
+    },
+    "/api/v1/jobs/{job_id}/import-report": {
+      "get": {
+        "operationId": "saved_import_report_api_v1_jobs__job_id__import_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "读取持久化导入报告及通用覆盖明细"
       }
     },
     "/api/v1/jobs/{job_id}/redo": {

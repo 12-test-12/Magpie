@@ -52,6 +52,8 @@ class ImportRecord:
     source: str | None = None
     dry_run: bool = False
     archive: str = "archived"
+    mapping: dict[str, str] | None = None
+    expected_sha256: str | None = None
     state: str = "queued"          # queued | running | done | failed | cancelled
     job_ids: list[int] = field(default_factory=list)
     totals: dict[str, int] = field(default_factory=dict)
@@ -115,10 +117,12 @@ class ImportRegistry:
     # -- 提交 ---------------------------------------------------------------
     def create(self, *, project_id: int, paths: list[str], parser: str | None = None,
                source: str | None = None, dry_run: bool = False,
-               archive: str = "archived") -> ImportRecord:
+               archive: str = "archived", mapping: dict[str, str] | None = None,
+               expected_sha256: str | None = None) -> ImportRecord:
         """登记一个导入请求并立刻排队。**不等它跑完** —— 进程不在这儿。"""
         record = self._register(project_id=project_id, paths=paths, parser=parser,
-                                source=source, dry_run=dry_run, archive=archive)
+                                source=source, dry_run=dry_run, archive=archive, mapping=mapping,
+                                expected_sha256=expected_sha256)
         self.broker.publish(record.id, "queued", {
             "import_id": record.id, "project_id": project_id,
             "paths": list(record.paths), "dry_run": dry_run,
@@ -215,6 +219,8 @@ class ImportRegistry:
             opts = ingest.IngestOptions(
                 project_id=record.project_id, data_dir=self.data_dir,
                 parser=record.parser, source_name=record.source,
+                mapping=record.mapping,
+                expected_sha256=record.expected_sha256,
                 archive=record.archive, dry_run=record.dry_run, actor=self.actor,
                 # 与 CLI / pipeline 同一条：报告副本落进 `reports/`。GUI 现在是
                 # 主入口，若只有 CLI 落盘，`magpie doctor` 的"未知字段"就会在

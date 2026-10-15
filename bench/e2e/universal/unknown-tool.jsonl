@@ -1,0 +1,4 @@
+{"target":"https://portal.example.com/api/users","ip_address":"192.0.2.10","custom_tag":"needs-review"}
+{"target":"https://portal.example.com/api/export","custom_tag":"private-api"}
+{"id":"127.0.0.1","custom_tag":"do-not-create-asset"}
+broken json record

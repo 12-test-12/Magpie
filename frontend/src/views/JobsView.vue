@@ -23,6 +23,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import VirtualTable from '../components/VirtualTable.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { store } from '../store.js'
+import { get } from '../api.js'
+import ImportCoverage from '../components/ImportCoverage.vue'
 
 /** 空态 CTA「导入一个文件」冒给外壳开导入对话框。 */
 const emit = defineEmits(['import'])
@@ -33,6 +35,21 @@ const detail = ref(null)
 const busy = ref(false)
 const error = ref('')
 const preview = ref(null)
+const importCoverage = ref(null)
+
+async function loadCoverage() {
+  const id = selected.value?.id
+  if (!id) return
+  error.value = ''
+  try {
+    const report = await get(`/jobs/${id}/import-report`)
+    if (selected.value?.id === id) {
+      importCoverage.value = report.import_coverage || null
+      if (!importCoverage.value) error.value = '此作业为原生解析，尚未计算通用字段覆盖率。'
+    }
+  } catch (err) { error.value = err.message }
+}
+watch(selected, () => { importCoverage.value = null })
 
 const COLUMNS = [
   { key: 'id', label: 'job', mono: true, width: '52px' },
@@ -213,6 +230,8 @@ watch(() => store.project, () => {
                     @click="applyOp('redo')">复原</button>
           </div>
 
+          <button class="ghost" @click="loadCoverage">查看导入覆盖报告</button>
+          <ImportCoverage v-if="importCoverage" :coverage="importCoverage" />
           <!--
             explain_job_scope 的输出。**旧作业用当时的 scope 解释** —— 这一行
             存在的全部意义就是防止有人拿当前 scope 去算历史作业的覆盖。
