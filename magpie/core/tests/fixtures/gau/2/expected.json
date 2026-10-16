@@ -1,0 +1,744 @@
+{
+  "tool": "gau",
+  "format_version": "2",
+  "input": "input.txt",
+  "bad_lines": [
+    {
+      "line": 15,
+      "reason": "不是一条绝对 URL（gau 每行一个 URL）"
+    },
+    {
+      "line": 16,
+      "reason": "不是一条绝对 URL（gau 每行一个 URL）"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:443",
+      "display": "app.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd",
+      "display": "UNKNOWN https://app.example.com:443/",
+      "attrs": {
+        "path_template": "/"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/admin",
+      "attrs": {
+        "path_template": "/admin"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/admin?id=1#top"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/user/123",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/123"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/user/456",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/456"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/user/789",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/789"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/user/abc",
+      "attrs": {
+        "path_template": "/user/abc"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://app.example.com:443/user/550e8400-e29b-41d4-a716-446655440000",
+      "attrs": {
+        "path_template": "/user/{uuid}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{uuid}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci81NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ",
+      "display": "UNKNOWN https://app.example.com:443/static/app.7f3a9c1d2e4b5a6f.css",
+      "attrs": {
+        "path_template": "/static/app.7f3a9c1d2e4b5a6f.css"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ"
+      ],
+      "field": "path",
+      "value": "/static/app.7f3a9c1d2e4b5a6f.css"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ"
+      ],
+      "field": "path_template",
+      "value": "/static/app.7f3a9c1d2e4b5a6f.css"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvc3RhdGljL2FwcC43ZjNhOWMxZDJlNGI1YTZmLmNzcyIsInVua25vd24iXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ",
+      "display": "UNKNOWN https://app.example.com:443/feed/20260101",
+      "attrs": {
+        "path_template": "/feed/{date}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ"
+      ],
+      "field": "path",
+      "value": "/feed/20260101"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ"
+      ],
+      "field": "path_template",
+      "value": "/feed/{date}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvZmVlZC8yMDI2MDEwMSIsInVua25vd24iXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8080",
+      "display": "app.example.com:8080",
+      "subtitle": "http"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/api/v1/users",
+      "attrs": {
+        "path_template": "/api/v1/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/api/v2/users",
+      "attrs": {
+        "path_template": "/api/v2/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "cdn.example.com",
+      "display": "cdn.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "cdn.example.com:443",
+      "display": "cdn.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd",
+      "display": "UNKNOWN https://cdn.example.com:443/assets/logo.png",
+      "attrs": {
+        "path_template": "/assets/logo.png"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "cdn.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/assets/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/assets/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImNkbi5leGFtcGxlLmNvbSIsNDQzLCIvYXNzZXRzL2xvZ28ucG5nIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 443
+    }
+  ]
+}

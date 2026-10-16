@@ -347,7 +347,7 @@ def test_domain_error_message_quotes_the_original_input():
 #: 才唯一"（UTC、秒精度、ISO8601）正是归一化的活，落到解析器里就会变成
 #: `tshark` 与 `har` 各写一种时间格式（`normalize.flow_window` 的文件头）。
 NORMALIZE_ALLOWED_IMPORTS = frozenset({
-    "ipaddress", "re", "unicodedata", "datetime", "__future__",
+    "ipaddress", "re", "unicodedata", "datetime", "base64", "json", "__future__",
 })
 
 

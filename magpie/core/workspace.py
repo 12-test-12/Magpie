@@ -10,7 +10,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from . import normalize, query
 
@@ -31,6 +31,9 @@ def _host(kind, key):
 
 
 def _path(key):
+    identity = normalize.decode_endpoint_key(key)
+    if identity is not None:
+        return str(identity["path"])
     try:
         return urlsplit(key if "://" in key else "//" + key).path or "/"
     except ValueError:
@@ -48,6 +51,12 @@ def _register(conn):
     conn.create_function("ws_prefix", 1, _prefix, deterministic=True)
     conn.create_function("ws_js", 1, lambda key: int(_path(key).lower().endswith((".js", ".mjs"))),
                          deterministic=True)
+    conn.create_function("ws_method", 1,
+                         lambda key: ((normalize.decode_endpoint_key(key) or {}).get("method", "")
+                                      if str(key).startswith("ep2:") else ""),
+                         deterministic=True)
+    conn.create_function("ws_display", 1,
+                         lambda key: normalize.endpoint_display(key), deterministic=True)
 
 
 def _literal(value):
@@ -165,7 +174,8 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
     if category == "js":
         where.append("(ws_js(k.entity_key)=1 OR EXISTS (SELECT 1 FROM observations jo WHERE jo.project_id=e.project_id AND jo.entity_id=e.id AND jo.is_current=1 AND jo.semantic_field IN ('js_content_version','js_content_status')))")
     if q:
-        where.append("k.entity_key LIKE ? ESCAPE '\\'")
+        where.append("(k.entity_key LIKE ? ESCAPE '\\' OR ws_display(k.entity_key) LIKE ? ESCAPE '\\')")
+        params.append("%" + _literal(q) + "%")
         params.append("%" + _literal(q) + "%")
     if host is not None:
         where.append("ws_host(e.kind,k.entity_key)=?")
@@ -174,10 +184,14 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
         where.append("ws_prefix(k.entity_key)=?")
         params.append(prefix)
     if method:
-        where.append("EXISTS (SELECT 1 FROM observations o WHERE o.entity_id=e.id"
-                     " AND o.project_id=e.project_id AND o.is_current=1"
-                     " AND o.semantic_field IN ('method','http.method') AND UPPER(o.value)=?)")
-        params.append(method.upper())
+        if normalize.lowercase_text(method) == "unknown":
+            where.append("ws_method(k.entity_key)='unknown'")
+        else:
+            where.append("(ws_method(k.entity_key)=? OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id=e.id"
+                         " AND o.project_id=e.project_id AND o.is_current=1"
+                         " AND o.semantic_field IN ('method','http.method') AND UPPER(o.value)=?))")
+            params.append(method.upper())
+            params.append(method.upper())
     if source:
         where.append("EXISTS (SELECT 1 FROM v_active_contributions c JOIN sources s ON s.id=c.source_id"
                      " WHERE c.project_id=e.project_id AND " + OWNER + " AND s.name=?)")
@@ -195,9 +209,15 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
         result = _page(conn, sql, params, cursor=cursor, signature=signature, limit=limit)
         # Bounded enrichment; never pull the project's observation table into the browser.
         for row in result["rows"]:
+            if row.get("kind") == "endpoint":
+                decoded = normalize.decode_endpoint_key(row["entity_key"])
+                row["identity_status"] = "exact_v2" if decoded else "legacy_folded"
+                row["endpoint_identity"] = decoded
+                row["display_key"] = (str(normalize.redact_secrets(
+                    normalize.endpoint_display(decoded))) if decoded else row["entity_key"])
             row["observed"] = [dict(r) for r in conn.execute(
                 "SELECT semantic_field,value FROM observations WHERE project_id=? AND entity_id=?"
-                " AND is_current=1 AND semantic_field IN ('method','http.method','status_code','status',"
+                " AND is_current=1 AND semantic_field IN ('method','http.method','declared_method','status_code','status',"
                 " 'http.status','http.status_code','title','js_content_version','js_content_status',"
                 " 'js_source_ref','js_static_method') ORDER BY id LIMIT 13", (project_id, row["id"]))]
             row['observed_truncated'] = len(row['observed']) > 10
@@ -214,23 +234,105 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
 
 def entity_detail(conn, project_id, entity_id, *, section="observations", cursor=None, limit=20):
     entity = query.entity_row(conn, project_id, entity_id)
+    if entity.get("kind") == "endpoint":
+        decoded = normalize.decode_endpoint_key(entity.get("entity_key", ""))
+        entity["identity_status"] = "exact_v2" if decoded else "legacy_folded"
+        entity["endpoint_identity"] = decoded
+        entity["display_key"] = (str(normalize.redact_secrets(
+            normalize.endpoint_display(decoded))) if decoded else entity["entity_key"])
+        if decoded is None:
+            entity["identity_notice"] = (
+                "历史身份按路径模板折叠；确切路径、方法及每次请求组合无法从现存事实完整恢复。")
+        events = conn.execute(
+            "SELECT ev.id,ev.survivor_id,ev.reason FROM entity_merge_events ev"
+            " JOIN entity_merge_members self ON self.merge_event_id=ev.id"
+            " WHERE ev.project_id=? AND ev.state='merged' AND self.entity_id=?"
+            " AND self.revoked_by_job_id IS NULL ORDER BY ev.id DESC LIMIT 21",
+            (project_id, entity_id)).fetchall()
+        entity["merge_groups_truncated"] = len(events) > 20
+        entity["merge_groups"] = []
+        legacy_member_seen = False
+        for event in events[:20]:
+            members = conn.execute(
+                "SELECT m.entity_id,e.kind,(SELECT k.entity_key FROM entity_keys k"
+                " WHERE k.entity_id=m.entity_id AND k.project_id=m.project_id"
+                " ORDER BY k.canonical DESC,k.created_at,k.entity_key LIMIT 1) AS entity_key"
+                " FROM entity_merge_members m"
+                " JOIN entities e ON e.id=m.entity_id AND e.project_id=m.project_id"
+                " WHERE m.project_id=? AND m.merge_event_id=? AND m.revoked_by_job_id IS NULL"
+                " ORDER BY m.entity_id LIMIT 51",
+                (project_id, int(event["id"]))).fetchall()
+            unique = {}
+            for member in members:
+                mid = int(member["entity_id"])
+                if mid in unique:
+                    continue
+                key = str(member["entity_key"] or "")
+                identity = normalize.decode_endpoint_key(key) if member["kind"] == "endpoint" else None
+                legacy = member["kind"] == "endpoint" and identity is None
+                legacy_member_seen = legacy_member_seen or legacy
+                unique[mid] = {"entity_id": mid, "kind": str(member["kind"]),
+                               "display_key": (str(normalize.redact_secrets(normalize.endpoint_display(identity)))
+                                               if identity else str(normalize.redact_secrets(key))),
+                               "identity_status": "legacy_folded" if legacy else
+                                                 "exact_v2" if identity else "not_applicable"}
+            entity["merge_groups"].append({"event_id": int(event["id"]),
+                                            "reason": str(event["reason"]),
+                                            "members": list(unique.values()),
+                                            "members_truncated": len(members) > 50})
+        if legacy_member_seen:
+            entity["identity_notice"] = (
+                "此合并组含历史折叠身份；组内历史路径和方法无法完整恢复，精确成员仅代表可解码的 v2 身份。")
     if section == "observations":
-        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at FROM observations"
+        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at,"
+               " (SELECT c.evidence_id FROM v_active_contributions c WHERE c.project_id=o.project_id"
+               " AND c.subject_kind='observation' AND c.subject_id=o.id ORDER BY c.id LIMIT 1) AS evidence_id,"
+               " (SELECT s.name FROM v_active_contributions c JOIN sources s ON s.id=c.source_id"
+               " WHERE c.project_id=o.project_id AND c.subject_kind='observation' AND c.subject_id=o.id"
+               " ORDER BY c.id LIMIT 1) AS source"
+               " FROM observations o"
                " WHERE project_id=? AND entity_id=? AND is_current=1")
         params = [project_id, entity_id]
     elif section == "js":
-        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at FROM observations"
+        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at,"
+               " (SELECT c.evidence_id FROM v_active_contributions c WHERE c.project_id=o.project_id"
+               " AND c.subject_kind='observation' AND c.subject_id=o.id ORDER BY c.id LIMIT 1) AS evidence_id,"
+               " (SELECT s.name FROM v_active_contributions c JOIN sources s ON s.id=c.source_id"
+               " WHERE c.project_id=o.project_id AND c.subject_kind='observation' AND c.subject_id=o.id"
+               " ORDER BY c.id LIMIT 1) AS source"
+               " FROM observations o"
                " WHERE project_id=? AND entity_id=? AND is_current=1"
                " AND semantic_field IN ('js_content_version','js_content_status','js_candidate')"
                " ORDER BY CASE semantic_field WHEN 'js_content_version' THEN 0 WHEN 'js_content_status' THEN 1 ELSE 2 END,id DESC")
         params = [project_id, entity_id]
+    elif section in ("samples", "parameters", "js_cross"):
+        if section == "samples":
+            predicate = "semantic_field='http_request_sample'"
+            order = "id DESC"
+        elif section == "parameters":
+            predicate = "(semantic_field LIKE 'param.%' OR semantic_field='js_static_param')"
+            order = "semantic_field,id"
+        else:
+            predicate = "semantic_field IN ('js_candidate','js_source_ref','js_static_method','js_content_version','js_content_status')"
+            order = "CASE semantic_field WHEN 'js_content_version' THEN 0 WHEN 'js_source_ref' THEN 1 WHEN 'js_static_method' THEN 2 WHEN 'js_candidate' THEN 3 ELSE 4 END,id DESC"
+        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at,"
+               " (SELECT c.evidence_id FROM v_active_contributions c WHERE c.project_id=o.project_id"
+               " AND c.subject_kind='observation' AND c.subject_id=o.id ORDER BY c.id LIMIT 1) AS evidence_id,"
+               " (SELECT s.name FROM v_active_contributions c JOIN sources s ON s.id=c.source_id"
+               " WHERE c.project_id=o.project_id AND c.subject_kind='observation' AND c.subject_id=o.id"
+               " ORDER BY c.id LIMIT 1) AS source"
+               " FROM observations o WHERE project_id=? AND entity_id=? AND is_current=1 AND "
+               + predicate + " ORDER BY " + order)
+        params = [project_id, entity_id]
     elif section == "relations":
-        sql = ("SELECT r.id,r.rel,r.src_id,r.dst_id,k.entity_key AS other_key,"
+        sql = ("SELECT r.id,r.rel,r.src_id,r.dst_id,k.entity_key AS other_key,e.kind AS other_kind,"
                " CASE WHEN r.src_id=? THEN r.dst_id ELSE r.src_id END AS other_id"
                " FROM relations r LEFT JOIN entity_keys k ON k.entity_id="
                " CASE WHEN r.src_id=? THEN r.dst_id ELSE r.src_id END AND k.project_id=r.project_id AND k.canonical=1"
+               " LEFT JOIN entities e ON e.id=CASE WHEN r.src_id=? THEN r.dst_id ELSE r.src_id END"
+               " AND e.project_id=r.project_id"
                " WHERE r.project_id=? AND r.is_current=1 AND (r.src_id=? OR r.dst_id=?)")
-        params = [entity_id, entity_id, project_id, entity_id, entity_id]
+        params = [entity_id, entity_id, entity_id, project_id, entity_id, entity_id]
     elif section == "evidence":
         sql = ("SELECT DISTINCT v.id,v.locator,v.recovery_state,r.locator_uri AS entity_key,r.storage_state"
                " FROM v_active_contributions c JOIN evidence v ON v.id=c.evidence_id AND v.project_id=c.project_id"
@@ -238,33 +340,73 @@ def entity_detail(conn, project_id, entity_id, *, section="observations", cursor
                " WHERE c.project_id=? AND ((c.subject_kind='entity' AND c.subject_id=?) OR c.owner_entity_id=?)")
         params = [project_id, entity_id, entity_id]
     else:
-        raise query.QueryError("E_UNSUPPORTED_FILTER", "详情分区必须是 observations / relations / evidence / js")
+        raise query.QueryError("E_UNSUPPORTED_FILTER", "详情分区必须是 observations / relations / evidence / js / samples / parameters / js_cross")
     result = _page(conn, sql, params, cursor=cursor,
                    signature=f"entity:{project_id}:{entity_id}:{section}", limit=limit)
     for row in result["rows"]:
+        if row.get("other_kind") == "endpoint":
+            other_identity = normalize.decode_endpoint_key(row.get("other_key", ""))
+            row["other_display"] = (normalize.endpoint_display(other_identity)
+                                    if other_identity else row.get("other_key"))
         if "value" in row:
+            if row.get("semantic_field", "").startswith("param."):
+                field = str(row["semantic_field"])
+                value_text = str(row["value"])
+                is_location = value_text.lower() in {"query", "path", "header", "cookie", "body", "unknown"}
+                is_type = field.endswith(".type") and len(value_text) <= 100
+                is_required = field.endswith(".required") and value_text.lower() in {"true", "false", "0", "1"}
+                if not (is_location or is_type or is_required):
+                    row["value"] = "[未在参数结构页展示]"
+                    row["value_hidden"] = True
+                else:
+                    row["value"] = value_text[:100]
             value = str(normalize.redact_secrets(row["value"]))
+            if row.get("semantic_field") == "path":
+                value = _mask_query_values(value)
             row["value"] = value[:8000]
             row["value_truncated"] = len(value) > 8000
             if row.get("semantic_field") == "js_candidate":
                 try:
                     candidate = json.loads(row["value"])
                     if candidate.get("absolute"):
-                        identity = normalize.endpoint_identity(candidate.get("url", ""))
+                        identity = normalize.endpoint_identity(
+                            candidate.get("url", ""), method=candidate.get("method"))
                         found = conn.execute("SELECT e.id FROM entities e JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1 WHERE e.project_id=? AND e.kind='endpoint' AND k.entity_key=? AND e.is_current=1 AND e.merged_into IS NULL LIMIT 1", (project_id, identity["key"])).fetchone()
                         candidate["target_id"] = int(found[0]) if found else None
+                        candidate["http_observed"] = bool(found and conn.execute(
+                            "SELECT 1 FROM observations WHERE project_id=? AND entity_id=? AND is_current=1"
+                            " AND semantic_field IN ('method','http_request_sample') LIMIT 1",
+                            (project_id, int(found[0]))).fetchone())
                     row["value"] = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
                 except (ValueError, TypeError, KeyError, normalize.NormalizeError):
                     row["value"] = "{}"
             elif row.get("semantic_field") == "js_source_ref":
                 try:
                     source = json.loads(row["value"])
+                    resource_identity = normalize.decode_endpoint_key(
+                        source.get("resource_key", ""))
+                    source["resource_display"] = (
+                        normalize.endpoint_display(resource_identity)
+                        if resource_identity else source.get("resource_key", "JS 资源"))
                     found = conn.execute("SELECT e.id FROM entities e JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1 WHERE e.project_id=? AND e.kind='endpoint' AND k.entity_key=? AND e.is_current=1 AND e.merged_into IS NULL LIMIT 1", (project_id, source.get("resource_key", ""))).fetchone()
                     source["resource_id"] = int(found[0]) if found else None
                     row["value"] = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
                 except (ValueError, TypeError, KeyError, normalize.NormalizeError):
                     row["value"] = str(normalize.redact_secrets(row["value"]))[:8000]
     return {**result, "entity": entity, "section": section}
+
+
+def _mask_query_values(value: str) -> str:
+    """Business detail shows exact path shape, with every query value hidden."""
+    try:
+        parts = urlsplit(value)
+        if not parts.query:
+            return value
+        query = urlencode([(name, "[redacted]") for name, _ in
+                           parse_qsl(parts.query, keep_blank_values=True)])
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+    except ValueError:
+        return value.split("?", 1)[0] + "?[redacted]"
 
 
 def evidence_detail(conn, project_id, evidence_id, data_dir):

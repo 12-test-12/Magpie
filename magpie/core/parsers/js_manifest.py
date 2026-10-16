@@ -13,7 +13,7 @@ from .base import ParseContext, Parser, RawObservation, Record
 
 class JsManifestParser(Parser):
     tool = "js-manifest"
-    format_version = "1"
+    format_version = "2"
     known_fields = frozenset({"magpie_js", "url", "content"})
 
     @classmethod
@@ -42,7 +42,8 @@ class JsManifestParser(Parser):
         yield from _records(doc["url"], doc["content"], ctx, "$.content")
 
 
-def _records(url: str, content: str, ctx: ParseContext, record_path: str) -> Iterator[Record]:
+def _records(url: str, content: str, ctx: ParseContext, record_path: str,
+             method: str = "") -> Iterator[Record]:
     if len(content.encode("utf-8")) > 16 * 1024 * 1024:
         ctx.on_bad_line(1, "JavaScript 内容超过 16 MiB 上限", "")
         result = {"status": "limit_exceeded", "reason": "内容超过 16 MiB"}
@@ -51,12 +52,12 @@ def _records(url: str, content: str, ctx: ParseContext, record_path: str) -> Ite
     if result.get("status") == "cancelled":
         return
     try:
-        identity = normalize.endpoint_identity(url)
+        identity = normalize.endpoint_identity(url, method=method)
     except normalize.NormalizeError as exc:
         ctx.on_bad_line(1, f"JS manifest 的资源 URL 无效：{exc}", "")
         return
     key = str(identity["key"])
-    yield from EndpointSink().emit(url, ctx, 1)
+    yield from EndpointSink().emit(url, ctx, 1, method=method)
     yield RawObservation(entity_ref=("endpoint", key), type="js_content_version",
                          value=json.dumps({"sha256": result.get("sha256"),
                                            "status": result.get("status"), "rule_id": "js-literal-call",
@@ -76,9 +77,11 @@ def _records(url: str, content: str, ctx: ParseContext, record_path: str) -> Ite
                              value=json.dumps(safe, ensure_ascii=False, separators=(",", ":")))
         if candidate["absolute"]:
             target_url = str(redact_url(str(normalize.redact_secrets(candidate["url"]))))
-            yield from sink.emit(target_url, ctx, 1)
+            candidate_method = str(candidate.get("method") or "")
+            yield from sink.emit(target_url, ctx, 1, identity_method=candidate_method)
             try:
-                target = normalize.endpoint_identity(target_url)["key"]
+                target = normalize.endpoint_identity(
+                    target_url, method=candidate_method)["key"]
             except normalize.NormalizeError:
                 continue
             if candidate.get("method"):

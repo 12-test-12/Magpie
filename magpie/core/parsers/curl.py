@@ -148,7 +148,7 @@ class CurlError(ValueError):
 
 class CurlParser(Parser):
     tool = "curl"
-    format_version = "1"
+    format_version = "2"
     #: 一行命令没有"字段"可言（同 gau / domainlist）：格式漂移的信号是"能解析
     #: 的命令比例掉下来"，由 `sniff` 承担。
     known_fields: frozenset[str] = frozenset()

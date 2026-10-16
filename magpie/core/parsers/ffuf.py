@@ -70,7 +70,7 @@ MAX_REPORT_CHARS = 32 * 1024 * 1024
 
 class FfufParser(Parser):
     tool = "ffuf"
-    format_version = "1"
+    format_version = "2"
     known_fields = KNOWN_FIELDS
     #: 与 dirsearch 同档：这是刚刚探到的响应，还带状态码与长度。
     max_confidence = 0.9

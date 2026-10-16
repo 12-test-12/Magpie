@@ -17,10 +17,9 @@ openapi / postman / har / curl 的**输入形状**毫无共同之处（一份规
 与 `_urls.py` 的关系：**不是替代，是叠加**
 ------------------------------------------
 `EndpointSink` 已经做对了 3.3 的那一半（主机 / 服务 / endpoint 实体 + `served_by`
-+ path / path_template / scheme / port / method 观测），而这一半对接口描述来源
-**一字不差地成立** —— 契约声明的那条路径与流量观测到的那条路径是**同一个**
-endpoint 身份（`normalize.endpoint_identity`）。所以这里**复用**它，而不是重写一份：
-两处各写一份折叠规则，迟早会分叉。
++ path / path_template / scheme / port / method 观测），v2 按完整身份五元组统一
+契约与流量记录；只有 scheme、host、有效端口、精确 path、method 全部相同才落到
+同一个 endpoint。这里复用 `normalize.endpoint_identity`，避免多份身份规则漂移。
 
 `_` 开头的模块，发现机制不会把它当成解析器（同 `_urls.py`），但
 PARSE-RO（不得 import 写入口）照常管它。
@@ -266,7 +265,7 @@ class ApiSink:
         / `declared_status` 是**声明型**，只累积、不在这里落 —— 见 `declared()`。
         """
         try:
-            identity = normalize.endpoint_identity(raw)
+            identity = normalize.endpoint_identity(raw, method=method or declared_method)
         except normalize.NormalizeError as exc:
             ctx.on_bad_line(lineno, f"不是可识别的 endpoint：{exc}",
                             str(raw)[:MAX_VALUE_CHARS])
@@ -287,6 +286,7 @@ class ApiSink:
 
         # --- 接口这一侧：整段交给 `EndpointSink`（3.3 的那一半，一字不差） ---
         yield from self._endpoints.emit(raw, ctx, lineno, method=method,
+                                        identity_method=method or declared_method,
                                         extra=(("status", status), *extra))
 
         if self._first(("relation", "endpoint", key, api_key)):

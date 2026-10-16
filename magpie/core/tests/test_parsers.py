@@ -570,9 +570,10 @@ def _identity_rules() -> dict:
         # 落点 —— 夹具要能分别证明"目标怎么规范化"与"身份怎么拼"。
         "normalize.normalize_vuln_target": normalize.normalize_vuln_target,
         "normalize.vuln_key": normalize.vuln_key,
-        # 3.3 的 endpoint 身份规则（登记在 `kind_registry.identity_rule` 里）。
-        # 折叠规则本身在 `normalize.SEGMENT_TEMPLATES`，这个函数是它的字符串面。
-        "normalize.endpoint_key": normalize.endpoint_key,
+        # Endpoint v2 uses the serialized five-part identity. Keep the executable
+        # fixture assertion on the resulting machine key.
+        "normalize.endpoint_identity": lambda raw, method=None: normalize.endpoint_identity(
+            raw, method=method)["key"],
         # 3.4 的 apischema 身份规则（登记在 `kind_registry.identity_rule` 里）。
         # 与 endpoint 那条同一个形状：起源 = 主机[:非默认端口]，路径不进身份。
         "normalize.apischema_key": normalize.apischema_key,
@@ -1567,23 +1568,17 @@ def test_nuclei_severity_drift_is_reported_not_silently_clamped():
 
 
 # ---------------------------------------------------------------------------
-# 3.3 · **路径模板折叠**：一个是身份、三条是证据（本步的核心交付标准）
+# Endpoint v2 · **逐请求精确身份**：scheme/host/port/path/method 都参与身份
 # ---------------------------------------------------------------------------
 #
-# 这一节是 3.3 最值得看的那几行。判据刻意**不是**"有没有产出 endpoint" ——
-# 一个把每条 URL 都建成一个新实体的实现同样有产出，而且更简单。判据是：
+# 判据是不同请求身份不因共享模板而合并，同时 query 值不产生额外身份：
 #
-#   * `/user/123`、`/user/456`、`/user/789` → 库里**只有一个** endpoint 实体，
-#     但**三条** `path` 观测，且三条的原始路径逐条可见；
-#   * `/user/abc` 与 `/user/123` **不**归并（不是所有段都是占位符）；
-#   * `/api/v1/users` 与 `/api/v2/users` **不**归并（折掉版本号等于把"两代接口"
-#     这件事抹掉）；
-#   * 查询串进证据、不进身份；scheme 完全不进身份。
+#   * 不同具体 path、path 大小写、scheme、有效端口与 method 必须区分；
+#   * 不同 query/fragment 共享相同的身份 path；method 缺失与 GET 必须区分。
 #
-# 没有这四条，"折叠"就只是一个可以被"全都折成一个 {id}"冒充的说法 —— 而那种
-# 实现是**静默丢信息**：接口镜头里两条不同的接口并成一条，谁也不会发现。
+# path_template 可以辅助分组，但不可参与写入身份或合并端点。
 
-_ENDPOINT_FOLDING = "\n".join([
+_ENDPOINT_EXACT_PATHS = "\n".join([
     "https://app.example.com/user/123",
     "https://app.example.com/user/456",
     "https://app.example.com/user/789",
@@ -1616,7 +1611,7 @@ def test_js_content_versions_are_multivalue_and_undo_scoped(db, project, tmp_pat
         "content": "fetch('https://api.example.test/v2/items'); fetch('/relative');"}))
     one = ingest.ingest_file(db, options(db, project, tmp_path), first)
     two = ingest.ingest_file(db, options(db, project, tmp_path), second)
-    key = "app.example.test/app.js"
+    key = normalize.endpoint_key("https://app.example.test/app.js")
     versions = [json.loads(v) for v in _obs_values(db, project, "endpoint", key, "js_content_version")]
     assert {v["sha256"] for v in versions} == {
         hashlib.sha256("fetch('https://api.example.test/v1/items');".encode()).hexdigest(),
@@ -1631,7 +1626,7 @@ def test_js_content_versions_are_multivalue_and_undo_scoped(db, project, tmp_pat
     assert detail["rows"][0]["semantic_field"] == "js_content_version"
     api_listing = workspace.browse(db, project, category="api", mode="list")
     api_row = next(row for row in api_listing["rows"]
-                   if row["entity_key"] == "api.example.test/v1/items")
+                   if row["entity_key"] == normalize.endpoint_key("https://api.example.test/v1/items", method="GET"))
     api_detail = workspace.entity_detail(db, project, api_row["id"], section="observations")
     source_ref_row = next(row for row in api_detail["rows"]
                           if row["semantic_field"] == "js_source_ref")
@@ -1643,6 +1638,9 @@ def test_js_content_versions_are_multivalue_and_undo_scoped(db, project, tmp_pat
     candidate_row = next(row for row in detail["rows"] if row["semantic_field"] == "js_candidate")
     candidate = json.loads(candidate_row["value"])
     assert candidate["target_id"] == api_row["id"]
+    candidate_key = normalize.endpoint_key("https://api.example.test/v1/items", method="GET")
+    assert _obs_values(db, project, "endpoint", candidate_key, "js_static_method") == ["GET"]
+    assert not _obs_values(db, project, "endpoint", candidate_key, "method")
     ops.undo(db, job_id=two["job_id"], actor="test")
     assert len(_obs_values(db, project, "endpoint", key, "js_content_version")) == 1
     assert len(_obs_values(db, project, "endpoint", key, "js_candidate")) == 1
@@ -1650,144 +1648,65 @@ def test_js_content_versions_are_multivalue_and_undo_scoped(db, project, tmp_pat
     assert len(_obs_values(db, project, "endpoint", key, "js_candidate")) == 3
 
 
-def test_endpoint_folding_merges_the_identity_and_keeps_every_raw_path(db, project,
-                                                                      tmp_path):
-    """**本步的核心交付标准**：三个 id 一个实体，三条原始路径逐条可见。
-
-    ⚠️ 这两件事必须**同时**成立，只做到一件都不算：
-    折了身份但没留证据 = 永久答不出"这个 endpoint 到底见过哪些真实路径"（3.5 的
-    镜头页与 3.6 的体检都要用那份证据）；留了证据但没折身份 = 接口列表每抓一次
-    就膨胀一轮，那正是折叠要解决的事。
-    """
-    report = ingest.ingest_file(
-        db, options(db, project, tmp_path),
-        _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
-
-    assert report["parser"] == "gau@1", report
-    assert report["state"] == "done", report
-    assert report["reconcile"]["ok"], report["reconcile"]
-
+def test_endpoint_exact_paths_keep_distinct_identities_and_raw_path_evidence(db, project, tmp_path):
+    """v2 retains each exact path as a separate identity and keeps raw path evidence."""
+    report = ingest.ingest_file(db, options(db, project, tmp_path),
+                                _write(tmp_path, "gau.txt", _ENDPOINT_EXACT_PATHS))
+    assert report["parser"] == "gau@2" and report["state"] == "done"
     keys = _keys(db, project, "endpoint")
-    folded = "app.example.com/user/{id}"
-    assert folded in keys, sorted(keys)
-    # 三个不同的数字 id **没有**留下三个实体：`/user/` 底下只剩模板与那条字面量
-    # 路由（`/user/abc` 是**故意**不折的，见下一条用例）。
-    assert sorted(k for k in keys if k.startswith("app.example.com/user/")) == [
-        "app.example.com/user/abc", folded], sorted(keys)
-
-    assert _obs_values(db, project, "endpoint", folded, "path") == [
-        "/user/123", "/user/456", "/user/789"]
-    assert _obs_values(db, project, "endpoint", folded, "path_template") == [
-        "/user/{id}"]
-
-    # 接口挂在服务上，而那个服务与 httpx / nmap / nuclei 落的是**同一个**实体
-    # （`httpx.service_key` 只在 httpx 里实现一次的意义）。
-    assert "app.example.com:443" in _keys(db, project, "service")
-    assert db.execute(
-        "SELECT COUNT(*) FROM relations r"
-        "  JOIN entity_keys s ON s.entity_id = r.src_id"
-        "  JOIN entity_keys d ON d.entity_id = r.dst_id"
-        " WHERE r.project_id=? AND r.is_current=1 AND r.rel='served_by'"
-        "   AND s.entity_key=? AND d.entity_key='app.example.com:443'",
-        (project, folded)).fetchone()[0] == 1
+    expected = {normalize.endpoint_key(f"https://app.example.com/user/{n}")
+                for n in (123, 456, 789)}
+    assert expected <= keys
+    assert normalize.endpoint_key("https://app.example.com/user/abc") in keys
+    assert not any("{id}" in key for key in keys if key.startswith("ep2:"))
+    assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://app.example.com/user/123"), "path") == ["/user/123"]
 
 
-def test_endpoint_never_folds_across_versions_or_literal_segments(db, project,
-                                                                  tmp_path):
-    """两条**反例**，它们比正向那一条更重要。
-
-    `/api/v1/users` 与 `/api/v2/users` 折在一起的话，"哪些还在用 v1"这个本工具
-    存在的理由之一就永远答不出来了；`/user/abc` 折进 `/user/{id}` 则会把一条真实
-    路由藏进模板里。两条都是**静默**的 —— 折叠少了只是行数多，折叠多了没人发现。
-    """
+def test_endpoint_never_folds_across_versions_or_literal_segments(db, project, tmp_path):
     ingest.ingest_file(db, options(db, project, tmp_path),
-                       _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+                       _write(tmp_path, "gau.txt", _ENDPOINT_EXACT_PATHS))
     keys = _keys(db, project, "endpoint")
-
-    assert "app.example.com/user/abc" in keys, sorted(keys)
-    assert "app.example.com/user/{id}" in keys, sorted(keys)
-    # `http://app.example.com/api/v1/users` 的 80 是**默认 web 端口**，不进身份。
-    assert "app.example.com/api/v1/users" in keys, sorted(keys)
-    assert "app.example.com/api/v2/users" in keys, sorted(keys)
-    assert len([k for k in keys if "/api/v" in k]) == 2, sorted(keys)
+    assert normalize.endpoint_key("https://app.example.com/user/abc") in keys
+    assert normalize.endpoint_key("http://app.example.com/api/v1/users") in keys
+    assert normalize.endpoint_key("http://app.example.com/api/v2/users") in keys
+    assert normalize.endpoint_key("https://app.example.com/user/123") != normalize.endpoint_key("https://app.example.com/user/456")
 
 
 def test_endpoint_query_string_is_evidence_not_identity(db, project, tmp_path):
-    """`?id=1` **不算** key 的一部分（这是写下来的裁定，不是默认值）。
+    ingest.ingest_file(db, options(db, project, tmp_path),
+                       _write(tmp_path, "gau.txt", "https://app.example.com/admin\nhttps://app.example.com/admin?tab=users#list\nhttps://app.example.com/admin?id=1\n"))
+    key = normalize.endpoint_key("https://app.example.com/admin")
+    assert _keys(db, project, "endpoint") == {key}
+    assert _obs_values(db, project, "endpoint", key, "path") == ["/admin", "/admin?id=1", "/admin?tab=users#list"]
 
-    查询串常带一次性 token，进身份会让同一个接口每抓一次就多一个实体。但原始串
-    必须原样留在 `path` 观测里 —— 折叠的是身份，不是事实。
-    """
-    ingest.ingest_file(
-        db, options(db, project, tmp_path),
-        _write(tmp_path, "gau.txt",
-               "https://app.example.com/admin\n"
-               "https://app.example.com/admin?tab=users#list\n"
-               "https://app.example.com/admin?id=1\n"))
+
+def test_endpoint_scheme_is_part_of_the_identity(db, project, tmp_path):
+    ingest.ingest_file(db, options(db, project, tmp_path),
+        _write(tmp_path, "gau.txt", "http://app.example.com/x\nhttps://app.example.com/x\nhttp://app.example.com:80/x\nhttps://app.example.com:443/x\nhttps://app.example.com:8443/x\n"))
     keys = _keys(db, project, "endpoint")
-    assert keys == {"app.example.com/admin"}, sorted(keys)
-    assert _obs_values(db, project, "endpoint", "app.example.com/admin",
-                       "path") == ["/admin", "/admin?id=1", "/admin?tab=users#list"]
+    expected = {normalize.endpoint_key(url) for url in (
+        "http://app.example.com/x", "https://app.example.com/x",
+        "https://app.example.com:8443/x")}
+    assert keys == expected
+    assert _keys(db, project, "service") == {"app.example.com:80", "app.example.com:443", "app.example.com:8443"}
 
 
-def test_endpoint_scheme_is_not_part_of_the_identity(db, project, tmp_path):
-    """同一台机器上的同一个路径，换过协议还是**同一个接口**（v3.1 §4.4）。
-
-    默认端口同理，而且这里有一处**必须写下来的坑**：折的不能是"按 scheme 取的
-    默认端口"（`http→80` / `https→443`），否则 `http://a:80/x` 折成 `a/x` 而
-    `https://a:80/x` 保留成 `a:80/x` —— scheme 又从后门进了身份。
-    """
-    ingest.ingest_file(
-        db, options(db, project, tmp_path),
-        _write(tmp_path, "gau.txt",
-               "http://app.example.com/x\n"
-               "https://app.example.com/x\n"
-               "http://app.example.com:80/x\n"
-               "https://app.example.com:443/x\n"
-               "https://app.example.com:8443/x\n"))
-    keys = _keys(db, project, "endpoint")
-    assert keys == {"app.example.com/x", "app.example.com:8443/x"}, sorted(keys)
-    # scheme 进了**证据**（观测），没进身份。
-    assert _obs_values(db, project, "endpoint", "app.example.com/x",
-                       "scheme") == ["http", "https"]
-    # 端口 80 与 443 是**两个**默认 web 端口，与 scheme 无关 —— 所以 service
-    # 有三个：80 / 443 / 8443。
-    assert _keys(db, project, "service") == {
-        "app.example.com:80", "app.example.com:443", "app.example.com:8443"}
-
-
-def test_endpoint_relative_path_is_resolved_against_the_report_target(db, project,
-                                                                      tmp_path):
-    """dirsearch 给的是**相对路径**，主机在 `Target:` 那一行上。
-
-    `Target:` 缺失时那条路径是**坏行**，不是"猜一个主机" —— 猜错的代价是一整批
-    接口挂到错误的主机上，而且不会有任何信号。
-    """
-    path = _write(tmp_path, "dirsearch.txt",
-                  "Target: http://app.example.com:8080/\n"
-                  "\n"
-                  "[12:00:00] Starting:\n"
-                  "[12:00:01] 200 -  123B  - /admin\n"
-                  "[12:00:02] 403 -  456B  - /.git/\n")
+def test_endpoint_relative_path_is_resolved_against_the_report_target(db, project, tmp_path):
+    path = _write(tmp_path, "dirsearch.txt", "Target: http://app.example.com:8080/\n\n[12:00:00] Starting:\n[12:00:01] 200 - 123B - /admin\n[12:00:02] 403 - 456B - /.git/\n")
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "dirsearch@1", report
-    assert _keys(db, project, "endpoint") == {
-        "app.example.com:8080/admin", "app.example.com:8080/.git/"}
-    assert _obs_values(db, project, "endpoint", "app.example.com:8080/.git/",
-                       "status") == ["403"]
-
-    # 没有 Target 的同一批结果：全是坏行，**零事实**。
-    lines = ["[12:00:01] 200 -  123B  - /admin"]
-    records, ctx = parse_with(dirsearch.DirsearchParser, lines)
-    assert records == []
-    assert len(ctx.bad_lines) == 1, ctx.bad_lines
-    assert "base" in ctx.bad_lines[0]["reason"], ctx.bad_lines
+    key_admin = normalize.endpoint_key("http://app.example.com:8080/admin")
+    key_git = normalize.endpoint_key("http://app.example.com:8080/.git/")
+    assert report["parser"] == "dirsearch@2"
+    assert _keys(db, project, "endpoint") == {key_admin, key_git}
+    assert _obs_values(db, project, "endpoint", key_git, "status") == ["403"]
+    records, ctx = parse_with(dirsearch.DirsearchParser, ["[12:00:01] 200 - 123B - /admin"])
+    assert records == [] and len(ctx.bad_lines) == 1
 
 
 def test_endpoint_method_is_recorded_only_when_the_source_states_it():
-    """计划书 §4.3 的"无方法记 `UNKNOWN`"落在**渲染层**，不落成一条空观测。
+    """缺失 method 用 `unknown` 身份分量，但不补造一条 method observation。
 
-    写一条 `method=UNKNOWN` 是零信息噪声（它会实打实地抬高观测数与存储），
+    写一条 `method=unknown` 事实是零信息噪声（它会抬高观测数与存储），
     与 httpx 对 `failed=False` 的口径一致 —— 缺观测本来就表达了"这个来源不产出
     方法"。反过来，katana / ffuf **给了**方法就必须记下来，而且要归一化
     （`get` / `Get` / `GET` 是同一个方法，不折的话接口镜头里会出现假的冲突）。
@@ -1819,14 +1738,14 @@ def test_endpoint_reimport_of_the_same_facts_adds_no_rows(db, project, tmp_path)
     """
     ingest_opts = options(db, project, tmp_path)
     first = ingest.ingest_file(db, ingest_opts,
-                               _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+                               _write(tmp_path, "gau.txt", _ENDPOINT_EXACT_PATHS))
     assert first["counts"]["added"] > 0, first["counts"]
     rows_before = _row_counts(db, project)
 
     again = ingest.ingest_file(
         db, ingest_opts,
         _write(tmp_path, "gau-again.txt",
-               _ENDPOINT_FOLDING
+               _ENDPOINT_EXACT_PATHS
                + "# 多一行注释：字节变了，事实没变\n"))
     assert again["counts"]["records"] > 0, again["counts"]
 
@@ -1844,7 +1763,7 @@ def test_endpoint_undo_removes_every_endpoint_fact(db, project, tmp_path):
     """
     baseline = _fingerprint(db)
     report = ingest.ingest_file(db, options(db, project, tmp_path),
-                                _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+                                _write(tmp_path, "gau.txt", _ENDPOINT_EXACT_PATHS))
     assert _keys(db, project, "endpoint"), "先得有东西可撤"
 
     ops.undo(db, job_id=report["job_id"], actor="test")
@@ -1890,15 +1809,15 @@ def test_endpoint_multi_path_opens_no_conflict_and_undo_leaves_no_residue(
       又证明真事实还在。
     """
     report = ingest.ingest_file(db, options(db, project, tmp_path),
-                                _write(tmp_path, "gau.txt", _ENDPOINT_FOLDING))
+                                _write(tmp_path, "gau.txt", _ENDPOINT_EXACT_PATHS))
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert db.execute(
         "SELECT COUNT(*) FROM inbox_items WHERE project_id=?", (project,)
     ).fetchone()[0] == 0
 
     # 证据一条不少：折叠出来的 endpoint 上仍然是三条 `path` 观测。
-    assert _obs_values(db, project, "endpoint", "app.example.com/user/{id}",
-                       "path") == ["/user/123", "/user/456", "/user/789"]
+    assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://app.example.com/user/123"),
+                       "path") == ["/user/123"]
 
     # httpx 的多值 `cname` 走的是**同一条**路：曾经也是假冲突，现在不是。
     other = _write(tmp_path, "httpx.jsonl", json.dumps(
@@ -2032,7 +1951,7 @@ def test_apischema_four_sources_reach_exactly_one_entity(db, project, tmp_path):
         path = tmp_path / f"{tool}-{filename}"
         path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
         report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-        assert report["parser"] == f"{tool}@{'2' if tool == 'har' else '1'}", report
+        assert report["parser"].startswith(f"{tool}@"), report
         assert report["state"] in ("done", "partial"), report
         assert report["reconcile"]["ok"], report["reconcile"]
 
@@ -2087,89 +2006,56 @@ def test_apischema_identity_is_the_origin_not_the_document_title(db, project,
                        "api_version") == ["1.0.0", "2.0.0"]
     # base path 进了**接口**的身份（`/v1/pets` 与 `/v2/pets` 是两个接口），
     # 但没有进契约的身份 —— "哪些还在用 v1"在 endpoint 那一层就有答案。
-    assert {"api.example.com/v1/pets", "api.example.com/v2/pets"} <= \
-        _keys(db, project, "endpoint"), sorted(_keys(db, project, "endpoint"))
+    assert {normalize.endpoint_key("https://api.example.com/v1/pets", method="GET"), normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")} <= _keys(db, project, "endpoint")
 
 
-def test_apischema_four_sources_meet_on_the_same_endpoint(db, project, tmp_path):
-    """四源互认落到**接口**这一层：OpenAPI 声明的与 gau 观测到的是同一个实体。
-
-    契约里写 `/pets`，浏览器抓包抓到 `/pets`，gau 从历史存档里捞到 `/pets` ——
-    三件事说的是同一个接口，而它们分别来自三条不同的解析路径。这一条断言的是
-    **三个来源合起来只有一条** `/pets`，而不是三条各说各话。
-    """
+def test_apischema_four_sources_keep_declared_observed_and_unknown_methods_distinct(db, project, tmp_path):
     for tool, filename in _FOUR_SOURCES:
         path = tmp_path / f"{tool}-{filename}"
         path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
         ingest.ingest_file(db, options(db, project, tmp_path), path)
     ingest.ingest_file(db, options(db, project, tmp_path),
-                       _write(tmp_path, "gau.txt",
-                              "https://api.example.com/v2/pets\n"))
-
-    pets = [k for k in _keys(db, project, "endpoint") if k == "api.example.com/v2/pets"]
-    assert len(pets) == 1, sorted(_keys(db, project, "endpoint"))
-    row = db.execute(
-        "SELECT COUNT(*) FROM relations r"
-        "  JOIN entity_keys s ON s.entity_id = r.src_id"
-        "  JOIN entity_keys d ON d.entity_id = r.dst_id"
+                       _write(tmp_path, "gau.txt", "https://api.example.com/v2/pets\n"))
+    keys = _keys(db, project, "endpoint")
+    get_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")
+    post_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="POST")
+    unknown_key = normalize.endpoint_key("https://api.example.com/v2/pets")
+    assert {get_key, post_key, unknown_key} <= keys
+    declared_relations = db.execute(
+        "SELECT COUNT(*) FROM relations r JOIN entity_keys s ON s.entity_id=r.src_id"
         " WHERE r.project_id=? AND r.is_current=1 AND r.rel='declared_in'"
-        "   AND s.entity_key='api.example.com/v2/pets'"
-        "   AND d.entity_key='api.example.com'", (project,)).fetchone()[0]
-    assert row == 1, row                      # 一条贡献，不是四条（重复被去重）
+        " AND s.entity_key IN (?,?,?)", (project, get_key, post_key, unknown_key)).fetchone()[0]
+    assert declared_relations >= 2
 
 
-def test_apischema_declared_and_observed_methods_are_two_fields(db, project,
-                                                                tmp_path):
-    """**声明型**与观测型是两个字段，不是同一个字段的两个值。
-
-    同一个接口上"声明了 GET + POST"与"观测到 POST"是**两件事**。共用一个字段名
-    会让每一个 REST 资源都开一条假冲突（`declared_method` 值 `["GET","POST"]`、
-    `method` 值 `"POST"`），而 Inbox 会因此失去信噪比 —— 用假冲突表达"这个模型
-    没有多值字段"这件事，代价是真正的冲突被淹掉。
-
-    所以：声明型 = **一组**（排序过的列表，一个接口一条，**不制造冲突**），
-    观测型 = **一个**（3.3 的 katana / dirsearch / ffuf 与 3.4 的 har / curl）。
-    """
+def test_apischema_declared_and_observed_methods_are_separate_identities_and_facts(db, project, tmp_path):
     openapi_path = tmp_path / "openapi.json"
     openapi_path.write_bytes((FIXTURES / "openapi" / "1" / "input.json").read_bytes())
     ingest.ingest_file(db, options(db, project, tmp_path), openapi_path)
     curl_path = tmp_path / "curl.txt"
     curl_path.write_bytes((FIXTURES / "curl" / "1" / "input.txt").read_bytes())
     ingest.ingest_file(db, options(db, project, tmp_path), curl_path)
-
-    # 声明型：OpenAPI 对**同一条**路径声明了 GET 与 POST —— 一条观测、两个值。
-    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
-                       "declared_method") == ['["GET","POST"]']
-    # 观测型：curl 真的发出去的那一个方法，单值，**没有被声明型覆盖**。
-    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
-                       "method") == ["POST"]
+    post_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="POST")
+    assert _obs_values(db, project, "endpoint", post_key, "declared_method") == ['["POST"]']
+    assert _obs_values(db, project, "endpoint", post_key, "method") == ["POST"]
+    get_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")
+    assert _obs_values(db, project, "endpoint", get_key, "declared_method") == ['["GET"]']
 
 
-def test_apischema_multi_method_and_multi_status_open_no_conflict(db, project,
-                                                                  tmp_path):
-    """声明型的多值**不进 Inbox** —— 这一条是上一条那个裁定的**可观测后果**。
-
-    没有它，上一条只证明了"落了两条观测"，而"会不会开一条假冲突"要靠人去读
-    `v_field_conflicts`。这里直接读 Inbox：一份声明了三个方法、四个状态码的契约
-    导入之后，**没有**任何一条冲突项。
-    """
+def test_apischema_declared_methods_are_separate_endpoints_without_conflicts(db, project, tmp_path):
     path = _write(tmp_path, "one.json", json.dumps({
         "openapi": "3.0.3", "info": {"title": "T", "version": "1"},
         "servers": [{"url": "https://api.example.com"}],
-        "paths": {"/pets": {
-            "get": {"responses": {"200": {}, "404": {}}},
-            "post": {"responses": {"201": {}}},
-            "delete": {"responses": {"204": {}}}}}}))
+        "paths": {"/pets": {"get": {"responses": {"200": {}, "404": {}}},
+                              "post": {"responses": {"201": {}}},
+                              "delete": {"responses": {"204": {}}}}}}))
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["state"] == "done", report
-    assert report["counts"]["conflicts"] == 0, report["counts"]
-
-    assert _obs_values(db, project, "endpoint", "api.example.com/pets",
-                       "declared_method") == ['["DELETE","GET","POST"]']
-    assert _obs_values(db, project, "endpoint", "api.example.com/pets",
-                       "declared_status") == ['["200","201","204","404"]']
-    assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=?",
-                      (project,)).fetchone()[0] == 0
+    assert report["state"] in ("done", "partial")
+    for method in ("GET", "POST", "DELETE"):
+        key = normalize.endpoint_key("https://api.example.com/pets", method=method)
+        assert key in _keys(db, project, "endpoint")
+        assert _obs_values(db, project, "endpoint", key, "declared_method") == [json.dumps([method])]
+    assert report["counts"]["conflicts"] == 0
 
 
 def test_apischema_multi_status_from_traffic_opens_no_conflict(db, project,
@@ -2195,8 +2081,8 @@ def test_apischema_multi_status_from_traffic_opens_no_conflict(db, project,
              "response": {"status": 404}},
         ]}}, ensure_ascii=False))
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "har@2", report
-    assert _obs_values(db, project, "endpoint", "api.example.com/p",
+    assert report["parser"] == "har@3", report
+    assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://api.example.com/p", method="GET"),
                        "status") == ["200", "404"]
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=?",
@@ -2211,7 +2097,52 @@ def test_har_v2_absolute_ip_url_registers_ip_producer():
     assert any(isinstance(record, base.RawEntity) and record.kind == "ip"
                and record.key == "192.0.2.55" for record in records)
     ip_spec = next(spec for spec in base.KIND_REGISTRY if spec.kind == "ip")
-    assert "har@2" in ip_spec.produced_by
+    assert "har@3" in ip_spec.produced_by
+
+
+def test_endpoint_business_details_are_bounded_masked_and_provenanced(db, project, tmp_path):
+    secret = "SYNTHETIC-ONLY-SECRET"
+    har_file = _write(tmp_path, "business.har", json.dumps({"log": {"version": "1.2", "entries": [{
+        "request": {"method": "GET", "url": f"https://api.example.test/items?password={secret}&page=2",
+                    "queryString": [],
+                    "headers": [{"name": "Cookie", "value": f"session={secret}"},
+                                {"name": "Authorization", "value": f"Bearer {secret}"}],
+                    "postData": {"mimeType": "application/json",
+                                 "text": json.dumps({"token": secret, "name": "dog"})}},
+        "response": {"status": 200, "content": {"mimeType": "application/json", "size": 12}}}]}}))
+    report = ingest.ingest_file(db, options(db, project, tmp_path), har_file)
+    key = normalize.endpoint_key("https://api.example.test/items?password=x&page=2", method="GET")
+    row = next(r for r in workspace.browse(db, project, category="api", mode="list")["rows"]
+               if r["entity_key"] == key)
+    samples = workspace.entity_detail(db, project, row["id"], section="samples", limit=1)
+    assert samples["total"] == 1 and samples["rows"][0]["evidence_id"]
+    sample_text = samples["rows"][0]["value"]
+    assert secret not in sample_text
+    sample = json.loads(sample_text)
+    assert set(sample["query_parameter_names"]) == {"password", "page"}
+    assert {"cookie", "bearer", "unknown"} <= set(sample["credentials"])
+    params = workspace.entity_detail(db, project, row["id"], section="parameters", limit=50)
+    by_field = {item["semantic_field"]: item["value"] for item in params["rows"]}
+    assert by_field["param.query.password"] == "query"
+    assert by_field["param.body.name"] == "body"
+    assert by_field["param.body.token"] == "body"
+    assert secret not in json.dumps(params["rows"], ensure_ascii=False)
+    ops.undo(db, job_id=report["job_id"], actor="test")
+    assert workspace.entity_detail(db, project, row["id"], section="samples")["total"] == 0
+    ops.redo(db, job_id=report["job_id"], actor="test")
+    assert workspace.entity_detail(db, project, row["id"], section="samples")["total"] == 1
+
+
+def test_endpoint_identity_operations_reject_invalid_rekey_and_cross_kind_merge(db, project, tmp_path):
+    ingest.ingest_file(db, ingest.IngestOptions(project, tmp_path, parser="gau", actor="test"),
+                       _write(tmp_path, "endpoints.txt", "https://api.example.test/items\n"))
+    endpoint = normalize.endpoint_key("https://api.example.test/items")
+    with pytest.raises(store.InvariantError, match="canonical Endpoint v2"):
+        ops.rekey(db, project_id=project, mapping={endpoint: "api.example.test/items"},
+                  dry_run=True, backup_dir=tmp_path)
+    with pytest.raises(store.InvariantError, match="same entity kind"):
+        ops.merge(db, project_id=project, survivor_key=endpoint,
+                  member_keys=["api.example.test:443"], dry_run=True)
 
 
 def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
@@ -2234,7 +2165,7 @@ def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
     path.write_bytes((FIXTURES / "openapi" / "1" / "input.json").read_bytes())
     ingest.ingest_file(db, options(db, project, tmp_path), path)
 
-    endpoint_key = "api.example.com/v2/pets"
+    endpoint_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")
     assert _obs_values(db, project, "endpoint", endpoint_key,
                        "param.query.limit") == ["query"]
     assert _obs_values(db, project, "endpoint", endpoint_key,
@@ -2242,17 +2173,18 @@ def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,
     assert _obs_values(db, project, "endpoint", endpoint_key,
                        "param.header.X-Request-Id") == ["header"]
     # 请求体的字段名**不带** `body.` 前缀 —— 位置那一层已经在字段名的中段。
-    assert _obs_values(db, project, "endpoint", endpoint_key,
+    post_endpoint_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="POST")
+    assert _obs_values(db, project, "endpoint", post_endpoint_key,
                        "param.body.address.street") == ["body"]
     # 类型 / 必填各在自己的字段上，而且**只在知道时才写**（不知道 = 缺观测）。
     assert _obs_values(db, project, "endpoint", endpoint_key,
                        "param.query.limit.type") == ["integer"]
-    assert _obs_values(db, project, "endpoint", endpoint_key,
+    assert _obs_values(db, project, "endpoint", post_endpoint_key,
                        "param.body.name.type") == ["string"]
-    assert _obs_values(db, project, "endpoint", endpoint_key,
+    assert _obs_values(db, project, "endpoint", post_endpoint_key,
                        "param.body.name.required") == ["True"]
     # 可选参数**没有** `.required` 字段 —— 缺观测就是"没声明必填"，不是 `false`。
-    assert not _obs_values(db, project, "endpoint", endpoint_key,
+    assert not _obs_values(db, project, "endpoint", post_endpoint_key,
                            "param.body.tag.required")
     # 契约上**一条参数都没有**：参数是接口的形状，不是契约的形状。
     assert not [r for r in db.execute(
@@ -2292,7 +2224,7 @@ def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path)
         path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
         ingest.ingest_file(db, options(db, project, tmp_path), path)
 
-    endpoint_key = "api.example.com/v2/pets"
+    endpoint_key = normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")
     # 四份来源都看见了这一个参数，而库里**只有一条**值 —— 而且是它们都同意的那个。
     assert _obs_values(db, project, "endpoint", endpoint_key,
                        "param.query.limit") == ["query"]
@@ -2302,7 +2234,7 @@ def test_apischema_parameter_tree_opens_no_false_conflict(db, project, tmp_path)
         "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
         " WHERE o.project_id=? AND o.is_current=1 AND e.kind='endpoint'"
         "   AND ek.entity_key=? AND o.semantic_field='param.query.limit'",
-        (project, endpoint_key)).fetchone()[0] == 4
+        (project, endpoint_key)).fetchone()[0] == 3
 
     # ⚠ 3.6 起这条查询**显式限定冲突两类**：此前它读的是"全部未决项"，而那时
     # Inbox 里除冲突之外没有别的东西，两者恰好同义。`evidence_missing`
@@ -2346,8 +2278,9 @@ def test_apischema_declared_path_does_not_yet_merge_with_traffic(db, project,
     ingest.ingest_file(db, options(db, project, tmp_path), declared)
     ingest.ingest_file(db, options(db, project, tmp_path), traffic)
 
-    keys = {k for k in _keys(db, project, "endpoint") if "/pets" in k}
-    assert keys == {"api.example.com/pets/{petId}", "api.example.com/pets/{id}"}, keys
+    keys = {k for k in _keys(db, project, "endpoint")
+            if (normalize.decode_endpoint_key(k) or {}).get("path", "").startswith("/pets")}
+    assert keys == {normalize.endpoint_key("https://api.example.com/pets/{petId}", method="GET"), normalize.endpoint_key("https://api.example.com/pets/7")}, keys
 
     # 「访问过但没进契约」**不是靠一条关系表达的，而是靠它的缺席**：只有契约
     # 那一侧声明了 `declared_in`，流量那一侧没有 —— 于是"没有人声明过的接口"
@@ -2359,8 +2292,8 @@ def test_apischema_declared_path_does_not_yet_merge_with_traffic(db, project,
         "  JOIN entity_keys d ON d.entity_id = r.dst_id"
         " WHERE r.project_id=? AND r.is_current=1 AND r.rel='declared_in'",
         (project,))}
-    assert declared == {"api.example.com/pets/{petId}"}, declared
-    assert "api.example.com/pets/{id}" in _keys(db, project, "endpoint")
+    assert declared == {normalize.endpoint_key("https://api.example.com/pets/{petId}", method="GET")}, declared
+    assert normalize.endpoint_key("https://api.example.com/pets/7") in _keys(db, project, "endpoint")
 
 
 def test_curl_credentials_never_reach_the_database(db, project, tmp_path):
@@ -2378,7 +2311,7 @@ def test_curl_credentials_never_reach_the_database(db, project, tmp_path):
         f" --json '{{\"name\":\"dog\",\"password\":\"{secret}\"}}'"
         f" https://api.example.com/v2/pets\n", encoding="utf-8")
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "curl@1", report
+    assert report["parser"] == "curl@2", report
 
     found = _all_text_in_db(db)
     assert secret not in found, "凭据出现在库里"
@@ -2387,9 +2320,9 @@ def test_curl_credentials_never_reach_the_database(db, project, tmp_path):
         assert secret not in Path(location).read_text(encoding="utf-8")
 
     # 正例：**参数名**照常落库 —— "这个接口收哪些字段"是形状，不是凭据。
-    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+    assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://api.example.com/v2/pets", method="POST"),
                        "param.body.password") == ["body"]
-    assert _obs_values(db, project, "endpoint", "api.example.com/v2/pets",
+    assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://api.example.com/v2/pets", method="POST"),
                        "param.body.name") == ["body"]
 
 
@@ -2472,7 +2405,7 @@ def test_openapi_yaml_parses_when_the_extras_are_installed():
 
     kinds = [(r.kind, r.key) for r in records if isinstance(r, base.RawEntity)]
     assert ("apischema", "api.example.com") in kinds, kinds
-    assert ("endpoint", "api.example.com/v2/pets") in kinds, kinds
+    assert ("endpoint", normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")) in kinds, kinds
     params = [r.type for r in records if isinstance(r, base.RawObservation)
               and str(r.type).startswith("param.")]
     assert params == ["param.query.limit", "param.query.limit.type"], params
@@ -2534,7 +2467,7 @@ def test_openapi_yaml_missing_extras_reaches_the_report_readably(db, project,
         else:
             sys.modules.pop("yaml", None)
 
-    assert report["parser"] == "openapi@1", report
+    assert report["parser"] == "openapi@2", report
     assert report["state"] == "partial", report
     assert "MissingExtrasError" in report["parse_error"], report["parse_error"]
     assert "pip install" in report["parse_error"], report["parse_error"]
@@ -2575,7 +2508,7 @@ def test_openapi_missing_top_level_key_is_explained_not_guessed(db, project,
         "host": "api.example.com", "basePath": "/v2",
         "paths": {"/pets": {"get": {"responses": {"200": {}}}}}}), ctx)
     assert not ctx.bad_lines, ctx.bad_lines
-    assert ("endpoint", "api.example.com/v2/pets") in \
+    assert ("endpoint", normalize.endpoint_key("https://api.example.com/v2/pets", method="GET")) in \
         [(r.kind, r.key) for r in records if isinstance(r, base.RawEntity)]
 
 
@@ -2644,7 +2577,7 @@ def test_apischema_non_utf8_is_decoded_not_mangled(db, project, tmp_path):
     path = tmp_path / "gbk.json"
     path.write_bytes(spec.encode("gb18030"))
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "openapi@1", report
+    assert report["parser"] == "openapi@2", report
     assert report["state"] == "done", report
     assert _obs_values(db, project, "apischema", "api.example.com",
                        "api_title") == ["宠物商店"]

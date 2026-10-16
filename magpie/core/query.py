@@ -565,14 +565,16 @@ def product_spec(spec: str, version: str | None = None) -> str:
 
 
 def endpoint_spec(ref: str) -> str:
-    """用户写的接口 → `endpoint` 的规范 key（`主机[:非默认端口] + 路径模板`）。
+    """用户写的接口 → Endpoint v2 key。
 
-    两种写法，**判据是形状不是猜**：
+    可写 `GET https://host/exact/path` 指定方法；裸 URL 明确表示 `unknown`
+    方法，不能跨方法猜测。v2 `ep2:` key 与历史 literal key 可直接查询。
+    路径精确且区分大小写，不做模板折叠。
 
-      * 含 `://` 的绝对 URL —— 走 `normalize.endpoint_key`（身份规则的唯一实现，
-        它顺带完成路径模板折叠：`/user/8f3a…` → `/user/{uuid}`）；
-      * 不含 `://` 且不以 `/` 开头 —— 当作**规范 key 字面量**（与 `show <key>`
-        同一口径：key 是 normalize 之后的写法）；
+    两种输入，**判据是形状不是猜**：
+
+      * 含 `://` 的绝对 URL —— 走 `normalize.endpoint_key`；
+      * 不含 `://` 且不以 `/` 开头 —— 当作**key 字面量**；
       * 以 `/` 开头的裸路径 —— **报错**。endpoint 的身份含主机，替人挑一个 base
         就是在编事实，而编错的那一半不会有任何症状。
     """
@@ -582,14 +584,26 @@ def endpoint_spec(ref: str) -> str:
     if text.startswith("/"):
         raise QueryError(
             "E_BAD_ENDPOINT",
-            f"只给了路径 {text!r} —— endpoint 的身份是 `主机[:非默认端口] + 路径模板`，"
+            f"只给了路径 {text!r} —— endpoint 身份还需要 scheme、host 和 method，"
             f"没有主机就算不出它是哪一个接口",
-            hint="给完整的 URL（https://app.example.com/user/42），"
-                 "或已经折叠好的规范 key（app.example.com/user/{id}）。")
+            hint="给完整 URL（GET https://app.example.com/user/42），或 Endpoint key。")
     if "://" not in text:
+        if text.startswith("ep2:"):
+            try:
+                normalize.decode_endpoint_key(text)
+            except normalize.NormalizeError as exc:
+                raise QueryError("E_BAD_ENDPOINT", f"无效的 Endpoint v2 key：{exc}") from exc
         return text                      # 规范 key 字面量，原样去查
+    method = None
+    match = re.match(r"^([A-Za-z]+)\s+(?=https?://)", text)
+    if match:
+        try:
+            method = normalize.http_method(match.group(1))
+        except normalize.NormalizeError as exc:
+            raise QueryError("E_BAD_ENDPOINT", f"无效的 HTTP 方法：{exc}") from exc
+        text = text[match.end():]
     try:
-        return normalize.endpoint_key(text)
+        return normalize.endpoint_key(text, method=method)
     except normalize.NormalizeError as exc:
         raise QueryError("E_BAD_ENDPOINT", f"{text!r} 不是一个可解析的 URL：{exc}",
                          hint="接口的身份规则见 `magpie schema --json` 的 "

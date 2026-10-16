@@ -43,7 +43,7 @@ __all__ = ["GauParser", "parse_text"]
 
 class GauParser(Parser):
     tool = "gau"
-    format_version = "1"
+    format_version = "2"
     #: 行格式没有字段可言 —— 一行就是全部。所以未知字段探测在这里天然为空，
     #: 格式漂移的信号是"合法 URL 的比例掉下来"（见 `sniff`）。
     known_fields: frozenset[str] = frozenset()

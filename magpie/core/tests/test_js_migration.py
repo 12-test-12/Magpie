@@ -6,7 +6,7 @@ def test_v14_upgrade_preserves_native_import_and_undo(tmp_path, monkeypatch):
     conn = store.connect(':memory:')
     migrations = migrate.MIGRATIONS
     with monkeypatch.context() as previous:
-        previous.setattr(migrate, 'MIGRATIONS', migrations[:-1])
+        previous.setattr(migrate, 'MIGRATIONS', tuple(m for m in migrations if m.version <= 14))
         store.init_db(conn)
         assert migrate.current_version(conn) == 14
         project = ops.create_project(conn, 'pre-js-upgrade', {})
@@ -25,9 +25,10 @@ def test_v14_upgrade_preserves_native_import_and_undo(tmp_path, monkeypatch):
 
     original = facts()
     store.init_db(conn)
-    assert migrate.current_version(conn) == 15
+    assert migrate.current_version(conn) == 16
     assert facts() == original
     assert conn.execute("SELECT COUNT(*) FROM multivalue_fields WHERE semantic_field='js_candidate'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM multivalue_fields WHERE semantic_field='http_request_sample'").fetchone()[0] == 1
     ops.undo(conn, report['job_id'])
     assert conn.execute('SELECT COUNT(*) FROM v_active_contributions WHERE job_id=?',
                         (report['job_id'],)).fetchone()[0] == 0

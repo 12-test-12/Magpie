@@ -138,7 +138,7 @@ def _load_yaml(text: str) -> Any:
 
 class OpenapiParser(Parser):
     tool = "openapi"
-    format_version = "1"
+    format_version = "2"
     known_fields = KNOWN_FIELDS
     #: 最高档：契约是**签名**，不是猜测 —— 它由接口的提供方自己写下来。
     max_confidence = 1.0

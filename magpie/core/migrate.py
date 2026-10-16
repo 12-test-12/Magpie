@@ -33,6 +33,7 @@ class Migration:
     version: int
     name: str
     path: Path
+    atomic: bool = False
 
 
 # 迁移清单：**只追加，不修改已有条目**。
@@ -102,6 +103,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(14, "scheme_port_multivalue", SCHEMA_DIR / "014_scheme_port_multivalue.sql"),
     # JS 内容版本及静态引用的多值语义；同时登记 har@2 与显式本地 JS manifest 产出者。
     Migration(15, "js_intelligence", SCHEMA_DIR / "015_js_intelligence.sql"),
+    # Endpoint v2: scheme + host + effective port + exact path + method. Historical
+    # folded identities remain intact and visibly legacy; this migration is atomic.
+    Migration(16, "endpoint_identity_v2", SCHEMA_DIR / "016_endpoint_identity_v2.sql", True),
 )
 
 
@@ -199,14 +203,23 @@ def migrate(conn: sqlite3.Connection, *, snapshot: bool = False,
 
     results: list[dict] = []
     for m in todo:
+        if m.atomic and conn.in_transaction:
+            raise MigrationError("atomic migration requires a clean connection transaction")
         try:
             conn.executescript(m.path.read_text(encoding="utf-8"))
+            if m.atomic and not conn.in_transaction:
+                raise MigrationError(
+                    f"迁移 v{m.version} 必须以未提交事务结束，以便与 registry 记录原子提交")
+            conn.execute(
+                "INSERT INTO schema_migrations(version, name, checksum, applied_at)"
+                " VALUES (?,?,?,?)", (m.version, m.name, checksum(m.path), now()),
+            )
+            if m.atomic:
+                conn.commit()
         except Exception as exc:                       # noqa: BLE001
+            if m.atomic and conn.in_transaction:
+                conn.rollback()
             raise MigrationError(f"迁移 v{m.version}（{m.name}）执行失败: {exc}") from exc
-        conn.execute(
-            "INSERT INTO schema_migrations(version, name, checksum, applied_at)"
-            " VALUES (?,?,?,?)", (m.version, m.name, checksum(m.path), now()),
-        )
         results.append({"version": m.version, "name": m.name})
 
     log_activity(conn, actor=actor, action="schema.migrate", target_kind="schema",

@@ -4,7 +4,7 @@
   "identity_rule": "单个 IP 地址的规范写法（normalize.normalize_ip）；IPv4-mapped IPv6（::ffff:1.2.3.4）折成 IPv4。**网段是另一种 kind**，不在这里折叠 —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，会让「哪台机器」的答案变成「哪一段」。",
   "golden": [
     "httpx/1",
-    "js-manifest/1"
+    "js-manifest/2"
   ],
   "examples": [
     {

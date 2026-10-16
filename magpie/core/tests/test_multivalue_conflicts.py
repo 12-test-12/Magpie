@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, migrate, ops, query, store
+from magpie.core import ingest, migrate, normalize, ops, query, store
 
 
 @pytest.fixture()
@@ -107,12 +107,10 @@ def all_conflict_rows(db, project_id: int) -> list[tuple[str, str, str | None]]:
 # 判据 1 · 被折叠的多值字段不开冲突（A 的正向）
 # ---------------------------------------------------------------------------
 
-def test_folded_endpoint_multi_path_opens_no_conflict(db, project, tmp_path):
-    """一个 endpoint 见过三条真实路径 → **不开** `value_conflict`。
+def test_endpoint_exact_paths_are_separate_and_keep_path_evidence(db, project, tmp_path):
+    """同 host 下的具体路径各自成为 v2 身份，且各自保留原始 path 证据。
 
-    这是缺陷 A 最原始的形状（3.3 报的）。三条 `path` 观测必须都还在 ——
-    "不开冲突"与"不落证据"是两件事，只做到后者的实现也能让这条变绿，
-    所以两条断言必须同时在场。
+    多值冲突仍由声明表处理；Endpoint v2 不再把不同具体路径折成同一个对象。
     """
     report = ingest.ingest_file(db, options(project, tmp_path), write(
         tmp_path, "gau.txt",
@@ -122,15 +120,15 @@ def test_folded_endpoint_multi_path_opens_no_conflict(db, project, tmp_path):
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert open_conflicts(db, project) == []
 
-    # 证据一条不少：三条观测都落在同一个被折过的 endpoint 上。
-    values = sorted(str(r[0]) for r in db.execute(
-        "SELECT o.value FROM observations o"
-        "  JOIN entities e ON e.id = o.entity_id"
-        "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
-        " WHERE o.project_id=? AND o.is_current=1 AND e.kind='endpoint'"
-        "   AND ek.entity_key='app.example.com/user/{id}'"
-        "   AND o.semantic_field='path'", (project,)))
-    assert values == ["/user/123", "/user/456", "/user/789"]
+    # 证据仍在，只是每条具体路径属于自己的实体。
+    for path in ("/user/123", "/user/456", "/user/789"):
+        key = normalize.endpoint_key("https://app.example.com" + path)
+        values = [str(r[0]) for r in db.execute(
+            "SELECT o.value FROM observations o JOIN entity_keys ek"
+            " ON ek.entity_id=o.entity_id AND ek.project_id=o.project_id"
+            " WHERE o.project_id=? AND ek.entity_key=? AND o.is_current=1"
+            " AND o.semantic_field='path'", (project, key))]
+        assert values == [path], (key, values)
     assert query.health_report(db, project)["open_inbox"] == 0
 
 
@@ -155,34 +153,44 @@ def test_multi_cname_opens_no_conflict(db, project, tmp_path):
     assert values == ["x.cdn.net", "y.cdn.net"]
 
 
-def test_multi_method_and_multi_status_open_no_conflict(db, project, tmp_path):
-    """同一个 endpoint 两个方法 / 两个状态码 → **不开** `value_conflict`。
+def test_method_is_identity_and_status_remains_multivalue(db, project, tmp_path):
+    """方法区分 Endpoint 身份；同一 GET identity 的多个状态仍是合法多值。
 
     `method` 与 `status` 是 3.3 / 3.4 的四个流量来源都会写的字段，也是缺陷 A
     在真数据上最吵的两个（一次 ffuf / har 导入能刷出好几条）。
     """
     report = ingest.ingest_file(db, options(project, tmp_path), write(
         tmp_path, "har.json", json.dumps({"log": {"version": "1.2", "entries": [
-            {"request": {"method": "GET", "url": "https://api.example.com/p",
+            {"request": {"method": "GET", "url": "https://api.example.com/p?page=1",
                          "queryString": []},
              "response": {"status": 200}},
-            {"request": {"method": "POST", "url": "https://api.example.com/p",
+            {"request": {"method": "GET", "url": "https://api.example.com/p?page=2",
                          "queryString": []},
              "response": {"status": 404}},
+            {"request": {"method": "POST", "url": "https://api.example.com/p",
+                         "queryString": []},
+             "response": {"status": 201}},
         ]}}, ensure_ascii=False)))
-    assert report["parser"] == "har@2", report
+    assert report["parser"] == "har@3", report
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert open_conflicts(db, project) == []
 
-    # 两条观测都还在（`method` 与 `status` 各两条）。
+    get_key = normalize.endpoint_key("https://api.example.com/p", method="GET")
+    post_key = normalize.endpoint_key("https://api.example.com/p", method="POST")
+    keys = {str(r[0]) for r in db.execute(
+        "SELECT ek.entity_key FROM entities e JOIN entity_keys ek"
+        " ON ek.entity_id=e.id AND ek.project_id=e.project_id"
+        " WHERE e.project_id=? AND e.kind='endpoint'", (project,))}
+    assert {get_key, post_key} <= keys
+    # 两个方法身份分开；只在重复 GET identity 上观察到多值 status。
     rows = sorted(str(r[0]) for r in db.execute(
         "SELECT o.semantic_field FROM observations o"
         "  JOIN entities e ON e.id = o.entity_id"
         "  JOIN entity_keys ek ON ek.entity_id = o.entity_id"
         " WHERE o.project_id=? AND o.is_current=1 AND e.kind='endpoint'"
-        "   AND ek.entity_key='api.example.com/p'"
-        "   AND o.semantic_field IN ('method','status')", (project,)))
-    assert rows == ["method", "method", "status", "status"]
+        "   AND ek.entity_key=?"
+        "   AND o.semantic_field IN ('method','status')", (project, get_key)))
+    assert rows == ["method", "status", "status"]
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +261,8 @@ def test_the_declaration_is_narrow(db, project, tmp_path):
         # 成对出现，是逐次遭遇的证据（真库 125 条假冲突的根因）。
         ("observation_field", "scheme"),
         ("observation_field", "port"),
+        # 每条请求样本保留独立 evidence/contribution，不因同 Endpoint 多次采样冲突。
+        ("observation_field", "http_request_sample"),
         # 0.24.0 JS content versions/candidates and API back-references each have
         # multiple independently contributed values on the same endpoint.
         ("observation_field", "js_content_version"),
@@ -416,10 +426,10 @@ def test_multivalue_import_leaves_the_health_report_at_zero(db, project, tmp_pat
         "https://app.example.com/user/456\n"))
     ingest.ingest_file(db, options(project, tmp_path), write(
         tmp_path, "har.json", json.dumps({"log": {"version": "1.2", "entries": [
-            {"request": {"method": "GET", "url": "https://api.example.com/p",
+            {"request": {"method": "GET", "url": "https://api.example.com/p?page=1",
                          "queryString": []},
              "response": {"status": 200}},
-            {"request": {"method": "POST", "url": "https://api.example.com/p",
+            {"request": {"method": "GET", "url": "https://api.example.com/p?page=2",
                          "queryString": []},
              "response": {"status": 404}},
         ]}}, ensure_ascii=False)))
@@ -441,7 +451,7 @@ def test_multivalue_import_leaves_the_health_report_at_zero(db, project, tmp_pat
         "     AND o.semantic_field IN ('path','method','status','cname')"
         "   GROUP BY o.entity_id, o.semantic_field HAVING COUNT(DISTINCT o.value) > 1)",
         (project,)).fetchone()[0]
-    assert multi >= 4, f"夹具没有把多值字段顶起来，只有 {multi} 组"
+    assert multi >= 3, f"夹具没有把多值字段顶起来，只有 {multi} 组"
 
 
 def test_httpx_per_encounter_fields_under_many_probes(db, project, tmp_path):
@@ -492,7 +502,7 @@ def test_real_ffuf_export_opens_no_conflict(db, project, tmp_path):
     fixture = (Path(__file__).resolve().parent / "fixtures" / "ffuf" / "1"
                / "input.json")
     report = ingest.ingest_file(db, options(project, tmp_path), fixture)
-    assert report["parser"] == "ffuf@1", report
+    assert report["parser"] == "ffuf@2", report
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert [r for r in db.execute(
         "SELECT 1 FROM inbox_items WHERE project_id=? AND kind='value_conflict'",

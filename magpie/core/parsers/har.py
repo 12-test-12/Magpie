@@ -75,6 +75,8 @@ from __future__ import annotations
 from typing import Any, Iterable, Iterator
 import base64
 import binascii
+import json
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .. import normalize
 from . import _json
@@ -115,7 +117,7 @@ RESPONSE_FIELDS: frozenset[str] = frozenset({
 
 class HarParser(Parser):
     tool = "har"
-    format_version = "2"
+    format_version = "3"
     known_fields = KNOWN_FIELDS
     #: 比契约低一档：抓包说的是"当时发生了什么"，一次 404 不代表这个接口不存在
     #: （反过来也一样 —— 一条三年前的记录不代表它现在还能用）。同 gau 的口径。
@@ -190,11 +192,13 @@ class HarParser(Parser):
             if ctx.cancelled():
                 return
             yield from self._entry(entry, index, sink, flows, ctx)
+        ctx.record_locator = {}
         yield from sink.declared()
         yield from flows.finish(ctx)
 
     def _entry(self, entry: dict, index: int, sink: ApiSink, flows: FlowSink,
                ctx: ParseContext) -> Iterator[Record]:
+        ctx.record_locator = {"record_path": f"$.log.entries[{index-1}]"}
         _json.report_unknown(entry, ENTRY_FIELDS, ctx, "log.entries[].")
         request = entry.get("request")
         response = entry.get("response")
@@ -223,19 +227,92 @@ class HarParser(Parser):
                 ctx.on_unknown_field(f"request.method={request.get('method')!r}")
 
         yield from self._flow(entry, index, url.strip(), request, response, flows, ctx)
+        request_headers, headers_state, header_names_truncated, header_count = \
+            _request_header_summary(request.get("headers"))
+        query_items = _json.as_list(request.get("queryString"))
+        query_names = [item.get("name") for item in query_items[:500]
+                       if isinstance(item, dict) and isinstance(item.get("name"), str)]
+        # HAR exports may omit queryString even when request.url contains the query.
+        # Combine both bounded sources; never let an empty array erase URL evidence.
+        url_query_names, url_query_truncated = _url_query_names(url.strip())
+        query_names = sorted(set(query_names) | set(url_query_names))
+        body_names, body_state = _json_body_names(request.get("postData"))
+        form_params = _form_params(request.get("postData"))
+        post_data = request.get("postData")
+        raw_form_params = post_data.get("params") if isinstance(post_data, dict) else None
+        form_count = len(raw_form_params) if isinstance(raw_form_params, list) else 0
+        body_names = sorted(set(body_names) | {str(item["name"]) for item in form_params})
+        if form_count > 100:
+            body_state = "partial"
+        elif form_count and body_state == "not_json":
+            body_state = "complete"
+        credentials = _credential_summary(
+            request, headers_state,
+            parameter_data_complete=(body_state == "complete"
+                                     and not url_query_truncated and len(query_items) <= 500),
+            parameter_names=(*query_names, *body_names,
+                             *(str(item["name"]) for item in form_params)))
+        response_for_sample = response if isinstance(response, dict) else {}
+        response_content = response_for_sample.get("content")
+        response_mime = response_content.get("mimeType", "") if isinstance(response_content, dict) else ""
+        response_size = response_content.get("size") if isinstance(response_content, dict) else None
+        if isinstance(response_size, bool) or not isinstance(response_size, int) or response_size < 0:
+            response_size = None
+        query_names = sorted(set(query_names))
+        sample_url, sample_url_truncated = _sample_url(url.strip())
+        sample = {
+            "version": 1,
+            "url": sample_url,
+            "url_truncated": sample_url_truncated,
+            "method": method or "unknown",
+            "started_at": str(entry.get("startedDateTime") or "")[:80],
+            "status": response_for_sample.get("status"),
+            "request_header_names": request_headers,
+            "request_headers_state": headers_state,
+            "request_header_count": header_count,
+            "request_header_names_truncated": header_names_truncated,
+            "query_parameter_names": query_names[:80],
+            "body_parameter_names": body_names,
+            "body_parameters_state": body_state,
+            "credentials": credentials,
+            "response_mime": str(response_mime)[:120],
+            "response_size": response_size,
+            "record_path": f"$.log.entries[{index-1}]",
+            "truncated": len(query_items) > 500 or len(query_names) > 80 or url_query_truncated,
+            "query_parameter_count": len(query_names),
+            "body_parameter_count": max(len(body_names), form_count),
+        }
+        sample["body_parameter_names"] = body_names[:80]
+        sample["truncated"] = sample["truncated"] or len(body_names) > 80
+        sample["request_header_names"] = request_headers[:60]
+        sample["truncated"] = (sample["truncated"] or len(request_headers) > 60
+                                or header_names_truncated or body_state == "partial")
+        sample_json = json.dumps(sample, ensure_ascii=False, separators=(",", ":"))
+        while len(sample_json) > 3500 and (sample["query_parameter_names"]
+                                           or sample["body_parameter_names"]
+                                           or sample["request_header_names"]):
+            sample["truncated"] = True
+            if sample["query_parameter_names"]:
+                sample["query_parameter_names"].pop()
+            elif sample["body_parameter_names"]:
+                sample["body_parameter_names"].pop()
+            else:
+                sample["request_header_names"].pop()
+            sample_json = json.dumps(sample, ensure_ascii=False, separators=(",", ":"))
+        sample["sample_truncated"] = bool(sample["truncated"])
+        sample_value = sample
         yield from sink.emit_operation(
             url.strip(), ctx, 1, method=method,
-            status=response.get("status") if isinstance(response, dict) else None,
+            status=response_for_sample.get("status"),
             params=[
-                *[(item.get("name"), {"in": "query"})
-                  for item in _json.as_list(request.get("queryString"))
-                  if isinstance(item, dict) and isinstance(item.get("name"), str)],
+                *[(name, {"in": "query"}) for name in query_names],
                 # 位置是**粗档**（`body`），不带 MIME —— 理由见 `_apis.py` 的文件头：
                 # `application/json` 与 `x-www-form-urlencoded` 是**这一次请求**的
                 # 属性，塞进参数值会让同一个参数换个编码就变成两个值（一条假冲突）。
-                *[(item.get("name"), {"in": "body"})
-                  for item in _form_params(request.get("postData"))],
-            ])
+                *[(item.get("name"), {"in": "body"}) for item in form_params],
+                *[(name, {"in": "body"}) for name in body_names
+                  if not any(item.get("name") == name for item in form_params)],
+            ], extra=(("http_request_sample", sample_value),))
         content = response.get("content") if isinstance(response, dict) else None
         mime = content.get("mimeType", "") if isinstance(content, dict) else ""
         try:
@@ -244,7 +321,7 @@ class HarParser(Parser):
             js_resource = False
         if js_resource:
             try:
-                identity = normalize.endpoint_identity(url.strip())
+                identity = normalize.endpoint_identity(url.strip(), method=method)
             except (normalize.NormalizeError, ValueError):
                 ctx.on_bad_line(1, f"log.entries[{index}].request.url 不是可识别的 JS 资源 URL", "")
                 return
@@ -265,7 +342,8 @@ class HarParser(Parser):
                                          value="unsupported_encoding")
                 if body is not None:
                     yield from js_records(url.strip(), body, ctx,
-                                          f"$.log.entries[{index-1}].response.content.text")
+                                          f"$.log.entries[{index-1}].response.content.text",
+                                          method=method)
             else:
                 yield RawObservation(entity_ref=("endpoint", resource_key), type="js_content_status",
                                      value="content_not_imported")
@@ -332,8 +410,147 @@ def _form_params(post_data: Any) -> list[dict]:
     params = post_data.get("params")
     if not isinstance(params, list):
         return []
-    return [item for item in params
+    return [item for item in params[:100]
             if isinstance(item, dict) and isinstance(item.get("name"), str)]
+
+
+def _sample_url(raw: str) -> tuple[str, bool]:
+    """Mask every query value, then apply the shared secret redactor."""
+    try:
+        parts = urlsplit(raw)
+        query = urlencode([(name, "MASKED") for name, _ in
+                           parse_qsl(parts.query, keep_blank_values=True)])
+        base = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        base = str(normalize.redact_secrets(base))
+        safe = base + ("?" + query if query else "")
+    except ValueError:
+        safe = raw.split("#", 1)[0]
+        safe = str(normalize.redact_secrets(safe))
+    return safe[:400], len(safe) > 400
+
+
+def _url_query_names(raw: str) -> tuple[list[str], bool]:
+    """Bounded parameter-name extraction from an absolute URL, without values."""
+    try:
+        query = urlsplit(raw).query
+    except ValueError:
+        return [], True
+    if not query:
+        return [], False
+    if len(query) > 8192:
+        # Do not parse a huge untrusted query; explicitly report unknown tail.
+        return [], True
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, max_num_fields=500)
+    except ValueError:
+        return [], True
+    names = sorted({name[:200] for name, _ in pairs[:500]})
+    return names, any(len(name) > 200 for name, _ in pairs)
+
+
+def _request_header_summary(raw: Any) -> tuple[list[str], str, bool, int | None]:
+    """Return bounded names and whether HAR supplied a complete header list."""
+    if not isinstance(raw, list):
+        return [], "unknown", False, None
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) \
+                or not isinstance(item.get("value"), str):
+            unique = sorted(set(names))
+            return unique[:80], "malformed", len(unique) > 80, len(raw)
+        names.append(item["name"][:100])
+    unique = sorted(set(names))
+    return unique[:80], "complete" if len(raw) <= 500 else "truncated", \
+        len(unique) > 80, len(raw)
+
+
+def _credential_summary(request: dict, header_state: str, *,
+                        parameter_data_complete: bool,
+                        parameter_names: Iterable[str] = ()) -> list[str]:
+    """Describe credential classes without retaining any credential value."""
+    headers = request.get("headers")
+    found: set[str] = set()
+    uncertain = header_state != "complete" or not parameter_data_complete
+    for item in headers[:500] if isinstance(headers, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) \
+                or not isinstance(item.get("value"), str):
+            uncertain = True
+            continue
+        name = normalize.lowercase_text(item["name"].strip())
+        value = item["value"].strip()
+        if name in {"cookie", "set-cookie"}:
+            found.add("cookie")
+        elif name == "authorization":
+            scheme = normalize.lowercase_text(value.split(None, 1)[0]) if value else ""
+            found.add({"bearer": "bearer", "basic": "basic"}.get(scheme, "other"))
+        elif name in {"x-api-key", "api-key", "apikey"}:
+            found.add("api_key")
+    cookies = request.get("cookies")
+    if isinstance(cookies, list) and cookies[:500]:
+        found.add("cookie")
+    if isinstance(cookies, list) and len(cookies) > 500:
+        uncertain = True
+    elif cookies is not None and not isinstance(cookies, list):
+        uncertain = True
+    if any(any(marker in normalize.lowercase_text(name) for marker in
+                   ("token", "password", "passwd", "secret", "api_key", "apikey", "credential"))
+           for name in parameter_names):
+        uncertain = True
+    if found:
+        return sorted(found) + (["unknown"] if uncertain else [])
+    return ["unknown"] if uncertain else ["no_recognized_credentials_observed"]
+
+
+def _json_body_names(post_data: Any) -> tuple[list[str], str]:
+    """Extract only bounded JSON object key names; never retain body values."""
+    if not isinstance(post_data, dict):
+        return [], "not_imported"
+    mime = normalize.lowercase_text(post_data.get("mimeType") or "")
+    if "json" not in mime:
+        return [], "not_json"
+    text = post_data.get("text")
+    if not isinstance(text, str):
+        return [], "not_imported"
+    if len(text.encode("utf-8", errors="replace")) > 65536:
+        return [], "limit_exceeded"
+    try:
+        doc = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return [], "invalid_json"
+    stack: list[tuple[Any, tuple[str, ...], int]] = [(doc, (), 0)]
+    names: set[str] = set()
+    truncated = False
+    while stack:
+        node, prefix, depth = stack.pop()
+        if isinstance(node, dict):
+            for raw_name, value in list(node.items())[:100]:
+                if not isinstance(raw_name, str):
+                    continue
+                name_parts = (*prefix, raw_name)
+                try:
+                    names.add(normalize.param_name(".".join(name_parts)))
+                except normalize.NormalizeError:
+                    truncated = True
+                if isinstance(value, (dict, list)):
+                    if depth < 3:
+                        stack.append((value, name_parts, depth + 1))
+                    else:
+                        truncated = True
+            if len(node) > 100:
+                truncated = True
+        elif isinstance(node, list):
+            for value in node[:100]:
+                if isinstance(value, (dict, list)):
+                    if depth < 3:
+                        stack.append((value, prefix, depth + 1))
+                    else:
+                        truncated = True
+            if len(node) > 100:
+                truncated = True
+        if len(names) > 100:
+            names = set(sorted(names)[:100])
+            truncated = True
+    return sorted(names), "partial" if truncated else "complete"
 
 
 def parse_text(text: str, ctx: ParseContext | None = None) -> list[Record]:

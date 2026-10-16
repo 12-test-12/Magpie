@@ -1,6 +1,6 @@
 # Magpie 主线二实施与验收记录
 
-更新：2026-10-16。当前版本：0.24.0；工作包 C 首批验收版本为 0.23.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。下文第 1–5 节保留首批验收口径，第 6 节记录本次 JS 增量。
+更新：2026-10-16。当前版本：0.25.0；工作包 C 首批验收版本为 0.23.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。下文第 1–5 节保留首批验收口径，第 6 节记录 JS 与 Endpoint 身份/业务详情增量。
 
 ## 1. 本次范围与理由
 
@@ -150,7 +150,42 @@
 
 最终 schema 与解析器代码下已实际运行 `bench.js_demo`，生成 `.magpie-dev/js-intelligence/` 并通过完整性检查；本机可直接运行 `.venv-dev/Scripts/python.exe dev.py --workspace js-intelligence` 查看合成样例。重复运行生成器会拒绝覆盖已有库。本轮临时开发服务已停止，浏览器截图保留在仓库中。
 
-1. 工作包 E：先设计 Endpoint 身份迁移与历史兼容，再做方法、样本、参数和认证线索的完整业务组织。目前仍为既有观测字段和证据回查。
+### 工作包 E：Endpoint 身份 v2 与 API 业务详情（最终交付）
+
+- 新增 schema v16 原子迁移，仅更新 endpoint identity rule、producer 版本与 `http_request_sample` 多值语义。旧 Endpoint keys、事实、证据、贡献、alias、merge 和 inactive jobs 不被重写；旧折叠记录显示 legacy，无法恢复的逐请求路径/方法不推造。迁移原子故障注入、调用方事务保护及 v15 合成旧库逐表对照由主代理独立验证通过，详情见 `docs/endpoint-identity-migration.md`。
+- v2 machine key 编码 `(scheme, normalized host, effective port, exact case-sensitive path, method)`；方法缺失为 unknown，不等于 GET。查询串与片段不进身份，完整精确 path 不模板化。EndpointSink / ApiSink / HAR / JS manifest / HTTP parsers / OpenAPI / Postman / curl / universal 使用新身份；JS 静态候选只写 `js_static_method`，不伪装 HTTP method observation。generic parser fingerprint 更新并保持 v1 历史 profile 可识别。
+- 研究工作区 API Endpoint 详情新增独立请求样本、参数结构、JS 交叉来源分区；样本分页和详情均有上限、Evidence 跳转与显式截断。HAR 参数名合并 request URL 与 queryString；样本不保存 body/header/credential values，query values 遮蔽。Cookie、Bearer、Basic、API key、其他凭据及 unknown 可并列显示；不完整的 HAR / Postman auth inheritance / curl `-b`、`-u` 不标作未观察到凭据，也不据此推断漏洞。
+- 用户可读 Endpoint 标题使用 `METHOD scheme://host[:port]/path`；merge 成员列表有界并保留 legacy 身份状态。Endpoint rekey 目标需可解码 v2，merge/rekey collision 限制为同 kind。
+- 新增可复用合成 bench：`bench/endpoint_business_demo.py` 与 `bench/e2e/endpoint-business/requests.har`，仅使用 `.example.test` 与合成字符串；数据库生成器拒绝覆盖现有 workspace。
+- 子代理最终定向后端 **326 passed**，前端 `npm test -- --run` **166 passed**；`npm run build` 成功并同步生产资源。主代理的全量检查与浏览器结果见下文。实际解释器为 Python `.venv-dev` **3.12.4**，没有声称 Python 3.13 验证。
+
+### 主代理最终自动验收
+
+代码冻结后独立运行 `.venv-dev/Scripts/python.exe -u check.py`，**退出码 0**：core **639**、API **165**、CLI **84**、adapters **21**，合计 **909 项后端测试**通过；11 条静态红线全部通过，六组设计验收为 **23/23、27/27、71/71、26/26、35/35、45/45**。完整日志为 `_scratch/endpoint-final-frozen-check.log`。
+
+新增永久回归覆盖精确身份、未知方法筛选、v15→v16 历史/合并/已撤销作业保留、迁移登记故障原子回滚、逐请求样本分页/脱敏/来源与 Undo/Redo。主代理另外用独立合成旧库逐表比较事实、键、观测、作业、alias 与 merge，确认未改写；故障注入确认 registry 写入失败时整次 v16 回滚，调用方已有事务不会被迁移回滚。独立 HAR 探针覆盖 13 个样本、8 个身份及每页 2 条的无漏重遍历。
+
+全量回归发现并修复了默认打包的兼容问题：HTTP 样本的请求头名称与凭据类别在结构化包中有意省略，摘要和参数保留，并用 `request_metadata_omitted` 及 README/manifest 说明；不改库内样本事实。16 项导出测试通过，完整原文仍只按既有 `--full` 约定包含。风险 golden 只因精确身份使接口数 6→7、对应总分 343→344 更新，评分规则及指纹未改。kind 夹具引用与 G3 可执行身份规则同步新 parser 版本，没有修改旧迁移或放宽静态红线。
+
+### 冻结代码的实际浏览器验收
+
+由用户指定的 **GPT-6 Luna / high** 子代理实施，主代理审查并通过 `dev.py --workspace endpoint-business` 实测。所有数据为 `.example.test` 合成资料；在页面新建“Endpoint E 冻结代码验收”，实际导入独立的 13 请求 HAR、可复用 bench HAR 和三种凭据状态 HAR。
+
+1. 同一路径的 GET、POST、未知方法分立；`/orders/123`、`/orders/456`、`/Orders/123`、HTTP/HTTPS 与 HTTPS:80 分别显示。未知方法筛选实际返回唯一 unknown 对象。
+2. 同一 GET 接口显示六次独立样本，Cookie/Bearer 并存、Basic、API key、缺失/畸形请求头及未知状态可区分；参数页列出 query/body 与嵌套参数名，普通业务页不显示参数或凭据原值。另以三个完整/不完整样本确认“未观察到已识别凭据”“凭据状态未知”“观察到 Cookie/Bearer”分别成立。
+3. API → 可读 JS 来源与内容哈希 → 候选字符位置 → API 双向操作通过；候选明确说明不等于请求实际发送，并显示同一精确身份是否有 HTTP 观察。修复了跨来源返回后详情分类残留的问题，普通 API 行仍进入请求样本页。
+4. 样本可打开受管归档的证据、`record_path`、哈希和有效贡献链。结构化 HAR 的行预览仍是附近上下文，页面明确不保证是精确请求片段；逐请求定位以保存的 JSON record path 为准。
+5. 在页面对合成认证状态作业实际执行撤销，`auth-check` 从有效 API 列表退出；复原同一作业后，同一接口及三条样本恢复。原有其他接口仍可研究。未操作真实项目资料。
+6. 独立启动 `dev.py --workspace endpoint-legacy-review-final`，确认 v15 旧库的历史模板身份、原合并成员及不可恢复提示可见，未虚构请求样本。修复长合并列表挤压详情内容的问题，通知与成员列表进入滚动区。
+7. 1440×1000 桌面与 1000×850 窄桌面实际检查；窄桌面 document width 与 viewport 均为 1000，详情可滚动、关闭并操作来源。验收截图保存在 `docs/endpoint-business/`。
+
+独立 13 请求 HAR 为 `done`、0 坏行；bench HAR 故意未给三个请求的时间，因此作业为 `partial`、3 条时间相关坏行。后续三状态夹具复用同一流量时间窗，已有会话聚合产生两项冲突并如实报告，撤销/复原随贡献变化；不解释成认证漏洞。任务结束不等于原文被完整理解。
+
+截图：[接口与样本](docs/endpoint-business/request-samples.jpg)、[窄桌面认证线索](docs/endpoint-business/narrow-samples.jpg)、[参数结构](docs/endpoint-business/parameters.jpg)、[JS 回链](docs/endpoint-business/api-js-source.jpg)、[来源证据](docs/endpoint-business/evidence.jpg)、[历史身份与合并](docs/endpoint-business/legacy-identity.jpg)、[认证状态](docs/endpoint-business/auth-states.jpg)、[撤销](docs/endpoint-business/undo.jpg)、[复原](docs/endpoint-business/redo.jpg)。开发服务验收后停止；重看合成项目可运行 `.venv-dev/Scripts/python.exe dev.py --workspace endpoint-business`。临时数据库、探针与日志不纳入提交。
+
+本批边界：旧折叠实体不能自动精确拆分，需重新导入含明确请求关联的来源生成新贡献。完整请求样本入口目前来自 HAR；OpenAPI/Postman/curl 保留声明、参数与原观察/证据，没有冒充完整请求样本或认证检查。`apischema` 仍沿用既有起源身份，本批只迁移 Endpoint；JS 仍是有限规则分析，未实现完整 AST、变量传播或 SourceMap。严格性能基准与 Python 3.13 验证未执行。
+
+1. 工作包 E：Endpoint 身份迁移、方法/样本/参数/凭据事实与 JS 来源组织已实现，主代理全量与隔离浏览器验收通过。
 2. 工作包 E：本批 JS 本地内容关联、版本、有限规则提取与偏移证据已通过本地浏览器验收；裸 JS 手工关联、完整 AST / SourceMap 和更广的静态语法分析仍待后续。
 3. 工作包 F：独立 Finding / Note 的生命周期、关联、人工复测与报告。工具命中不自动升级为确认漏洞。
 4. 既有 Jobs / Inbox / 风险等高级页保留原行为与页面容量；本批有界查询覆盖的是新工作台页面，不声称旧高级页全部已经分页重做。

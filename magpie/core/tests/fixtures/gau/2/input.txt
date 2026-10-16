@@ -1,0 +1,16 @@
+https://app.example.com/
+https://app.example.com/admin
+https://app.example.com/admin?id=1#top
+https://app.example.com/user/123
+https://app.example.com/user/456
+https://app.example.com/user/789
+https://app.example.com/user/abc
+https://app.example.com/user/550e8400-e29b-41d4-a716-446655440000
+https://app.example.com/static/app.7f3a9c1d2e4b5a6f.css
+https://app.example.com/feed/20260101
+http://app.example.com:8080/api/v1/users
+http://app.example.com:8080/api/v2/users
+https://cdn.example.com/assets/logo.png
+# 以 # 开头的是注释行，跳过而不是坏行（gau 的导出里偶尔带来源标注）
+localhost:8080/admin
+这不是一条 URL

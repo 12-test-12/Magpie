@@ -1,0 +1,635 @@
+{
+  "tool": "openapi",
+  "format_version": "2",
+  "input": "input.json",
+  "bad_lines": [
+    {
+      "line": 1,
+      "reason": "路径必须以 / 开头：'pets-broken'"
+    }
+  ],
+  "unknown_fields": {
+    "weirdTopLevel": 1
+  },
+  "records": [
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "apischema",
+        "api.example.com"
+      ],
+      "field": "api_title",
+      "value": "Petstore"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "apischema",
+        "api.example.com"
+      ],
+      "field": "api_version",
+      "value": "1.0.0"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd",
+      "display": "GET https://api.example.com:443/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "path",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.header.X-Request-Id",
+      "value": "header"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.header.X-Request-Id.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.query.limit",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.query.limit.type",
+      "value": "integer"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.path.limit",
+      "value": "path"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.path.limit.type",
+      "value": "string"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ",
+      "display": "POST https://api.example.com:443/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "path",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.header.X-Request-Id",
+      "value": "header"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.header.X-Request-Id.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.name",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.name.required",
+      "value": true
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.name.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.tag",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.tag.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.address.street",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.address.street.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.address.zip",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.address.zip.type",
+      "value": "string"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0",
+      "display": "GET https://api.example.com:443/v2/pets/{petId}",
+      "attrs": {
+        "path_template": "/v2/pets/{petId}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/v2/pets/{petId}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets/{petId}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "param.path.petId",
+      "value": "path"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "param.path.petId.required",
+      "value": true
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "param.path.petId.type",
+      "value": "string"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "param.query.verbose",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "param.query.verbose.type",
+      "value": "boolean"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ",
+      "display": "GET https://api.example.com:443/v2/external",
+      "attrs": {
+        "path_template": "/v2/external"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "path",
+      "value": "/v2/external"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "path_template",
+      "value": "/v2/external"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "param.query.q",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "param.query.q.ref",
+      "value": "Q"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "declared_status",
+      "value": [
+        "200",
+        "404",
+        "default"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "declared_method",
+      "value": [
+        "POST"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "declared_status",
+      "value": [
+        "201"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy97cGV0SWR9IiwiR0VUIl0"
+      ],
+      "field": "declared_status",
+      "value": [
+        "200"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvZXh0ZXJuYWwiLCJHRVQiXQ"
+      ],
+      "field": "declared_status",
+      "value": [
+        "200"
+      ]
+    }
+  ]
+}

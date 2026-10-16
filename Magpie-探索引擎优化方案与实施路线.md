@@ -143,7 +143,7 @@ URL、域名、IP、端口、路径、技术栈和漏洞标识可作为首批类
 
 用户已明确开始主线二。首批按工作包 C 交付工作台外壳、总览、服务端聚合/筛选/分页、资产/API 主从详情，并接入证据预览和既有笔记。实现与浏览器验收见 [主线二记录](Magpie-主线二实施与验收记录.md)。本节下方的整体目标不等于本批已全部实现。
 
-本批不变更现有 Endpoint 规范键与模板折叠规则；§6.1 的身份建议属于后续迁移议题，必须先制定历史数据兼容方案。API 方法仍是观测字段。2026-10-16 已交付 §6.2 的本地 JS 内容版本与有限规则候选：处理 HAR 内已导入响应正文或显式 `magpie_js` manifest，保存哈希、规则、解码字符偏移和来源，支持 JS / API 双向回查及既有 Undo / Redo；已完成隔离工作区的本地浏览器验收，详见[主线二记录](./Magpie-主线二实施与验收记录.md)。裸 JS 手工关联、完整 AST、变量传播、SourceMap 与更广的敏感信息语义分析未交付。工具命中与现有 AI 笔记仍不等于完整 Finding / Note 生命周期。
+2026-10-16 工作包 E 已按历史兼容方案交付 Endpoint v2、新 Schema v16 与 API 请求样本、参数和 JS 来源组织，并通过主代理全量检查及本地隔离浏览器验收；旧折叠身份保留且显式提示无法精确还原。精确身份与迁移边界见[Endpoint 身份迁移方案](./docs/endpoint-identity-migration.md)及[主线二记录](./Magpie-主线二实施与验收记录.md)。§6.2 的本地 JS 内容版本与有限规则候选已交付：处理 HAR 内已导入响应正文或显式 `magpie_js` manifest，保存哈希、规则、解码字符偏移和来源，支持 JS / API 双向回查及既有 Undo / Redo。裸 JS 手工关联、完整 AST、变量传播、SourceMap 与更广的敏感信息语义分析未交付。工具命中与现有 AI 笔记仍不等于完整 Finding / Note 生命周期。
 
 ### 5.1 信息架构
 
@@ -193,9 +193,9 @@ URL、域名、IP、端口、路径、技术栈和漏洞标识可作为首批类
 
 ### 6.1 API Identity
 
-建议身份由规范化 scheme、host、有效 port、path、method 构成；参数与具体请求样本独立关联。未知 method 保持未知，不能默认为 GET；不合并大小写不同的路径，不自动将不同具体路径归成同一接口。
+已实现 Endpoint v2 身份 `(scheme, normalized host, effective port, exact case-sensitive path, method)`。查询串与片段不进身份；路径不模板折叠。未知 method 是独立 unknown 身份，不默认为 GET。新解析器贡献保留 Raw* 与 Evidence / Contribution lineage；旧模板化 key 保持 legacy-folded，无法逐请求恢复的历史不伪造拆分。迁移与 rekey/merge 边界见[Endpoint 身份迁移方案](./docs/endpoint-identity-migration.md)。
 
-路径模板和路径前缀用于聚合，独立于真实身份。来源不完整的相对路径保留为候选，等待明确基址。认证信息展示为“观察到 Cookie / Bearer”“未观察到凭据”或未知，不能仅凭请求中没有凭据就标记未授权漏洞。
+Endpoint 业务详情按请求样本、参数结构、JS 交叉来源分区并有界分页。HAR URL 查询名会与 queryString 合并；样本只保存参数名、请求头名和凭据类别，不保存请求体/凭据值；query 值遮蔽。凭据类别可并列，检查不完整时保留 unknown。缺少凭据不推出未授权或漏洞。
 
 ### 6.2 JS Intelligence
 

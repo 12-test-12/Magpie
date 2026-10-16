@@ -1,0 +1,474 @@
+{
+  "tool": "postman",
+  "format_version": "2",
+  "input": "input.json",
+  "bad_lines": [
+    {
+      "line": 1,
+      "reason": "URL 里有 Postman 变量（`{{…}}`）：'{{base_url}}/pets' —— 本解析器**不做变量展开**（展开需要另一份环境文件，而它可能带凭据）。把集合导出成不含变量的形式再来"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "apischema",
+        "api.example.com"
+      ],
+      "field": "api_title",
+      "value": "Petstore"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "apischema",
+        "api.example.com"
+      ],
+      "field": "api_version",
+      "value": "1.0.0"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd",
+      "display": "GET https://api.example.com:443/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "path",
+      "value": "/v2/pets?limit=10&token=q-visible-token"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.query.limit",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "param.query.token",
+      "value": "query"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ",
+      "display": "POST https://api.example.com:443/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "path",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.name",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.tag",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "param.body.password",
+      "value": "body"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0",
+      "display": "GET https://api.example.com:443/v2/pets/7",
+      "attrs": {
+        "path_template": "/v2/pets/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/v2/pets/7?fields=name"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "param.query.fields",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "param.body.verbose",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "param.body.secret",
+      "value": "body"
+    },
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "admin.example.com",
+      "display": "admin.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "admin.example.com",
+      "display": "admin.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "admin.example.com:443",
+      "display": "admin.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ",
+      "display": "GET https://admin.example.com:443/health",
+      "attrs": {
+        "path_template": "/health"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "dst": [
+        "service",
+        "admin.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "field": "path",
+      "value": "/health"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "field": "path_template",
+      "value": "/health"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "dst": [
+        "apischema",
+        "admin.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIkdFVCJd"
+      ],
+      "field": "declared_status",
+      "value": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cyIsIlBPU1QiXQ"
+      ],
+      "field": "declared_method",
+      "value": [
+        "POST"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjIvcGV0cy83IiwiR0VUIl0"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFkbWluLmV4YW1wbGUuY29tIiw0NDMsIi9oZWFsdGgiLCJHRVQiXQ"
+      ],
+      "field": "declared_method",
+      "value": [
+        "GET"
+      ]
+    }
+  ]
+}

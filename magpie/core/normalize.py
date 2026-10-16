@@ -29,6 +29,8 @@
 from __future__ import annotations
 
 import ipaddress
+import base64
+import json
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -50,6 +52,8 @@ __all__ = [
     "apischema_key",
     "compare_version",
     "detect_secrets",
+    "decode_endpoint_key",
+    "endpoint_display",
     "endpoint_base",
     "endpoint_identity",
     "endpoint_key",
@@ -59,6 +63,7 @@ __all__ = [
     "flow_window",
     "http_method",
     "is_absolute_url",
+    "lowercase_text",
     "mask_secret",
     "param_name",
     "normalize_cidr",
@@ -101,6 +106,15 @@ def _require_no_homoglyphs(text: str, what: str) -> None:
     """
     if unicodedata.normalize("NFKC", text) != unicodedata.normalize("NFC", text):
         raise NormalizeError(f"{what}含全角/兼容字符（疑似同形字）：{text!r}")
+
+
+def lowercase_text(raw: object) -> str:
+    """Canonical lowercase text for parser token and field-name comparisons.
+
+    Keeping case normalization here lets format parsers express their semantic
+    decisions without each embedding its own casing rule.
+    """
+    return str(raw).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +763,9 @@ def endpoint_host(key: str) -> str:
 
     与 `service_host` 同一趟搬家（见那里的 0.19.0 注记）。
     """
+    decoded = decode_endpoint_key(key)
+    if decoded is not None:
+        return str(decoded["host"])
     authority = key.split("/", 1)[0]
     if authority.startswith("["):
         return authority[1:].split("]", 1)[0]
@@ -759,73 +776,59 @@ def endpoint_host(key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 接口（endpoint）· 3.3 dirsearch / katana / gau / ffuf
+# 接口（endpoint）· 精确身份
 # ---------------------------------------------------------------------------
 #
 # 这一节是 `endpoint` 这个 kind 的**身份规则本身**（登记在
 # `kind_registry.identity_rule` 里），所以它必须住在 `normalize.py` ——
 # 解析器只调用它（`check.py` 的 PARSE-NORM 守着这条）。
 #
-#     endpoint 身份 = 主机[:非默认端口] + 路径模板
+#     endpoint 身份 = (scheme, host, 有效端口, 精确路径, method)
 #
 # ---------------------------------------------------------------------------
 # 裁定一：查询串与片段**不进**身份，但原始串必须留证据
 # ---------------------------------------------------------------------------
-# `/user/123?tab=posts#top` 的 key 是 `/user/{id}`，`?tab=posts#top` 不算 key 的
-# 一部分。**这是一个裁定，不是默认值**，理由两条：
+# `/user/123?tab=posts#top` 的 path 是 `/user/123`，`?tab=posts#top` 不算身份的
+# 一部分。**这是一个裁定，不是默认值**，query 值作为独立脱敏样本处理：
 #
 #   * 查询串常带一次性 token / 分页 / 时间戳。进身份的话，同一个接口每抓一次就
-#     多一个实体，接口镜头当场爆掉（这正是路径模板折叠要防的那件事的另一面）；
-#   * 但"这个 endpoint 见过哪些真实路径"是**证据**，3.5 的镜头与 3.6 的体检都要
-#     用它 —— 所以原始串（含查询与片段）由解析器原样写进 `path` 观测。
+#     多一个实体；
+#   * 但"这个 endpoint 见过哪些原始请求"是**证据**，所以解析器把原始串写进样本。
 #
-# 折叠掉的只是**身份**，不是**事实**。
-#
-# ---------------------------------------------------------------------------
-# 裁定二：scheme 不进身份（数据模型修订稿 v3.1 §4.4 写死的）
-# ---------------------------------------------------------------------------
-# `http://x/a` 与 `https://x/a` 是同一个接口。身份里带上 scheme，同一个接口就会
-# 因为换过一次协议而分裂成两个实体。
-#
-# ⚠️ 默认端口同理，而且这里有一个**必须写下来的坑**：不能按 scheme 取默认端口
-# （`http→80` / `https→443`）。那样算的话 `http://a:80/x` 折成 `a/x` 而
-# `https://a:80/x` 保留成 `a:80/x` —— scheme 又从后门进了身份。
-# 所以折叠的是 `WEB_DEFAULT_PORTS` = {80, 443} 这**两个"默认 web 端口"**，
-# 与 scheme 无关：省略、写 80、写 443 在身份上是同一件事。
-# 8080 / 8443 / 3389 这些**保留** —— 它们确实区分服务。
+# query 和 fragment 不参与身份；path 本身保持逐字精确、区分大小写。
 #
 # ---------------------------------------------------------------------------
-# 裁定三：折叠是**保守**的，宁可少折
+# 裁定二：scheme 与有效端口进入身份（Endpoint v2）
 # ---------------------------------------------------------------------------
-# 具体哪些段算模板段见 `SEGMENT_TEMPLATES` 的常量表。两条被点名守着的反例：
+# `http://x/a` 与 `https://x/a` 是不同身份；缺省端口按 scheme 解析，显式写缺省端口
+# 与省略它等价。
 #
-#   * `/user/abc` **不折** —— 不是所有段都是占位符，`abc` 往往是一条真实路由；
-#   * `/api/v1/users` 与 `/api/v2/users` **不折** —— `v1` / `v2` 不是纯数字，
-#     表里没有一条匹配它们。折掉版本号等于把"两代接口"这件事抹掉，而"哪些还在
-#     用 v1"正是这份工具存在的理由之一。
+# 有效端口本身是身份分量；HTTP 默认 80 与 HTTPS 默认 443 仍不同。
+#
+# ---------------------------------------------------------------------------
+# 裁定三：path 不模板化，method 缺失保持 unknown
+# ---------------------------------------------------------------------------
+# `/users/1`、`/users/2` 和 `/Users/1` 都是不同身份；缺失 method 不会推断为 GET。
 
-#: 在 endpoint 身份里被折叠掉的端口。**刻意与 scheme 无关** —— 见上面裁定二。
-#: 这两个是"默认 web 端口"：写成它、或省略，说的是同一个接口。
+#: Endpoint v2 身份里的常见 scheme 默认端口；显式值与解析出的同一有效端口等价。
 WEB_DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
 
 
-def endpoint_identity(raw: object, *, base: object | None = None) -> dict[str, object]:
+def endpoint_identity(raw: object, *, base: object | None = None,
+                     method: object | None = None) -> dict[str, object]:
     """一条 URL 或一条相对路径 + base → endpoint 的规范身份与全部部件。
 
-    返回 `{"key", "scheme", "host", "host_kind", "port", "path", "raw_path",
-    "template"}`：
+    返回包含规范 v2 key 及 scheme、host、有效端口、exact path、method 和辅助分组
+    template 的字典：
 
-    * `key` —— **身份**：`主机[:非默认端口] + 路径模板`（如
-      `app.example.com/user/{id}`）。观测与关系挂的都是它；
+    * `key` —— **身份**：规范编码的 `(scheme, host, effective_port, exact_path,
+      method)`。观测与关系挂的都是它；
     * `host` —— 不含方括号的 IP / 域名（调用方要拿它去算 `service` 的 key）；
     * `port` —— **有效端口**（显式端口缺失时按 scheme 补齐，补齐表见
-      `_DEFAULT_PORTS`）。它与 `key` 里那个端口**不是一回事**：key 用的是
-      "非默认才写出来"的那一个，而 `port` 要给 `httpx.service_key` 用，必须与
-      httpx / nmap / nuclei 算出同一个 service；
-    * `path` —— 去掉查询串与片段之后的路径（身份这一侧）；
+      `_DEFAULT_PORTS`），也是身份的独立分量；
+    * `path` —— 去掉查询串与片段之后的精确路径（身份这一侧）；
     * `raw_path` —— **原样**的路径 + 查询串 + 片段（证据这一侧，`?`/`#` 都还在）；
-    * `template` —— `path_template(path)` 的结果，单独给出来是因为 3.5 的镜头页
-      与 3.6 的体检都要按"模板"分组，让它们不必再算一遍。
+    * `template` —— `path_template(path)` 的辅助结果，仅供非身份分组视图使用。
 
     `base` 只给**相对路径**用（dirsearch 的 `Target:` 是唯一的真实场景）：传进来的
     相对路径必须以 `/` 开头，且 base 的路径必须是根 —— 否则报错而不是猜。
@@ -837,8 +840,10 @@ def endpoint_identity(raw: object, *, base: object | None = None) -> dict[str, o
         scheme, rest = text.split("://", 1)
         scheme = scheme.lower()
         _require_scheme(scheme, text)
-        authority, slash, tail = rest.partition("/")
-        raw_path = "/" + tail if slash else "/"
+        separators = [i for i in (rest.find("/"), rest.find("?"), rest.find("#")) if i >= 0]
+        split_at = min(separators) if separators else len(rest)
+        authority, suffix = rest[:split_at], rest[split_at:]
+        raw_path = suffix if suffix.startswith("/") else "/" + suffix
     else:
         if not text.startswith("/"):
             raise NormalizeError(f"endpoint 不是 URL，也不是以 / 开头的路径：{text!r}")
@@ -852,24 +857,83 @@ def endpoint_identity(raw: object, *, base: object | None = None) -> dict[str, o
     port = _port_or_none(raw_port)
 
     effective = port if port is not None else _DEFAULT_PORTS.get(scheme)
-    identity_port = None if effective in (None,) or effective in WEB_DEFAULT_PORTS \
-        else effective
-
     # 查询串与片段在这里被丢掉 —— 它们进的是 `raw_path`（证据），不是身份。
     # 顺序是 `#` 先还是 `?` 先无所谓：两者都会截断，先撞上哪个都一样。
     path = raw_path.split("#", 1)[0].split("?", 1)[0]
     template = path_template(path)
-    key = _bracket(host) + (f":{identity_port}" if identity_port else "") + template
+    canonical_method = http_method(method) or "unknown"
+    identity = [scheme, host, effective, path, canonical_method]
+    payload = json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    key = "ep2:" + encoded
 
     return {"key": key, "scheme": scheme, "host": host,
             "host_kind": "ip" if try_ip(host) is not None else "domain",
             "port": effective, "path": path, "raw_path": raw_path,
-            "template": template}
+            "template": template, "method": canonical_method,
+            "identity_version": 2}
 
 
-def endpoint_key(raw: object, *, base: object | None = None) -> str:
+def endpoint_key(raw: object, *, base: object | None = None,
+                 method: object | None = None) -> str:
     """`endpoint_identity` 的字符串面 —— 身份规则本身，夹具执行的就是它。"""
-    return str(endpoint_identity(raw, base=base)["key"])
+    return str(endpoint_identity(raw, base=base, method=method)["key"])
+
+
+def decode_endpoint_key(key: object) -> dict[str, object] | None:
+    """Decode v2 Endpoint key; return None for preserved pre-v2 legacy keys."""
+    if not isinstance(key, str) or not key.startswith("ep2:"):
+        return None
+    encoded = key[4:]
+    if not encoded or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        raise NormalizeError("无效的 Endpoint v2 key：编码字符错误")
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NormalizeError(f"无效的 Endpoint v2 key：{exc}") from exc
+    if (not isinstance(value, list) or len(value) != 5
+            or not all(isinstance(v, str) for v in (value[0], value[1], value[3], value[4]))
+            or (value[2] is not None and (isinstance(value[2], bool)
+                                          or not isinstance(value[2], int)))):
+        raise NormalizeError("无效的 Endpoint v2 key：身份字段形状错误")
+    scheme, host, port, path, method = value
+    if json.dumps(value, ensure_ascii=False, separators=(",", ":")) != raw.decode("utf-8"):
+        raise NormalizeError("无效的 Endpoint v2 key：JSON 非规范编码")
+    if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != encoded:
+        raise NormalizeError("无效的 Endpoint v2 key：Base64 非规范编码")
+    if method != "unknown" and http_method(method) != method:
+        raise NormalizeError("无效的 Endpoint v2 key：method 未规范化")
+    if port is not None and not 1 <= port <= 65535:
+        raise NormalizeError("无效的 Endpoint v2 key：port 越界")
+    if not path.startswith("/") or "?" in path or "#" in path:
+        raise NormalizeError("无效的 Endpoint v2 key：path 不是精确路径")
+    authority = _bracket(host) + (f":{port}" if port is not None else "")
+    try:
+        rebuilt = endpoint_identity(f"{scheme}://{authority}{path}",
+                                    method=None if method == "unknown" else method)
+    except NormalizeError as exc:
+        raise NormalizeError(f"无效的 Endpoint v2 key：{exc}") from exc
+    if rebuilt["key"] != key or [rebuilt[k] for k in ("scheme", "host", "port", "path", "method")] != value:
+        raise NormalizeError("无效的 Endpoint v2 key：字段不是规范身份")
+    return {"key": key, "scheme": scheme, "host": host, "port": port,
+            "path": path, "method": method, "identity_version": 2}
+
+
+def endpoint_display(identity_or_key: object) -> str:
+    """Human-readable Endpoint label without exposing the machine key."""
+    identity = (decode_endpoint_key(identity_or_key)
+                if isinstance(identity_or_key, str) else identity_or_key)
+    if not isinstance(identity, dict) or identity.get("identity_version") != 2:
+        return str(identity_or_key)
+    scheme = str(identity["scheme"])
+    host = str(identity["host"])
+    port = identity.get("port")
+    path = str(identity["path"])
+    method = str(identity["method"]).upper()
+    # Keep explicit effective port visible: it is part of v2 identity.
+    authority = _bracket(host) + (f":{port}" if port is not None else "")
+    return f"{method} {scheme}://{authority}{path}"
 
 
 #: HTTP 方法（RFC 9110 的 token）：全 ASCII 字母，允许内部的 `-`
@@ -878,15 +942,10 @@ _METHOD_RE = re.compile(r"^[A-Za-z]{2,16}(?:-[A-Za-z]{2,16})?$")
 
 
 def http_method(raw: object) -> str:
-    """HTTP 方法归一化：折成大写，`get` / `Get` / `GET` 是同一个方法。
+    """HTTP 方法 token 归一化为大写，用作 Endpoint v2 身份分量和观测值。
 
-    方法**不进 endpoint 的身份**（`GET /x` 与 `POST /x` 是同一个接口的两件事，
-    而不是两个接口 —— 接口是"那个地址上能被调用的东西"）。它落成一条观测，
-    所以这里归一化的是**观测值**：不折的话 `get` 与 `GET` 会变成两条观测，
-    接口镜头里表现为一个假的冲突。
-
-    工具没给方法时**调用方不要调它** —— 返回空串在这里等于"没得归一化"，
-    而不是"方法未知"（把缺失写成 `UNKNOWN` 是解析器的裁定，不是归一化的）。
+    缺失方法时调用方不要调此函数；v2 身份构造器会显式使用独立的 ``unknown``
+    身份值，绝不把它推断成 GET。
     """
     if raw is None:
         return ""
@@ -937,11 +996,10 @@ def http_method(raw: object) -> str:
 #   * 反过来，把版本放进身份会让"同一个 API 出了一版新文档"变成**另一个实体**，
 #     而它俩说的还是同一批接口。
 #
-# 与 `endpoint` 的身份是同一种形状（主机 + 非默认端口才写出来）：一份契约与
-# 它描述的那些接口住在同一个起源上，两者的主机部分逐字相同。
+# 与 `endpoint` 共用起源解析，但 apischema 仍以主机 + 非默认端口为身份；
+# Endpoint 的 v2 接口身份另含 scheme、有效端口、精确路径与 method。
 #
-# 端口折的是 `WEB_DEFAULT_PORTS`（与 endpoint 同一条裁定）：省略、写 80、写 443
-# 是同一件事，8080 / 8443 保留。
+# 契约起源身份继续折叠常见 web 默认端口；Endpoint v2 不沿用这条规则。
 
 
 def apischema_identity(raw: object) -> dict[str, object]:

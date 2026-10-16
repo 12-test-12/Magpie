@@ -1,0 +1,88 @@
+{
+  "info": {
+    "name": "Petstore",
+    "_postman_id": "0f0e7d4a-0000-4000-8000-000000000000",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0",
+    "description": "接口来源黄金夹具：一份 Postman v2.1 集合"
+  },
+  "item": [
+    {
+      "name": "pets",
+      "item": [
+        {
+          "name": "list pets",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer SECRET-SHOULD-NEVER-LAND" }
+            ],
+            "url": {
+              "raw": "https://api.example.com/v2/pets?limit=10&token=q-visible-token",
+              "protocol": "https",
+              "host": ["api", "example", "com"],
+              "path": ["v2", "pets"],
+              "query": [
+                { "key": "limit", "value": "10" },
+                { "key": "token", "value": "q-visible-token" }
+              ]
+            }
+          },
+          "response": [
+            { "name": "200", "code": 200, "status": "OK" },
+            { "name": "404", "code": 404, "status": "Not Found" }
+          ]
+        },
+        {
+          "name": "create pet",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"dog\",\"tag\":\"x\",\"password\":\"SECRET-SHOULD-NEVER-LAND\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "https://api.example.com/v2/pets" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "pet detail",
+      "request": {
+        "method": "get",
+        "body": {
+          "mode": "urlencoded",
+          "urlencoded": [
+            { "key": "verbose", "value": "1" },
+            { "key": "secret", "value": "SECRET-SHOULD-NEVER-LAND" }
+          ]
+        },
+        "url": {
+          "protocol": "https",
+          "host": ["api", "example", "com"],
+          "path": ["v2", "pets", "7"],
+          "query": [{ "key": "fields", "value": "name" }]
+        }
+      }
+    },
+    {
+      "name": "on another host",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "https://admin.example.com/health" }
+      }
+    },
+    {
+      "name": "templated",
+      "request": {
+        "method": "GET",
+        "url": { "raw": "{{base_url}}/pets" }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "https://api.example.com/v2" }
+  ]
+}

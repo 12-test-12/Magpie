@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, ops, query, store
+from magpie.core import ingest, normalize, ops, query, store
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = REPO_ROOT / "magpie" / "core" / "tests" / "fixtures"
@@ -149,10 +149,11 @@ def test_endpoint_owner_is_the_service_behind_it(db, loaded):
     折叠好的规范 key、以及**裸路径要响亮地拒绝**（替人挑一个 base 就是编事实）。
     """
     by_url = query.endpoint_owners(db, loaded, "http://app.example.com:8080/user/123")
-    assert by_url["filters"]["endpoint"] == "app.example.com:8080/user/{id}"
+    endpoint_key = normalize.endpoint_key("http://app.example.com:8080/user/123")
+    assert by_url["filters"]["endpoint"] == endpoint_key
     assert [e["entity_key"] for e in by_url["entities"]] == ["app.example.com:8080"]
 
-    by_key = query.endpoint_owners(db, loaded, "app.example.com:8080/user/{id}")
+    by_key = query.endpoint_owners(db, loaded, endpoint_key)
     assert [e["entity_key"] for e in by_key["entities"]] == ["app.example.com:8080"]
 
     with pytest.raises(query.QueryError) as excinfo:
@@ -288,7 +289,13 @@ def test_product_spec_delegates_to_the_identity_rule():
 
 def test_endpoint_spec_accepts_a_url_or_a_canonical_key():
     assert query.endpoint_spec("https://app.example.com/user/8f3a2b1c-1111-2222-3333-444455556666") \
-        == "app.example.com/user/{uuid}"
+        == normalize.endpoint_key("https://app.example.com/user/8f3a2b1c-1111-2222-3333-444455556666")
+    assert query.endpoint_spec("GET https://app.example.com/user/42") \
+        == normalize.endpoint_key("https://app.example.com/user/42", method="GET")
+    assert query.endpoint_spec("https://app.example.com/user/42") \
+        == normalize.endpoint_key("https://app.example.com/user/42")
+    with pytest.raises(query.QueryError):
+        query.endpoint_spec("ep2:not-canonical")
     assert query.endpoint_spec("app.example.com/user/{id}") == "app.example.com/user/{id}"
 
     with pytest.raises(query.QueryError) as excinfo:

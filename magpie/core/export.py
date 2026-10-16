@@ -13,8 +13,8 @@
 凭据的包发给别人，而且不会有测试替他发现。所以这里选的是**结构性排除**，不是
 "导出后再清洗"：
 
-* headers / cookie / 凭据明文只存在于**原文正文**里（4.2 保证结构化数据里
-  没有明文；解析器也从不把 header 存进观测）；
+* 凭据明文只存在于**原文正文**里；业务样本可以保存请求头名称和凭据类别，
+  打包时结构性排除这些元数据，保留脱敏的请求与参数摘要；
 * 默认包**根本不带正文** —— 于是"包里找不到 headers/cookie/明文"是**结构上
   成立**的，不依赖某条清洗正则恰好没漏；
 * `--full` 才带正文，并在命令行上给一条**一眼可见的告警**（见 `cli/read.py`
@@ -131,7 +131,7 @@ def _redact_entities(entities: list[dict]) -> list[dict]:
     """对导出实体的**每个字段值**做值级掩码。键（身份）不动 —— 动了就破往返。"""
     for entity in entities:
         for field in entity.get("fields", ()):
-            field["value"] = redact_value(field["value"])
+            field["value"] = _package_field_value(field["field"], field["value"])
     return entities
 
 
@@ -139,8 +139,33 @@ def _redact_timeline(timeline: dict) -> dict:
     """时间线事件的 `value` 同样过一遍掩码（与实体一条口径）。"""
     for bucket in ("events", "lower_bounds"):
         for event in timeline.get(bucket, ()):
-            event["value"] = redact_value(event["value"])
+            event["value"] = _package_field_value(event["field"], event["value"])
     return timeline
+
+
+def _package_field_value(field: str, value: Any) -> Any:
+    """Keep package summaries useful without exporting request-head metadata.
+
+    This applies to structured data in both modes. Full mode exposes the original
+    archived capture only through its existing, explicitly requested raw files.
+    """
+    if field == "http_request_sample":
+        allowed = {
+            "version", "url", "url_truncated", "method", "status",
+            "query_parameter_names", "query_parameter_count",
+            "body_parameter_names", "body_parameter_count", "body_parameters_state",
+            "response_mime", "response_size", "record_path", "truncated", "sample_truncated",
+        }
+        try:
+            sample = json.loads(value)
+            if not isinstance(sample, dict):
+                raise ValueError("sample must be an object")
+            safe = {key: item for key, item in sample.items() if key in allowed}
+        except (ValueError, TypeError):
+            safe = {"version": 1, "sample_state": "invalid_metadata"}
+        safe["request_metadata_omitted"] = True
+        value = json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
+    return redact_value(value)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +304,8 @@ def _readme(*, full: bool, counts: dict, semantics: str) -> bytes:
         "`fields[]` 是观测：`field` / `value` / `confidence`（§8.2 置信度）。",
         "- 观测值在默认与 `--full` 下都过了**值级掩码**（凭据形状的子串会被换成"
         "`xxxx****`）—— 这是防线之二；防线之一是默认不带正文。",
+        "- HTTP 请求样本只导出脱敏摘要与参数结构，省略请求头名称和凭据类别；"
+        "`request_metadata_omitted` 表示该有意省略，不表示原请求没有凭据。",
         "",
         "## 时间线的时间语义（§8.1，未新造）",
         "",
@@ -298,6 +325,7 @@ def _readme(*, full: bool, counts: dict, semantics: str) -> bytes:
         "会带上，那时它逐字节往返）。",
         "- 身份/关系/标签等未导出的层：本包是**实体 + 时间线 + 原文索引**，不是库的"
         "全量镜像。",
+        "- HTTP 样本的请求头名称与凭据类别在结构化导出中有意省略，不作完整往返。",
         "",
         "## 计数",
         "",
@@ -371,6 +399,7 @@ def build_package(conn, project_id: int, *, full: bool = False,
             " stored 原文。",
             "external 原文只带路径 + sha256，正文永不进包（4.1 红线）。",
             "secret 实体两种模式都只有哈希 + 掩码前缀（明文永不出包）。",
+            "HTTP 样本结构化摘要省略请求头名称与凭据类别；省略不表示原请求没有凭据。",
             "包内无外部资源引用、无本地文件链接（R7 / R7-ASSETS：查看者不被动"
             "发起请求）。",
         ],

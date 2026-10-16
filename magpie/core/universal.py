@@ -202,12 +202,14 @@ def can_auto_extract(sample: str) -> bool:
     return False
 
 
-def parser_for(mapping: dict[str, str] | None = None):
+def parser_for(mapping: dict[str, str] | None = None, *, version: int = 2):
     configured = validate_mapping(mapping)
 
     class GenericParser:
         tool = "generic"
-        format_version = "1-" + fingerprint(configured)
+        # Endpoint identity now includes the observed method. Reimport under a
+        # new parser fingerprint so old generic contributions can be refreshed.
+        format_version = f"{version}-" + fingerprint(configured)
 
         @staticmethod
         def definition_extra():
@@ -255,9 +257,10 @@ def parser_for(mapping: dict[str, str] | None = None):
                         urls = [d for d in decisions if d["kind"] == "url"]
                         hosts = [d for d in decisions if d["kind"] in ("domain", "ip")]
                         methods = {d["value"] for d in decisions if d["kind"] == "method"}
+                        identity_method = next(iter(methods)) if len(methods) == 1 else ""
                         for d in urls:
                             records.extend(sink.emit(d["value"], ctx, lineno,
-                                                     method=next(iter(methods)) if len(methods) == 1 else ""))
+                                                     method=identity_method))
                             d["mapped"] = True
                         for d in hosts:
                             records.append(RawEntity(d["kind"], d["value"], d["value"]))
@@ -265,7 +268,8 @@ def parser_for(mapping: dict[str, str] | None = None):
                         # Context attributes attach only to one unambiguous object.
                         target = None
                         if len(urls) == 1:
-                            target = ("endpoint", normalize.endpoint_identity(urls[0]["value"])["key"])
+                            target = ("endpoint", normalize.endpoint_identity(
+                                urls[0]["value"], method=identity_method)["key"])
                         elif len(hosts) == 1:
                             target = (hosts[0]["kind"], hosts[0]["value"])
                         for d in decisions:

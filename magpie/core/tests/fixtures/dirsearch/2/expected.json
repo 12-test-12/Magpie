@@ -1,0 +1,916 @@
+{
+  "tool": "dirsearch",
+  "format_version": "2",
+  "input": "input.txt",
+  "bad_lines": [
+    {
+      "line": 23,
+      "reason": "不是 dirsearch 的一条结果（`[时间] 状态码 - 大小 - 路径`），也不是报告的门面行"
+    }
+  ],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8080",
+      "display": "app.example.com:8080",
+      "subtitle": "http"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/admin",
+      "attrs": {
+        "path_template": "/admin"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/images",
+      "attrs": {
+        "path_template": "/images"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/images"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/images"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "status",
+      "value": "301"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvaW1hZ2VzIiwidW5rbm93biJd"
+      ],
+      "field": "redirect",
+      "value": "/images/"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/.git/",
+      "attrs": {
+        "path_template": "/.git/"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/.git/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/.git/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC8iLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "403"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/user/123",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/123"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xMjMiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/user/456",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/456"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci80NTYiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/user/789",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/789"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci83ODkiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN http://app.example.com:8080/user/abc",
+      "attrs": {
+        "path_template": "/user/abc"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/api/v1/users",
+      "attrs": {
+        "path_template": "/api/v1/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "status",
+      "value": "500"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/api/v2/users",
+      "attrs": {
+        "path_template": "/api/v2/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwidW5rbm93biJd"
+      ],
+      "field": "status",
+      "value": "500"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd",
+      "display": "UNKNOWN http://app.example.com:8080/",
+      "attrs": {
+        "path_template": "/"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "path",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "path_template",
+      "value": "/"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvIiwidW5rbm93biJd"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/admin?debug=1"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://api.example.com:443/v1/orders/1",
+      "attrs": {
+        "path_template": "/v1/orders/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/v1/orders/1"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/v1/orders/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzEiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0",
+      "display": "UNKNOWN https://api.example.com:443/v1/orders/2",
+      "attrs": {
+        "path_template": "/v1/orders/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "field": "path",
+      "value": "/v1/orders/2"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "field": "path_template",
+      "value": "/v1/orders/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzLzIiLCJ1bmtub3duIl0"
+      ],
+      "field": "status",
+      "value": "200"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ",
+      "display": "UNKNOWN https://api.example.com:443/v1/orders/latest",
+      "attrs": {
+        "path_template": "/v1/orders/latest"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "field": "path",
+      "value": "/v1/orders/latest"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "field": "path_template",
+      "value": "/v1/orders/latest"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwcyIsImFwaS5leGFtcGxlLmNvbSIsNDQzLCIvdjEvb3JkZXJzL2xhdGVzdCIsInVua25vd24iXQ"
+      ],
+      "field": "status",
+      "value": "200"
+    }
+  ]
+}

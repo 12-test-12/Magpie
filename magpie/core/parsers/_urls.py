@@ -1,16 +1,16 @@
-"""四个"路径列表"来源共用的落记录逻辑（3.3）。
+"""Endpoint URL 来源共用的落记录逻辑。
 
 为什么有这么一个文件
 --------------------
-dirsearch / katana / gau / ffuf 的**输入形状**完全不同（两种文本、两种 JSON，
-见各自的文件头），但它们**产出的东西**是同一个东西：
+dirsearch / katana / gau / ffuf 的**输入形状**完全不同，但它们共用同一套 Endpoint
+v2 身份生成与证据写入：
 
     endpoint 实体 + 主机 + 服务 + `served_by` 关系 + 证据观测
 
-把这段逻辑抄四遍的代价不是四倍的代码，而是**四份会各自漂移的身份落点**：
-其中一份忘了保留原始路径、或者把 scheme 写进了观测之外的地方，接口镜头就会
-对四个来源给出四种不同的答案，而不会有任何测试发现。所以这里放一份，
-四个解析器只负责"把自己的格式读成一条 URL（或路径 + base）"。
+身份为 `(scheme, normalized host, effective port, exact path, method)`。具体路径和
+方法不同就属于不同 endpoint；path 与 query/fragment 的原始值仍按脱敏和上限策略
+写入来源观察。`path_template` 仅是兼容/分组提示，不折叠身份。这里放一份共用逻辑，
+各解析器只负责将自己的格式读成 URL（或路径 + base）。
 
 发现机制不会把它当成解析器
 --------------------------
@@ -21,31 +21,11 @@ dirsearch / katana / gau / ffuf 的**输入形状**完全不同（两种文本�
 两条口径，写在这里免得四个解析器各说各话
 ----------------------------------------
 
-**一、原始路径必须逐条留证据。** 折叠是**身份**的事，不是事实的事：
+**一、路径严格区分。** `/user/123`、`/user/456` 与 `/User/123` 是不同 Endpoint
+身份；query 与 fragment 不进身份，但单条请求样本保留各自的脱敏摘要与来源。
 
-    /user/123 ┐
-    /user/456 ├─→ 一个 `endpoint` 实体（`app.example.com/user/{id}`）
-    /user/789 ┘   三条 `path` 观测（`/user/123` / `/user/456` / `/user/789`）
-
-把这三条也折成一条观测，就等于把"这个 endpoint 到底见过哪些真实路径"永久删掉
-—— 而那正是 3.5 的镜头页与 3.6 的体检要拿来回答问题的证据。所以这里去重的是
-**实体与关系**（同一个 key 只声明一次），观测只按 (endpoint, 字段, 值) 去重。
-
-⚠️ **已知代价：这三条 `path` 会被数据层记成一条 `value_conflict`。**
-`v_field_conflicts` 的口径是"同实体同字段多值即冲突"，它没有"多值字段"这个
-概念 —— 所以每一个被折叠过的 endpoint 都会开一条 Inbox 项，而且那条项的主体是
-project 而不是 job，`undo` 撤不掉它。这**不是**这里引入的形状：httpx 对多值字段
-`cname` 早就是同一个行为（两条 CNAME → 一条冲突）。修它要动 `v_field_conflicts`
-或 observations 的建模，属 001 的地界（红线 R4 不改），所以 3.3 的选择是**如实
-按验收标准落三条观测**，把缺口原样报给发起人（测试
-`test_endpoint_multi_path_landing_in_the_inbox_is_a_pre_existing_model_gap`
-把它钉住了）。
-
-**二、方法缺失时**不写 `method` 观测**。** 计划书 §4.3 写"无方法记 `UNKNOWN`"，
-指的是接口列表里那一列**不空着**；而"这一条来自一个根本不产出方法的工具"是
-**缺观测**就能表达的事实。补一条 `method=UNKNOWN` 是零信息噪声，会实打实地抬高
-观测数与存储 —— 与 httpx 对 `failed=False` 的处理是同一条口径（那里的注释写透了）。
-接口页面把"没有 method 观测"渲染成 `UNKNOWN` 就够，而那个显示默认值归 GUI。
+**二、未知方法单独建身份。** 未观察到 method 时 key 的方法分量为 `unknown`，不
+补造 GET 或 `method` observation；界面可明确显示“方法未知”。
 """
 
 from __future__ import annotations
@@ -92,6 +72,7 @@ class EndpointSink:
 
     def emit(self, raw: str, ctx: ParseContext, lineno: int, *,
              base: str | None = None, method: str = "",
+             identity_method: str | None = None,
              extra: Iterable[tuple[str, Any]] = ()) -> Iterator[Record]:
         """一条 URL（或 `base` 下的相对路径）→ 记录。
 
@@ -99,7 +80,8 @@ class EndpointSink:
         不等于整份文件坏掉 —— 这是 §5.3 的解析器纪律）。
         """
         try:
-            identity = normalize.endpoint_identity(raw, base=base)
+            identity = normalize.endpoint_identity(
+                raw, base=base, method=method if identity_method is None else identity_method)
         except normalize.NormalizeError as exc:
             ctx.on_bad_line(lineno, f"不是可识别的 endpoint：{exc}",
                             str(raw)[:MAX_VALUE_CHARS])
@@ -119,7 +101,7 @@ class EndpointSink:
                             subtitle=str(identity["scheme"]))
 
         if self._first(("entity", "endpoint", key)):
-            yield RawEntity(kind="endpoint", key=key, display=key,
+            yield RawEntity(kind="endpoint", key=key, display=normalize.endpoint_display(identity),
                             attrs={"path_template": str(identity["template"])})
 
         if self._first(("relation", "endpoint", key, svc)):
@@ -128,8 +110,7 @@ class EndpointSink:
 
         # --- 证据观测 ---
         # `path` 是**原样**的路径 + 查询串 + 片段（identity["raw_path"]）；
-        # `path_template` 是折叠结果。两条都留：前者回答"见过哪些真实路径"，
-        # 后者回答"这条接口被折成了什么"（3.5 镜头按它分组）。
+        # `path_template` 只是兼容/分组提示，不参与 v2 身份，也不把端点合并。
         for field, value in (("path", identity["raw_path"]),
                              ("path_template", identity["template"]),
                              ("scheme", identity["scheme"]),

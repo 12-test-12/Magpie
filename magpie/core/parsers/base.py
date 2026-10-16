@@ -382,7 +382,9 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
              produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
-                          "curl@1", "har@1", "openapi@1", "postman@1", "har@2", "js-manifest@1")),
+                          "curl@1", "har@1", "openapi@1", "postman@1", "har@2", "js-manifest@1",
+                          "dirsearch@2", "ffuf@2", "gau@2", "katana@2", "curl@2",
+                          "openapi@2", "postman@2", "har@3", "js-manifest@2")),
     #: 4.1 起 `tshark` 也是一个产出者：一段会话的目的端会落成 `ip` 实体
     #: （`flow --involves--> ip`）。**`domain` 不补** —— 本步不做 DNS 名字提取
     #: （把 `dns.qry.name` 当成"这台 IP 叫什么"是一次需要人确认的**推断**，
@@ -391,7 +393,9 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1",
-                          "tshark@1", "har@2", "js-manifest@1")),
+                          "tshark@1", "har@2", "js-manifest@1",
+                          "dirsearch@2", "ffuf@2", "gau@2", "katana@2", "curl@2",
+                          "openapi@2", "postman@2", "har@3", "js-manifest@2")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -404,7 +408,9 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1",
-                          "fingerprint@1", "har@2", "js-manifest@1")),
+                          "fingerprint@1", "har@2", "js-manifest@1",
+                          "dirsearch@2", "ffuf@2", "gau@2", "katana@2", "curl@2",
+                          "openapi@2", "postman@2", "har@3", "js-manifest@2")),
     #: 4.3 起 `fingerprint` 也是产出者（`fingerprints/*.yaml` 的规则命中 →
     #: `product` + `service --runs--> product`，迁移 013 用 `json_insert` 追加）。
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
@@ -425,15 +431,14 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: v3.1》§10 写的是 `endpoints`，与库不一致。**以 003 为准**（R4 不许改它，
     #: 新增 lens id 会被 DB 直接拒）。GUI 上想显示"接口"就做显示别名。
     #:
-    #: 身份是 `主机[:非默认端口] + 路径模板`（`normalize.endpoint_key`）。折叠
-    #: 规则本身在 `normalize.SEGMENT_TEMPLATES`（单点，PARSE-NORM 守着）；而
-    #: **原始路径原样留在 `path` 观测里** —— 折叠是身份的事，不是事实的事，
-    #: 否则"这个 endpoint 到底见过哪些真实路径"就永远答不出来（3.5 镜头、
-    #: 3.6 体检都要用那份证据）。
+    #: v2 身份是 `(scheme, host, effective_port, exact_path, method)`，统一由
+    #: `normalize.endpoint_identity` 生成；历史模板折叠 key 作为 legacy 原样保留。
     KindSpec(kind="endpoint", fixture="fixtures/kinds/endpoint.json", lens="api",
              produced_by=("dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1",
-                          "har@2", "js-manifest@1")),
+                          "har@2", "js-manifest@1", "dirsearch@2", "ffuf@2", "gau@2",
+                          "katana@2", "curl@2", "openapi@2", "postman@2", "har@3",
+                          "js-manifest@2")),
     #: 接口契约（3.4 起有产出者：openapi / postman / har / curl 四个"接口描述"
     #: 来源）。**镜头归属同样是已冻结的 `api`** —— 与 `endpoint` 同一个镜头，
     #: 因为"这个系统暴露了几个未鉴权接口"这类问题要同时看**契约声明的**与
@@ -446,7 +451,8 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 拿标题当身份，HAR 与 curl 就永远落不到另外两类身上，而那恰恰是要被
     #: 认出来的那件事。
     KindSpec(kind="apischema", fixture="fixtures/kinds/apischema.json", lens="api",
-             produced_by=("curl@1", "har@1", "openapi@1", "postman@1", "har@2")),
+             produced_by=("curl@1", "har@1", "openapi@1", "postman@1", "har@2",
+                          "curl@2", "openapi@2", "postman@2", "har@3")),
     #: 会话摘要（4.1 起有产出者：har 与 tshark 两个流量来源）。**第一个用
     #: `traffic` 镜头的 kind** —— 那个 id 从 001 的 CHECK 起就躺着，而 R4 不许
     #: 改 001，所以"流量镜头"就是它，不是另起一个名字。

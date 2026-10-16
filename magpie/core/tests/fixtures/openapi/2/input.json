@@ -1,0 +1,76 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Petstore",
+    "version": "1.0.0",
+    "description": "接口来源黄金夹具：一份会长成真实样子的 OpenAPI 3 文档"
+  },
+  "servers": [
+    { "url": "https://api.example.com/v2" }
+  ],
+  "paths": {
+    "/pets": {
+      "parameters": [
+        { "name": "X-Request-Id", "in": "header", "schema": { "type": "string" } }
+      ],
+      "get": {
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "path", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": {}, "404": {}, "default": {} }
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/NewPet" }
+            }
+          }
+        },
+        "responses": { "201": {} }
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "parameters": [
+          { "name": "petId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "verbose", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": { "200": {} }
+      }
+    },
+    "/external": {
+      "get": {
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "$ref": "./common.yaml#/Q" } }
+        ],
+        "responses": { "200": {} }
+      }
+    },
+    "pets-broken": {
+      "get": { "responses": { "200": {} } }
+    }
+  },
+  "components": {
+    "schemas": {
+      "NewPet": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "tag": { "type": "string" },
+          "address": { "$ref": "#/components/schemas/Address" }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "properties": {
+          "street": { "type": "string" },
+          "zip": { "type": "string" }
+        }
+      }
+    }
+  },
+  "weirdTopLevel": true
+}

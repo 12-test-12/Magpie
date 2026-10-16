@@ -73,7 +73,7 @@ MAX_LINE_CHARS = 1024 * 1024
 
 class KatanaParser(Parser):
     tool = "katana"
-    format_version = "1"
+    format_version = "2"
     known_fields = KNOWN_FIELDS
     #: 与 gau 同档：爬虫确实请求到了它，但"路径存在"与"这个接口在做接口的事"
     #: 是两回事（一个静态资源的 URL 也会落成 endpoint）。

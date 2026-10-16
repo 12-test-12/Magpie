@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from magpie.core import ingest, ops, store, universal
+from magpie.core import normalize
+from magpie.core.parsers.base import OfflineContext, RawEntity, RawObservation
 
 
 def write(tmp_path, text, name="unknown.result"):
@@ -33,6 +35,16 @@ def test_csv_mapping_changes_meaning_only_after_explicit_choice(tmp_path):
     assert after["mapped_complete"] == 1
     assert before["structure_signature"] == after["structure_signature"]
     assert after["details"][0]["fields"][-1]["kind"] == "ignore"
+
+
+def test_generic_parser_uses_a_unique_observed_method_in_endpoint_identity():
+    parser = universal.parser_for()()
+    rows = list(parser.parse(['{"url":"https://api.example.test/items","method":"POST","status":201}'],
+                             OfflineContext()))
+    key = normalize.endpoint_key("https://api.example.test/items", method="POST")
+    assert any(isinstance(row, RawEntity) and row.kind == "endpoint" and row.key == key for row in rows)
+    assert any(isinstance(row, RawObservation) and row.entity_ref == ("endpoint", key)
+               and row.type == "method" and row.value == "POST" for row in rows)
 
 
 @pytest.mark.parametrize("text,fmt,total", [

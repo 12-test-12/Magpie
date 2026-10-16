@@ -81,4 +81,38 @@ describe('bounded workspace navigation', () => {
     expect(wrapper.text()).toContain('没有符合条件的结果')
     wrapper.unmount()
   })
+
+  it('resets detail category after cross-navigation before opening another API row', async () => {
+    const apiRows = { rows: [
+      { id: 20, kind: 'endpoint', entity_key: 'ep2:api-one', display_key: 'GET https://api.example.test/one' },
+      { id: 21, kind: 'endpoint', entity_key: 'ep2:api-two', display_key: 'GET https://api.example.test/two' },
+    ], total: 2, limit: 50, next_cursor: null }
+    global.fetch = vi.fn(async url => {
+      const parsed = new URL(String(url), 'http://local')
+      if (parsed.pathname.endsWith('/workspace/browse')) {
+        return response(parsed.searchParams.get('mode') === 'list' ? apiRows : groups)
+      }
+      if (parsed.pathname.endsWith('/workspace/entities/20')) return response({
+        entity: { id: 20, kind: 'endpoint', display_key: 'GET https://api.example.test/one' },
+        rows: [], total: 0, next_cursor: null,
+      })
+      return response({
+        entity: { id: 21, kind: 'endpoint', display_key: 'GET https://api.example.test/two' },
+        rows: [], total: 0, next_cursor: null,
+      })
+    })
+    const wrapper = mount(View, { props: { category: 'api' } })
+    await flushPromises()
+    await wrapper.find('.group-card').trigger('click'); await flushPromises()
+    await wrapper.find('.group-card').trigger('click'); await flushPromises()
+    await wrapper.findAll('.row-link')[0].trigger('click'); await flushPromises()
+    const Detail = (await import('../src/components/WorkspaceDetail.vue')).default
+    wrapper.findComponent(Detail).vm.$emit('select', { id: 20, category: 'js', kind: 'endpoint' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('JS 内容与候选')
+    await wrapper.findAll('.row-link')[1].trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('请求样本')
+    expect(wrapper.text()).not.toContain('JS 内容与候选')
+    wrapper.unmount()
+  })
 })

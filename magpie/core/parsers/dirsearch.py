@@ -124,7 +124,7 @@ def _split_result(line: str) -> tuple[str, str, str]:
 
 class DirsearchParser(Parser):
     tool = "dirsearch"
-    format_version = "1"
+    format_version = "2"
     #: 行格式没有字段可言（见 gau 的同一条）。漂移信号是"结果行的比例掉下来"。
     known_fields: frozenset[str] = frozenset()
     #: 比 gau 高一档：这是**刚刚探到**的响应，还带状态码。但仍低于 httpx 的

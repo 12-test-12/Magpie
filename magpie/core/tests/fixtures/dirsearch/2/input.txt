@@ -1,0 +1,25 @@
+Extensions: php, aspx, jsp, html, js | HTTP method: GET | Threads: 30 | Wordlist size: 11460
+
+Target: http://app.example.com:8080/
+
+[12:00:00] Starting:
+[12:00:01] 200 -  123B  - /admin
+[12:00:02] 301 -    0B  - /images  ->  /images/
+[12:00:03] 403 -  456B  - /.git/
+[12:00:04] 200 -  789B  - /user/123
+[12:00:05] 200 -  790B  - /user/456
+[12:00:06] 200 -  791B  - /user/789
+[12:00:07] 200 -  792B  - /user/abc
+[12:00:08] 500 -   12B  - /api/v1/users
+[12:00:09] 500 -   13B  - /api/v2/users
+[12:00:10] 200 -  100B  - /
+[12:00:11] 200 -  128B  - /admin?debug=1
+
+Target: https://api.example.com/
+
+[12:01:00] 200 -  200B  - /v1/orders/1
+[12:01:01] 200 -  201B  - /v1/orders/2
+[12:01:02] 200 -  202B  - /v1/orders/latest
+这一行不是 dirsearch 的任何一种行
+
+Task Completed

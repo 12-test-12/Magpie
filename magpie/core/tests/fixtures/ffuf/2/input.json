@@ -1,0 +1,87 @@
+{
+  "config": {
+    "url": "http://app.example.com:8080/FUZZ",
+    "method": "GET",
+    "wordlist": "/usr/share/wordlists/dirb/common.txt",
+    "threads": 40
+  },
+  "results": [
+    {
+      "input": { "FUZZ": "admin" },
+      "position": 1,
+      "status": 200,
+      "length": 1234,
+      "words": 42,
+      "lines": 10,
+      "content-type": "text/html",
+      "redirectlocation": "",
+      "duration": 1234567,
+      "url": "http://app.example.com:8080/admin",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "1" },
+      "position": 2,
+      "status": 200,
+      "length": 900,
+      "duration": 2345678,
+      "url": "http://app.example.com:8080/user/1",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "2" },
+      "position": 3,
+      "status": 200,
+      "length": 901,
+      "duration": 3456789,
+      "url": "http://app.example.com:8080/user/2",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "abc" },
+      "position": 4,
+      "status": 403,
+      "length": 12,
+      "duration": 456789,
+      "url": "http://app.example.com:8080/user/abc",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": ".git/config" },
+      "position": 5,
+      "status": 200,
+      "length": 92,
+      "duration": 567890,
+      "weird_field": true,
+      "url": "http://app.example.com:8080/.git/config",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "v1" },
+      "position": 6,
+      "status": 500,
+      "length": 13,
+      "duration": 678901,
+      "url": "http://app.example.com:8080/api/v1/users",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "v2" },
+      "position": 7,
+      "status": 500,
+      "length": 14,
+      "duration": 789012,
+      "url": "http://app.example.com:8080/api/v2/users",
+      "host": "app.example.com"
+    },
+    {
+      "input": { "FUZZ": "broken" },
+      "position": 8,
+      "status": 200,
+      "length": 10,
+      "duration": 890123,
+      "host": "app.example.com"
+    }
+  ],
+  "time": "2026-09-17T10:00:00+08:00"
+}

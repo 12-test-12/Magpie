@@ -1,162 +1,124 @@
 {
   "kind": "endpoint",
   "lens": "api",
-  "identity_rule": "接口的身份是 `主机[:非默认端口] + 路径模板`（normalize.endpoint_key）：路径模板由 normalize.path_template 按 SEGMENT_TEMPLATES 常量表折叠（UUID / 日期 / 纯数字 / 长 hex 段换成 {uuid} / {date} / {id} / {hash}，其余段原样保留 —— `/user/abc` 不折、`/api/v1` 与 `/api/v2` 不折）。**查询串与片段不进身份**（一次性 token 会让同一接口每次抓取都变成新实体），但**原始路径必须原样留在 path 观测里** —— 折叠的是身份，不是事实。**scheme 也不进身份**（v3.1 §4.4），默认端口折掉的是 {80, 443} 而不是按 scheme 取默认值。",
+  "identity_rule": "Endpoint v2 identity is (scheme, normalized host, effective port, exact case-sensitive path, method). Effective port uses the explicit port or a known scheme default; unknown remains NULL. Query and fragment are sample data, not identity. Method is normalized uppercase; missing/invalid method is the distinct unknown value, never GET. No path template folding. Historical pre-v2 keys remain legacy-folded and are not reconstructed.",
   "golden": [
-    "dirsearch/1",
-    "ffuf/1",
-    "gau/1",
-    "katana/1",
-    "har/2",
-    "js-manifest/1"
+    "dirsearch/2",
+    "ffuf/2",
+    "gau/2",
+    "katana/2",
+    "har/3",
+    "js-manifest/2"
   ],
   "examples": [
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/user/123"
+        "https://app.example.com/user/123",
+        "GET"
       ],
-      "key": "app.example.com/user/{id}",
-      "why": "纯数字段是占位符：`/user/123` 折成 `/user/{id}`，接口列表才不会每抓一次就膨胀一轮"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJHRVQiXQ",
+      "why": "Exact path and method are part of v2 identity; the numeric segment is preserved."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/user/456"
+        "https://app.example.com/user/456",
+        "GET"
       ],
-      "key": "app.example.com/user/{id}",
-      "why": "与上一条算出**同一个** key —— 这就是「`/user/123` 与 `/user/456` 归并成一个 endpoint」那句验收标准本身"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci80NTYiLCJHRVQiXQ",
+      "why": "A distinct concrete path remains a distinct endpoint."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/user/abc"
+        "https://app.example.com/user/123",
+        "POST"
       ],
-      "key": "app.example.com/user/abc",
-      "why": "**反例**：不是所有段都是占位符。`abc` 往往是一条真实路由，折了会把两条接口并成一条"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvdXNlci8xMjMiLCJQT1NUIl0",
+      "why": "A distinct method remains a distinct endpoint; method is observed or declared, never inferred as GET."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/api/v1/users"
+        "HTTPS://APP.Example.COM:443/Admin?token=secret#frag",
+        "get"
       ],
-      "key": "app.example.com/api/v1/users",
-      "why": "**反例**：`v1` 不是纯数字，不折 —— 折掉版本号等于把「两代接口」这件事抹掉"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvQWRtaW4iLCJHRVQiXQ",
+      "why": "Scheme and host normalize, known effective port is retained, path case remains exact, and query/fragment do not enter identity."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/api/v2/users"
+        "http://app.example.com/Admin",
+        "GET"
       ],
-      "key": "app.example.com/api/v2/users",
-      "why": "与 v1 那一条是**两个** key：「哪些还在用 v1」正是这份工具存在的理由之一"
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MCwiL0FkbWluIiwiR0VUIl0",
+      "why": "Different scheme gives a different identity."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com:443/admin"
+        "https://app.example.com/Admin",
+        "GET"
       ],
-      "key": "app.example.com/admin",
-      "why": "默认 web 端口折掉（与 `https://app.example.com/admin` 同一个 key），而 443 是**两个**默认 web 端口之一、与 scheme 无关 —— 见 normalize.WEB_DEFAULT_PORTS"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvQWRtaW4iLCJHRVQiXQ",
+      "why": "HTTPS default port differs from HTTP and paths preserve case."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "http://app.example.com:8080/admin"
+        "https://app.example.com:8443/Admin",
+        "GET"
       ],
-      "key": "app.example.com:8080/admin",
-      "why": "8080 不是默认 web 端口：它确实区分服务，保留"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsODQ0MywiL0FkbWluIiwiR0VUIl0",
+      "why": "An explicit non-default port remains distinct."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "HTTPS://APP.Example.COM/Admin"
+        "https://app.example.com/Admin"
       ],
-      "key": "app.example.com/Admin",
-      "why": "scheme 与主机名折小写（DNS 不区分大小写），**路径原样保留**（路径区分大小写）"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvQWRtaW4iLCJ1bmtub3duIl0",
+      "why": "Missing method is encoded as unknown, never converted to GET."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
-        "https://app.example.com/admin?id=1#top"
+        "https://app.example.com/Admin?token=one"
       ],
-      "key": "app.example.com/admin",
-      "why": "**查询串与片段不进身份**（一次性 token 会让同一接口每次抓取都变成新实体）；原始串由解析器原样写进 path 观测"
-    },
-    {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "https://app.example.com/x/550e8400-e29b-41d4-a716-446655440000"
-      ],
-      "key": "app.example.com/x/{uuid}",
-      "why": "UUID 自证性强，单个就能折"
-    },
-    {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "https://app.example.com/x/deadbeefdeadbeefdeadbeef"
-      ],
-      "key": "app.example.com/x/{hash}",
-      "why": "≥16 位 hex 同样是自证的（纯数字段会在它之前被折成 {id} —— 那是刻意的，见 SEGMENT_TEMPLATES 的顺序纪律）"
-    },
-    {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "https://[2001:db8::1]:8443/x/9"
-      ],
-      "key": "[2001:db8::1]:8443/x/{id}",
-      "why": "IPv6 字面量加方括号（URL 的书写形式），主机本身仍是 `2001:db8::1`"
+      "key": "ep2:WyJodHRwcyIsImFwcC5leGFtcGxlLmNvbSIsNDQzLCIvQWRtaW4iLCJ1bmtub3duIl0",
+      "why": "Query values are not endpoint identity; they remain masked sample data."
     }
   ],
   "rejects": [
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
         ""
       ],
-      "why": "空串：算不出任何身份"
+      "why": "Empty input has no endpoint identity."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
         "/admin"
       ],
-      "why": "相对路径**必须**有 base（dirsearch 的 `Target:`）：没有 base 就不知道这是哪台主机上的接口，猜错的代价是一整批接口挂到错误的主机上"
+      "why": "Relative path needs an explicit base."
     },
     {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "nas"
-      ],
-      "why": "既不是 URL，也不以 `/` 开头"
-    },
-    {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "http://a b/x"
-      ],
-      "why": "含空白字符（真实 URL 里空格必须转义）"
-    },
-    {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
         "https://"
       ],
-      "why": "有 scheme 但没有主机名"
+      "why": "URL has no host."
     },
     {
-      "rule": "normalize.endpoint_key",
+      "rule": "normalize.endpoint_identity",
       "args": [
         "https://nas/x"
       ],
-      "why": "单标签主机不是完整域名 —— 与 `domain` 这条 kind 的身份规则一致（否则这个接口挂不到任何资产上）"
-    },
-    {
-      "rule": "normalize.endpoint_key",
-      "args": [
-        "https://app.example.com/x?token=a b"
-      ],
-      "why": "查询串里有空白 —— 整条 URL 先被前置校验拦下"
+      "why": "Single-label host is not accepted as a complete domain."
     }
   ]
 }

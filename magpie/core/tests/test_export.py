@@ -158,6 +158,29 @@ def test_default_package_contains_no_header_cookie_or_credential(db, project,
         "默认包不应含 raw/ 正文"
 
 
+def test_request_sample_package_omits_head_metadata_but_keeps_summary(db, project, tmp_path):
+    _ingest(db, project, tmp_path)
+    original = [field for entity in query.export_entities(db, project)
+                for field in entity["fields"] if field["field"] == "http_request_sample"]
+    assert original and "Authorization" in original[0]["value"]
+    for full in (False, True):
+        files = export.build_package(db, project, full=full)
+        entities = json.loads(files["entities.json"])
+        fields = [field for entity in entities for field in entity["fields"]
+                  if field["field"] == "http_request_sample"]
+        sample = json.loads(fields[0]["value"])
+        assert sample["method"] == "GET"
+        assert "token" in sample["query_parameter_names"]
+        assert sample["request_metadata_omitted"] is True
+        assert "credentials" not in sample and "request_header_names" not in sample
+        structured = {name: data for name, data in files.items() if not name.startswith("raw/")}
+        assert not _scan_files(structured)
+        timeline = json.loads(files["timeline.json"])
+        events = [event for bucket in ("events", "lower_bounds") for event in timeline[bucket]
+                  if event["field"] == "http_request_sample"]
+        assert events and json.loads(events[0]["value"])["request_metadata_omitted"] is True
+
+
 def test_default_package_redacts_credential_shaped_field_value(db, project,
                                                               tmp_path):
     """值级掩码（第二道防线）：观测值里的 `token=…` 被换成掩码，明文不出门。

@@ -1640,12 +1640,14 @@ def parser_drift_report(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         fingerprint = str(row["fingerprint"])
         registered = row["definition_hash"]
         cls = current.get(fingerprint)
-        if cls is None and fingerprint.startswith("generic@1-") and len(fingerprint) == 26:
-            suffix = fingerprint.removeprefix("generic@1-")
+        generic_prefix = next((prefix for prefix in ("generic@1-", "generic@2-")
+                               if fingerprint.startswith(prefix)), None)
+        if cls is None and generic_prefix and len(fingerprint) == len(generic_prefix) + 16:
+            suffix = fingerprint.removeprefix(generic_prefix)
             if all(c in "0123456789abcdef" for c in suffix):
                 from .universal import parser_for
                 # Mapping is in the fingerprint; all variants share one implementation.
-                cls = parser_for()
+                cls = parser_for(version=int(generic_prefix[len("generic@"):len("generic@") + 1]))
         if cls is not None and registered not in (None, store.UNHASHED_PARSER):
             actual = _definition_hash(cls)
             if str(registered) != actual:

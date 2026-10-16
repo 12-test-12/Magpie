@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.24.0"       # 与 pyproject.toml 保持一致（JS 本地内容与静态候选）
+__version__ = "0.25.0"       # 与 pyproject.toml 保持一致（Endpoint v2 与 API 业务详情）
 
 __all__ = ["__version__"]

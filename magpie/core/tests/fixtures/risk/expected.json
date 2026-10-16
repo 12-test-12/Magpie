@@ -1,6 +1,6 @@
 {
   "attack_surface_totals": {
-    "endpoints": 6,
+    "endpoints": 7,
     "hosts": 7,
     "open_vuln_total": 6,
     "open_vulns": {
@@ -76,8 +76,8 @@
       "id": "exposed_service"
     },
     {
-      "contribution": 6,
-      "count": 6,
+      "contribution": 7,
+      "count": 7,
       "id": "exposed_endpoint"
     },
     {
@@ -87,7 +87,7 @@
     }
   ],
   "facts": {
-    "endpoints": 6,
+    "endpoints": 7,
     "inbox_open": 1,
     "out_of_scope": 0,
     "secrets": 0,
@@ -108,5 +108,5 @@
   },
   "rule_version": "1",
   "rules_digest": "sha256:84663cb026468901fc5033b5e17f3a5bf5b2bacd27fafa0200d6143d7388f90e",
-  "total": 343
+  "total": 344
 }

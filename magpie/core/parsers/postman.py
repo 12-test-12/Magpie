@@ -106,7 +106,7 @@ _VARIABLE_MARK = "{{"
 
 class PostmanParser(Parser):
     tool = "postman"
-    format_version = "1"
+    format_version = "2"
     known_fields = KNOWN_FIELDS
     #: 比契约低一档：集合是**人维护**的清单，会过期、会有手工改过的临时值
     #: （OpenAPI 的 `max_confidence` 是 1.0，因为它是提供方自己签名的）。

@@ -1,0 +1,743 @@
+{
+  "tool": "ffuf",
+  "format_version": "2",
+  "input": "input.json",
+  "bad_lines": [
+    {
+      "line": 1,
+      "reason": "results[8] 缺 url（或它不是字符串）：None"
+    }
+  ],
+  "unknown_fields": {
+    "results[].weird_field": 1
+  },
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.com",
+      "display": "app.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.com:8080",
+      "display": "app.example.com:8080",
+      "subtitle": "http"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ",
+      "display": "GET http://app.example.com:8080/admin",
+      "attrs": {
+        "path_template": "/admin"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "path",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "path_template",
+      "value": "/admin"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "length",
+      "value": 1234
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "duration",
+      "value": 1234567
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYWRtaW4iLCJHRVQiXQ"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=admin"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0",
+      "display": "GET http://app.example.com:8080/user/1",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/user/1"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "length",
+      "value": 900
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "duration",
+      "value": 2345678
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8xIiwiR0VUIl0"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=1"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0",
+      "display": "GET http://app.example.com:8080/user/2",
+      "attrs": {
+        "path_template": "/user/{id}"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/user/2"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/user/{id}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "length",
+      "value": 901
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "duration",
+      "value": 3456789
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci8yIiwiR0VUIl0"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=2"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ",
+      "display": "GET http://app.example.com:8080/user/abc",
+      "attrs": {
+        "path_template": "/user/abc"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "path",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "path_template",
+      "value": "/user/abc"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "status",
+      "value": 403
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "length",
+      "value": 12
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "duration",
+      "value": 456789
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvdXNlci9hYmMiLCJHRVQiXQ"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=abc"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ",
+      "display": "GET http://app.example.com:8080/.git/config",
+      "attrs": {
+        "path_template": "/.git/config"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "path",
+      "value": "/.git/config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "path_template",
+      "value": "/.git/config"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "length",
+      "value": 92
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "duration",
+      "value": 567890
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvLmdpdC9jb25maWciLCJHRVQiXQ"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=.git/config"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0",
+      "display": "GET http://app.example.com:8080/api/v1/users",
+      "attrs": {
+        "path_template": "/api/v1/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/api/v1/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "status",
+      "value": 500
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "length",
+      "value": 13
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "duration",
+      "value": 678901
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YxL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=v1"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0",
+      "display": "GET http://app.example.com:8080/api/v2/users",
+      "attrs": {
+        "path_template": "/api/v2/users"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "dst": [
+        "service",
+        "app.example.com:8080"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "path",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "path_template",
+      "value": "/api/v2/users"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "scheme",
+      "value": "http"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "port",
+      "value": 8080
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "status",
+      "value": 500
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "length",
+      "value": 14
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "duration",
+      "value": 789012
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "ep2:WyJodHRwIiwiYXBwLmV4YW1wbGUuY29tIiw4MDgwLCIvYXBpL3YyL3VzZXJzIiwiR0VUIl0"
+      ],
+      "field": "fuzz_input",
+      "value": "FUZZ=v2"
+    }
+  ]
+}

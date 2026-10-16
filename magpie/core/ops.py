@@ -15,7 +15,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
-from . import scope as scope_module
+from . import normalize, scope as scope_module
 from . import store
 from . import query
 from .store import (
@@ -1948,12 +1948,25 @@ def rekey(conn: sqlite3.Connection, *, project_id: int,
         merges: list[dict[str, Any]] = []
         for old_key, new_key in sorted(mapping.items()):
             entity_id = entity_for_key(conn, project_id, old_key)
+            kind_row = conn.execute("SELECT kind FROM entities WHERE project_id=? AND id=?",
+                                     (project_id, entity_id)).fetchone()
+            if kind_row is not None and kind_row["kind"] == "endpoint":
+                try:
+                    decoded = normalize.decode_endpoint_key(new_key)
+                except normalize.NormalizeError as exc:
+                    raise InvariantError(f"endpoint rekey target is malformed: {exc}") from exc
+                if decoded is None:
+                    raise InvariantError("endpoint rekey target must be a canonical Endpoint v2 key")
             existing = conn.execute(
                 "SELECT entity_id FROM entity_alias WHERE project_id=? AND alias_key=?"
                 " AND revoked_by_job_id IS NULL",
                 (project_id, new_key),
             ).fetchone()
             if existing is not None and int(existing["entity_id"]) != entity_id:
+                other_kind = conn.execute("SELECT kind FROM entities WHERE project_id=? AND id=?",
+                                          (project_id, int(existing["entity_id"]))).fetchone()
+                if kind_row is not None and other_kind is not None and kind_row["kind"] != other_kind["kind"]:
+                    raise InvariantError("rekey collision cannot merge different entity kinds")
                 merges.append({"survivor_key": new_key,
                                "survivor_id": int(existing["entity_id"]),
                                "member_key": old_key, "member_id": entity_id})
@@ -2025,6 +2038,11 @@ def merge(conn: sqlite3.Connection, *, project_id: int, survivor_key: str,
         # 见下方注释。）配对必须由同一次解析产生，不能靠两个列表的下标对齐。
         member_pairs = [(k, entity_for_key(conn, project_id, k)) for k in member_keys]
         member_ids = sorted({survivor_id, *(eid for _, eid in member_pairs)})
+        kinds = {str(row[0]) for row in conn.execute(
+            f"SELECT DISTINCT kind FROM entities WHERE project_id=? AND id IN ({','.join('?' for _ in member_ids)})",
+            (project_id, *member_ids))}
+        if len(kinds) != 1:
+            raise InvariantError("merge members must have the same entity kind")
 
         before_facts = _fact_layer_digest(conn)
         event_id = _merge_inside(conn, project_id=project_id, survivor_id=survivor_id,

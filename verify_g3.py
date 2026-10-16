@@ -134,6 +134,8 @@ _RULES = {
     "normalize.normalize_vuln_target": normalize.normalize_vuln_target,
     "normalize.vuln_key": normalize.vuln_key,
     "normalize.endpoint_key": normalize.endpoint_key,
+    "normalize.endpoint_identity": lambda raw, method=None: normalize.endpoint_identity(
+        raw, method=method)["key"],
     "normalize.apischema_key": normalize.apischema_key,
     # 4.1 的 flow 身份规则（登记在 `kind_registry.identity_rule` 里）。
     # 与 `test_parsers.py::_identity_rules()` 的白名单同一份口径。
