@@ -198,9 +198,10 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
             row["observed"] = [dict(r) for r in conn.execute(
                 "SELECT semantic_field,value FROM observations WHERE project_id=? AND entity_id=?"
                 " AND is_current=1 AND semantic_field IN ('method','http.method','status_code','status',"
-                " 'http.status','http.status_code','title','js_content_version','js_content_status') ORDER BY id LIMIT 11", (project_id, row["id"]))]
-            row['observed_truncated'] = len(row['observed']) > 8
-            row['observed'] = row['observed'][:8]
+                " 'http.status','http.status_code','title','js_content_version','js_content_status',"
+                " 'js_source_ref','js_static_method') ORDER BY id LIMIT 13", (project_id, row["id"]))]
+            row['observed_truncated'] = len(row['observed']) > 10
+            row['observed'] = row['observed'][:10]
             if category == "js":
                 version = conn.execute("SELECT value FROM observations WHERE project_id=? AND entity_id=? AND is_current=1 AND semantic_field='js_content_version' ORDER BY id DESC LIMIT 1", (project_id, row["id"])).fetchone()
                 status = conn.execute("SELECT value FROM observations WHERE project_id=? AND entity_id=? AND is_current=1 AND semantic_field='js_content_status' ORDER BY id DESC LIMIT 1", (project_id, row["id"])).fetchone()

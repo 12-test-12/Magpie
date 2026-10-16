@@ -77,6 +77,15 @@ def _tokens(text):
                     nxt = text[i + 1]
                     if nxt in (quote, "\\", "/", "'", '"', '`'):
                         out.append(nxt); i += 2; continue
+                    if nxt in ("n", "r", "t", "0", "b", "f", "v"):
+                        out.append({"n": "\n", "r": "\r", "t": "\t", "0": "\0", "b": "\b", "f": "\f", "v": "\v"}[nxt])
+                        i += 2; continue
+                    if nxt == "x" and i + 3 < n and all(ch in "0123456789abcdefABCDEF" for ch in text[i+2:i+4]):
+                        out.append(chr(int(text[i+2:i+4], 16)))
+                        i += 4; continue
+                    if nxt == "u" and i + 5 < n and all(ch in "0123456789abcdefABCDEF" for ch in text[i+2:i+6]):
+                        out.append(chr(int(text[i+2:i+6], 16)))
+                        i += 6; continue
                     if nxt in "\r\n":
                         i += 2
                         if nxt == "\r" and i < n and text[i] == "\n": i += 1

@@ -231,10 +231,7 @@ function onBatch(payload) {
     <div class="dialog panel">
       <h1>导入</h1>
       <p class="dim small">
-        把 subfinder / httpx 的输出收进来。首选：点「选择文件…」弹系统对话框
-        （可多选）或直接把文件拖进来 —— 文件会先传到服务端暂存区换回绝对路径。
-        大文件可用「服务端目录…」在目录树里点选（不传内容），或直接手填 ——
-        手填时**路径按服务进程的工作目录解析**，写错会在提交之前就被拒。
+        导入资产侦察与流量数据（支持 subfinder / httpx / nuclei / katana / gau、含 JS 响应正文的 HAR 抓包及带 URL 的 JS 清单等）。首选：点「选择文件…」或直接把文件拖进来。大文件可用「服务端目录…」点选，或直接手填绝对路径。陌生工具文件请勾选下方通用字段映射。
       </p>
 
       <input ref="fileInput" type="file" multiple hidden
@@ -257,7 +254,7 @@ function onBatch(payload) {
         </button>
       </div>
       <textarea v-model="paths" rows="5"
-        placeholder="D:\recon\subfinder.txt&#10;D:\recon\httpx.jsonl" />
+        placeholder="D:\recon\subfinder.txt&#10;D:\recon\httpx.jsonl&#10;D:\recon\traffic.har&#10;D:\recon\app.manifest.json" />
       <FsPicker v-if="picker" @pick="addPath" @close="picker = false" />
 
       <div class="grid2">

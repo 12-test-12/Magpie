@@ -48,6 +48,16 @@ def test_extractor_honors_cancellation_at_token_boundaries():
     assert result["status"] == "cancelled"
 
 
+def test_standard_string_escapes_are_not_flagged_as_invalid():
+    code = 'var a = "line1\\nline2\\ttab\\r\\0\\b\\f\\v"; var b = "\\x41\\u0042"; fetch("https://api.example.test/users");'
+    result = extract(code)
+    assert result["status"] == "bounded_rules_complete"
+    assert result["unsupported_count"] == 0
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0]["url"] == "https://api.example.test/users"
+
+
+
 def test_manifest_parser_preserves_hash_candidate_provenance_without_body():
     manifest = {"magpie_js": 1, "url": "https://app.example.test/app.js",
                 "content": "// 🐦\nfetch('https://api.example.test/v1?q=secret');"}

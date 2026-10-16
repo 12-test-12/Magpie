@@ -79,6 +79,9 @@ function jsStatus(value) {
   return ({ bounded_rules_complete: '有限规则已完成', partial: '部分内容未理解', limit_exceeded: '超过内容上限',
     base64_invalid: 'HAR base64 解码失败', content_not_imported: '内容未导入' })[value] || value || '状态未知'
 }
+function hasJsSource(row) {
+  return (row.observed || []).some(o => o.semantic_field === 'js_source_ref' || o.semantic_field === 'js_static_method')
+}
 watch(() => [store.project, props.category], () => {
   selectedCategory.value = props.category
   save(); slot.cancel(); context = `${store.project}:${props.category}`
@@ -98,7 +101,7 @@ watch(() => store.dataRevision, () => { resetPage(); load() })
     <header class="page-heading"><div><div class="eyebrow">{{ page.english }}</div><h1>{{ page.label }}</h1><p>{{ page.hint }}</p></div>
       <button class="primary" @click="emit('import')">＋ 导入数据</button></header>
     <div v-if="category === 'api'" class="notice">接口沿用当前规范键；方法、状态和参数属于观测。请求/响应全文请在证据中对照，不能据此推断认证漏洞。</div>
-    <div v-if="category === 'js'" class="notice">仅处理已导入的内容，按字面量识别静态调用候选；不会执行 JavaScript，也不推断相对 URL 的运行基址。候选引用不代表浏览器实际发送了请求。</div>
+    <div v-if="category === 'js'" class="notice">仅处理已导入的内容（支持包含 JS 响应体的 HAR 或通过 *.manifest.json 导入的独立 JS），按字面量识别静态调用候选；不会执行 JavaScript，也不推断相对 URL 的运行基址。候选引用不代表浏览器实际发送了请求。</div>
     <form class="workspace-filters" @submit.prevent="filter">
       <label class="search-field"><span>搜索</span><input v-model="draft.q" aria-label="搜索当前工作区" placeholder="输入名称、主机或路径…" maxlength="300" /></label>
       <template v-if="!simple">
@@ -124,7 +127,7 @@ watch(() => store.dataRevision, () => { resetPage(); load() })
             <button v-for="row in data.rows" :key="row.group_key" class="group-card" @click="descend(row)"><span class="group-icon">{{ state.mode === 'host' ? '◎' : '↳' }}</span><strong :title="row.label">{{ row.label || '未关联主机' }}</strong><span class="dim">{{ fmtInt(row.count) }} 个对象</span><span class="group-action">下钻查看 ↗</span></button>
           </div>
           <table v-else class="workspace-table"><thead><tr><th>{{ simple ? '来源 / 对象' : '研究对象' }}</th><th>类型</th><th>{{ category === 'evidence' ? '原文 / 恢复状态' : category === 'notes' ? '笔记内容' : '观测 / 状态' }}</th></tr></thead><tbody>
-            <tr v-for="row in data.rows" :key="row.id" :class="{ selected: selected?.id === row.id }"><td><button class="row-link mono" :title="row.entity_key" @click="selected = row">{{ row.entity_key }}</button><small v-if="row.host">{{ row.host }}</small></td><td><span class="type-label">{{ row.kind }}</span></td><td><template v-if="category === 'evidence'">{{ row.storage_state }} / {{ row.status }}</template><template v-else-if="category === 'notes'"><span class="note-excerpt">{{ row.text }}</span></template><template v-else-if="category === 'js'"><span>{{ jsStatus(jsVersion(row)?.status || 'content_not_imported') }}</span><small v-if="jsVersion(row)?.candidate_count !== undefined">{{ jsVersion(row).candidate_count }} 个候选</small><small v-if="jsVersion(row)?.sha256" class="mono">SHA-256 {{ jsVersion(row).sha256 }}</small><small v-if="jsVersion(row)?.reason" class="warn">{{ jsVersion(row).reason }}</small></template><template v-else-if="category === 'api'"><span class="method-label">{{ observation(row, ['method','http.method']) }}</span> {{ observation(row, ['status','status_code','http.status','http.status_code']) }}<small v-if="row.observed_truncated" class="dim">摘要已截断，更多观测见详情</small></template><template v-else>{{ row.lifecycle === 'active' ? '活跃' : '退役' }}</template></td></tr>
+            <tr v-for="row in data.rows" :key="row.id" :class="{ selected: selected?.id === row.id }"><td><button class="row-link mono" :title="row.entity_key" @click="selected = row">{{ row.entity_key }}</button><small v-if="row.host">{{ row.host }}</small></td><td><span class="type-label">{{ row.kind }}</span></td><td><template v-if="category === 'evidence'">{{ row.storage_state }} / {{ row.status }}</template><template v-else-if="category === 'notes'"><span class="note-excerpt">{{ row.text }}</span></template><template v-else-if="category === 'js'"><span>{{ jsStatus(jsVersion(row)?.status || 'content_not_imported') }}</span><small v-if="jsVersion(row)?.candidate_count !== undefined">{{ jsVersion(row).candidate_count }} 个候选</small><small v-if="jsVersion(row)?.sha256" class="mono" :title="jsVersion(row).sha256">SHA-256 {{ jsVersion(row).sha256.slice(0, 12) }}…</small><small v-if="jsVersion(row)?.reason" class="warn">{{ jsVersion(row).reason }}</small></template><template v-else-if="category === 'api'"><span class="method-label">{{ observation(row, ['method','http.method']) }}</span> {{ observation(row, ['status','status_code','http.status','http.status_code']) }}<small v-if="hasJsSource(row)" class="type-label" title="该接口包含来自 JavaScript 源码的静态引用">JS 引用</small><small v-if="row.observed_truncated" class="dim">摘要已截断，更多观测见详情</small></template><template v-else>{{ row.lifecycle === 'active' ? '活跃' : '退役' }}</template></td></tr>
           </tbody></table>
         </div>
         <WorkspaceDetail v-if="selected" :key="`${selectedCategory}:${selected.id}`" :row="selected" :category="selectedCategory" @close="selected = null" @select="selectRelated" />
