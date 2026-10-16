@@ -382,7 +382,7 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     KindSpec(kind="domain", fixture="fixtures/kinds/domain.json", lens="assets",
              produced_by=("domainlist@1", "httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
-                          "curl@1", "har@1", "openapi@1", "postman@1")),
+                          "curl@1", "har@1", "openapi@1", "postman@1", "har@2", "js-manifest@1")),
     #: 4.1 起 `tshark` 也是一个产出者：一段会话的目的端会落成 `ip` 实体
     #: （`flow --involves--> ip`）。**`domain` 不补** —— 本步不做 DNS 名字提取
     #: （把 `dns.qry.name` 当成"这台 IP 叫什么"是一次需要人确认的**推断**，
@@ -391,7 +391,7 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1",
-                          "tshark@1")),
+                          "tshark@1", "har@2", "js-manifest@1")),
     #: 网段（3.1 起有产出者：nmap 的 `<target specification="10.0.0.0/24">`）。
     #: **与 `ip` 是两个 kind** —— 把 1.2.3.4 与 1.2.3.0/24 认成同一个实体，
     #: 会让「哪台机器」的答案变成「哪一段」（`ip` 的身份规则里写死了这一条）。
@@ -404,7 +404,7 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
              produced_by=("httpx@1", "nmap@1", "nuclei@1",
                           "dirsearch@1", "ffuf@1", "gau@1", "katana@1",
                           "curl@1", "har@1", "openapi@1", "postman@1",
-                          "fingerprint@1")),
+                          "fingerprint@1", "har@2", "js-manifest@1")),
     #: 4.3 起 `fingerprint` 也是产出者（`fingerprints/*.yaml` 的规则命中 →
     #: `product` + `service --runs--> product`，迁移 013 用 `json_insert` 追加）。
     KindSpec(kind="product", fixture="fixtures/kinds/product.json", lens="services",
@@ -432,7 +432,8 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 3.6 体检都要用那份证据）。
     KindSpec(kind="endpoint", fixture="fixtures/kinds/endpoint.json", lens="api",
              produced_by=("dirsearch@1", "ffuf@1", "gau@1", "katana@1",
-                          "curl@1", "har@1", "openapi@1", "postman@1")),
+                          "curl@1", "har@1", "openapi@1", "postman@1",
+                          "har@2", "js-manifest@1")),
     #: 接口契约（3.4 起有产出者：openapi / postman / har / curl 四个"接口描述"
     #: 来源）。**镜头归属同样是已冻结的 `api`** —— 与 `endpoint` 同一个镜头，
     #: 因为"这个系统暴露了几个未鉴权接口"这类问题要同时看**契约声明的**与
@@ -445,7 +446,7 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 拿标题当身份，HAR 与 curl 就永远落不到另外两类身上，而那恰恰是要被
     #: 认出来的那件事。
     KindSpec(kind="apischema", fixture="fixtures/kinds/apischema.json", lens="api",
-             produced_by=("curl@1", "har@1", "openapi@1", "postman@1")),
+             produced_by=("curl@1", "har@1", "openapi@1", "postman@1", "har@2")),
     #: 会话摘要（4.1 起有产出者：har 与 tshark 两个流量来源）。**第一个用
     #: `traffic` 镜头的 kind** —— 那个 id 从 001 的 CHECK 起就躺着，而 R4 不许
     #: 改 001，所以"流量镜头"就是它，不是另起一个名字。
@@ -455,7 +456,7 @@ KIND_REGISTRY: tuple[KindSpec, ...] = (
     #: 里（三处**逐字**一致，两条测试分别守着），一句话版：一个 5 元组不是一个
     #: 会话，时间窗必须进身份。
     KindSpec(kind="flow", fixture="fixtures/kinds/flow.json", lens="traffic",
-             produced_by=("har@1", "tshark@1")),
+             produced_by=("har@1", "tshark@1", "har@2")),
     #: 敏感串（4.2 起由 `magpie/core/scan.py` 产出）。**第二个 `traffic` 镜头的
     #: kind** —— 计划书 §3.5 的镜头表里那一行的主语写的就是 `flow / secret`，
     #: 典型问题写的是「有 token 泄漏吗」。归 `traffic` 不归 `assets` 的理由

@@ -4,7 +4,9 @@
   "identity_rule": "主机的注册域名字面量：小写、去尾点、去端口、IDN→punycode 之后的整串（normalize.normalize_domain）。同一域名的大小写/尾点写法是同一个实体；单标签（localhost）默认不成实体。",
   "golden": [
     "domainlist/1",
-    "httpx/1"
+    "httpx/1",
+    "har/2",
+    "js-manifest/1"
   ],
   "examples": [
     {

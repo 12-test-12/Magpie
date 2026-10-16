@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.23.0"       # 与 pyproject.toml 保持一致（研究工作台有界读模型）
+__version__ = "0.24.0"       # 与 pyproject.toml 保持一致（JS 本地内容与静态候选）
 
 __all__ = ["__version__"]

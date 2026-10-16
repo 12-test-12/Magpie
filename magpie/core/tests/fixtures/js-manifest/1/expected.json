@@ -1,0 +1,204 @@
+{
+  "tool": "js-manifest",
+  "format_version": "1",
+  "input": "input.json",
+  "provenance": "Synthetic local JS manifest; addresses are reserved example domains and documentation IPs.",
+  "bad_lines": [],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "app.example.test",
+      "display": "app.example.test"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "app.example.test:443",
+      "display": "app.example.test:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "app.example.test/app.js",
+      "display": "app.example.test/app.js",
+      "attrs": {
+        "path_template": "/app.js"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "dst": [
+        "service",
+        "app.example.test:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "path",
+      "value": "/app.js"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "path_template",
+      "value": "/app.js"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "js_content_version",
+      "value": "{\"sha256\":\"2e22f6d1c24156b3389a51674eccdb4967390d9fe6620508e030ea47575e33e5\",\"status\":\"bounded_rules_complete\",\"rule_id\":\"js-literal-call\",\"rule_version\":\"1\",\"record_path\":\"$.content\",\"candidate_count\":2,\"unsupported_count\":0,\"truncated\":false,\"reason\":null}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "js_candidate",
+      "value": "{\"url\":\"https://192.0.2.7/api/items?q=%5Bredacted%5D\",\"method\":\"GET\",\"absolute\":true,\"query_names\":[\"q\"],\"start\":6,\"end\":42,\"line\":1,\"snippet\":\"fetch('https://192.0.2.7/api/items?q=[redacted]'); axios.post('/relative', body);\",\"rule_id\":\"js-literal-call\",\"rule_version\":\"1\",\"disposition\":\"confirmed_static\",\"reason\":null,\"content_sha256\":\"2e22f6d1c24156b3389a51674eccdb4967390d9fe6620508e030ea47575e33e5\",\"record_path\":\"$.content\"}"
+    },
+    {
+      "type": "entity",
+      "kind": "ip",
+      "key": "192.0.2.7",
+      "display": "192.0.2.7"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "192.0.2.7:443",
+      "display": "192.0.2.7:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "192.0.2.7/api/items",
+      "display": "192.0.2.7/api/items",
+      "attrs": {
+        "path_template": "/api/items"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "dst": [
+        "service",
+        "192.0.2.7:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "path",
+      "value": "/api/items?q=%5Bredacted%5D"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "path_template",
+      "value": "/api/items"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "js_static_method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "js_static_param",
+      "value": "q"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "192.0.2.7/api/items"
+      ],
+      "field": "js_source_ref",
+      "value": "{\"resource_key\":\"app.example.test/app.js\",\"content_sha256\":\"2e22f6d1c24156b3389a51674eccdb4967390d9fe6620508e030ea47575e33e5\",\"record_path\":\"$.content\"}"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "app.example.test/app.js"
+      ],
+      "field": "js_candidate",
+      "value": "{\"url\":\"/relative\",\"method\":\"POST\",\"absolute\":false,\"query_names\":[],\"start\":56,\"end\":67,\"line\":1,\"snippet\":\"fetch('https://192.0.2.7/api/items?q=[redacted]'); axios.post('/relative', body);\",\"rule_id\":\"js-literal-call\",\"rule_version\":\"1\",\"disposition\":\"needs_base_confirmation\",\"reason\":\"相对 URL 不使用 JS 资源地址推断运行基址\",\"content_sha256\":\"2e22f6d1c24156b3389a51674eccdb4967390d9fe6620508e030ea47575e33e5\",\"record_path\":\"$.content\"}"
+    }
+  ]
+}

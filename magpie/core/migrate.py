@@ -100,6 +100,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     # 的 value_conflict 全落在这个形状上。只加声明行 + 一次性 Inbox 收口，
     # **视图不重建**（010 的视图每次计算都查声明表，加行即生效）。014 的文件头。
     Migration(14, "scheme_port_multivalue", SCHEMA_DIR / "014_scheme_port_multivalue.sql"),
+    # JS 内容版本及静态引用的多值语义；同时登记 har@2 与显式本地 JS manifest 产出者。
+    Migration(15, "js_intelligence", SCHEMA_DIR / "015_js_intelligence.sql"),
 )
 
 

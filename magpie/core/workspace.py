@@ -163,7 +163,7 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
     params = [project_id, *CATEGORIES[category]]
     where = [ACTIVE, "e.kind IN (" + ",".join("?" for _ in CATEGORIES[category]) + ")"]
     if category == "js":
-        where.append("ws_js(k.entity_key)=1")
+        where.append("(ws_js(k.entity_key)=1 OR EXISTS (SELECT 1 FROM observations jo WHERE jo.project_id=e.project_id AND jo.entity_id=e.id AND jo.is_current=1 AND jo.semantic_field IN ('js_content_version','js_content_status')))")
     if q:
         where.append("k.entity_key LIKE ? ESCAPE '\\'")
         params.append("%" + _literal(q) + "%")
@@ -198,9 +198,16 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
             row["observed"] = [dict(r) for r in conn.execute(
                 "SELECT semantic_field,value FROM observations WHERE project_id=? AND entity_id=?"
                 " AND is_current=1 AND semantic_field IN ('method','http.method','status_code','status',"
-                " 'http.status','http.status_code','title') ORDER BY id LIMIT 9", (project_id, row["id"]))]
+                " 'http.status','http.status_code','title','js_content_version','js_content_status') ORDER BY id LIMIT 11", (project_id, row["id"]))]
             row['observed_truncated'] = len(row['observed']) > 8
             row['observed'] = row['observed'][:8]
+            if category == "js":
+                version = conn.execute("SELECT value FROM observations WHERE project_id=? AND entity_id=? AND is_current=1 AND semantic_field='js_content_version' ORDER BY id DESC LIMIT 1", (project_id, row["id"])).fetchone()
+                status = conn.execute("SELECT value FROM observations WHERE project_id=? AND entity_id=? AND is_current=1 AND semantic_field='js_content_status' ORDER BY id DESC LIMIT 1", (project_id, row["id"])).fetchone()
+                try:
+                    row["js_content"] = json.loads(version[0]) if version else {"status": status[0] if status else "content_not_imported"}
+                except (ValueError, TypeError):
+                    row["js_content"] = {"status": "invalid_metadata"}
     return {**result, "mode": mode, "category": category}
 
 
@@ -209,6 +216,12 @@ def entity_detail(conn, project_id, entity_id, *, section="observations", cursor
     if section == "observations":
         sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at FROM observations"
                " WHERE project_id=? AND entity_id=? AND is_current=1")
+        params = [project_id, entity_id]
+    elif section == "js":
+        sql = ("SELECT id,semantic_field,value,confidence,source_count,observed_at FROM observations"
+               " WHERE project_id=? AND entity_id=? AND is_current=1"
+               " AND semantic_field IN ('js_content_version','js_content_status','js_candidate')"
+               " ORDER BY CASE semantic_field WHEN 'js_content_version' THEN 0 WHEN 'js_content_status' THEN 1 ELSE 2 END,id DESC")
         params = [project_id, entity_id]
     elif section == "relations":
         sql = ("SELECT r.id,r.rel,r.src_id,r.dst_id,k.entity_key AS other_key,"
@@ -224,7 +237,7 @@ def entity_detail(conn, project_id, entity_id, *, section="observations", cursor
                " WHERE c.project_id=? AND ((c.subject_kind='entity' AND c.subject_id=?) OR c.owner_entity_id=?)")
         params = [project_id, entity_id, entity_id]
     else:
-        raise query.QueryError("E_UNSUPPORTED_FILTER", "详情分区必须是 observations / relations / evidence")
+        raise query.QueryError("E_UNSUPPORTED_FILTER", "详情分区必须是 observations / relations / evidence / js")
     result = _page(conn, sql, params, cursor=cursor,
                    signature=f"entity:{project_id}:{entity_id}:{section}", limit=limit)
     for row in result["rows"]:
@@ -232,6 +245,24 @@ def entity_detail(conn, project_id, entity_id, *, section="observations", cursor
             value = str(normalize.redact_secrets(row["value"]))
             row["value"] = value[:8000]
             row["value_truncated"] = len(value) > 8000
+            if row.get("semantic_field") == "js_candidate":
+                try:
+                    candidate = json.loads(row["value"])
+                    if candidate.get("absolute"):
+                        identity = normalize.endpoint_identity(candidate.get("url", ""))
+                        found = conn.execute("SELECT e.id FROM entities e JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1 WHERE e.project_id=? AND e.kind='endpoint' AND k.entity_key=? AND e.is_current=1 AND e.merged_into IS NULL LIMIT 1", (project_id, identity["key"])).fetchone()
+                        candidate["target_id"] = int(found[0]) if found else None
+                    row["value"] = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+                except (ValueError, TypeError, KeyError, normalize.NormalizeError):
+                    row["value"] = "{}"
+            elif row.get("semantic_field") == "js_source_ref":
+                try:
+                    source = json.loads(row["value"])
+                    found = conn.execute("SELECT e.id FROM entities e JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1 WHERE e.project_id=? AND e.kind='endpoint' AND k.entity_key=? AND e.is_current=1 AND e.merged_into IS NULL LIMIT 1", (project_id, source.get("resource_key", ""))).fetchone()
+                    source["resource_id"] = int(found[0]) if found else None
+                    row["value"] = json.dumps(source, ensure_ascii=False, separators=(",", ":"))
+                except (ValueError, TypeError, KeyError, normalize.NormalizeError):
+                    row["value"] = str(normalize.redact_secrets(row["value"]))[:8000]
     return {**result, "entity": entity, "section": section}
 
 

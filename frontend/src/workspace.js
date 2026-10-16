@@ -4,7 +4,7 @@ export const workspacePages = {
   assets: { label: '资产', english: 'ASSET INVENTORY', hint: '按主机聚合域名、IP 与网段，沿来源检查研究对象。' },
   services: { label: '服务与中间件', english: 'SERVICES', hint: '查看已观察到的服务与产品；未关联主机的对象单独分组。' },
   api: { label: 'API 接口', english: 'API EXPLORER', hint: '从主机到路径分组，筛选已导入的接口观测。' },
-  js: { label: 'JS 资源', english: 'JAVASCRIPT RESOURCES', hint: '已导入 .js / .mjs 地址索引。尚未提供内容版本管理与静态分析。' },
+  js: { label: 'JS 资源', english: 'JAVASCRIPT RESOURCES', hint: '查看已导入资源内容版本与保守静态调用候选。' },
   evidence: { label: 'Evidence 证据', english: 'EVIDENCE LIBRARY', hint: '包含历史证据。仅受管归档支持脱敏预览；原始定位与哈希始终可查。' },
   notes: { label: 'Notes 笔记', english: 'RESEARCH NOTES', hint: '现有 AI 发现通道中的笔记；沿用原有贡献链和撤销机制。' },
 }

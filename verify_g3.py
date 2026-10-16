@@ -535,6 +535,7 @@ NEGATIVES = {
                                      "https://schema.getpostman.com/json/collection"
                                      "/v1.0.0/collection.json"}, "item": []})],
     "har": ['{"entries": []}\n'],
+    "js-manifest": ['{"magpie_js":1,"url":"https://app.example.test/app.js","content":7}'],
     # tshark 这一条是**截断的导出**（数组没闭合）：它是这份格式在真实
     # 世界里最容易出现的坏形状（`tshark` 写到一半被 Ctrl-C / 磁盘满了）。
     "tshark": ['[{"_index": "x", "_source": {"layers": {"ip_ip_src": "10.0.0.5"'],
@@ -569,13 +570,13 @@ def section_a(parsers: dict) -> None:
     stage3 = sorted(set(parsers) - _STAGE2_TOOLS)
 
     # 这两个数**每加一个来源就要改一次**，这是刻意的：它们的用途是"发现机制还
-    # 活着吗、来源清单有没有多出没被看见的一个"。4.1 加了 `tshark`（12→13 /
-    # 10→11），4.3 加了 `fingerprint`（13→14 / 11→12），改这一行是一次
+    # 活着吗、来源清单有没有多出没被看见的一个"。之后每新增解析器都必须在这里
+    # 明确确认；JS 内容来源让 14→15 / 12→13，不能把旧数字留成隐式门槛。
     # **显式的确认** —— 与 `test_load_parsers_finds_
     # every_parser_and_retires_the_bridge` 里那份写死的清单同一条纪律。
     check(f"A1 发现机制给出 {len(parsers)} 个解析器，其中阶段 3 起新增 {len(stage3)} 个"
           f"（清单从代码算出来，不是手抄的）",
-          len(parsers) == 14 and len(stage3) == 12,
+          len(parsers) == 15 and len(stage3) == 13,
           f"全部={sorted(parsers)}；阶段 3={stage3}")
 
     problems = []

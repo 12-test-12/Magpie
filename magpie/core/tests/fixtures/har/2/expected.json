@@ -1,0 +1,405 @@
+{
+  "tool": "har",
+  "format_version": "2",
+  "input": "input.json",
+  "provenance": "真实形状的 HAR（浏览器导出的那一类），含一段刻意保留的明文凭据（header 与响应体里各一处），用来钉住「凭据一个字都不落库」那条硬线。",
+  "bad_lines": [],
+  "unknown_fields": {},
+  "records": [
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "api.example.com:443",
+      "display": "api.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "api.example.com/v2/pets",
+      "display": "api.example.com/v2/pets",
+      "attrs": {
+        "path_template": "/v2/pets"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "dst": [
+        "service",
+        "api.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path",
+      "value": "/v2/pets?limit=10&token=q-visible-token"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path_template",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "dst": [
+        "apischema",
+        "api.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.query.limit",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.query.token",
+      "value": "query"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "path",
+      "value": "/v2/pets"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "method",
+      "value": "POST"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "status",
+      "value": 201
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.name",
+      "value": "body"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "api.example.com/v2/pets"
+      ],
+      "field": "param.body.password",
+      "value": "body"
+    },
+    {
+      "type": "entity",
+      "kind": "apischema",
+      "key": "cdn.example.com",
+      "display": "cdn.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "cdn.example.com",
+      "display": "cdn.example.com"
+    },
+    {
+      "type": "entity",
+      "kind": "service",
+      "key": "cdn.example.com:443",
+      "display": "cdn.example.com:443",
+      "subtitle": "https"
+    },
+    {
+      "type": "entity",
+      "kind": "endpoint",
+      "key": "cdn.example.com/logo.png",
+      "display": "cdn.example.com/logo.png",
+      "attrs": {
+        "path_template": "/logo.png"
+      }
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "dst": [
+        "service",
+        "cdn.example.com:443"
+      ],
+      "rel": "served_by"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "path",
+      "value": "/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "path_template",
+      "value": "/logo.png"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "scheme",
+      "value": "https"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "port",
+      "value": 443
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "method",
+      "value": "GET"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "field": "status",
+      "value": 200
+    },
+    {
+      "type": "relation",
+      "src": [
+        "endpoint",
+        "cdn.example.com/logo.png"
+      ],
+      "dst": [
+        "apischema",
+        "cdn.example.com"
+      ],
+      "rel": "declared_in"
+    },
+    {
+      "type": "entity",
+      "kind": "flow",
+      "key": "https|-|api.example.com:443|2026-09-21T10:00:00Z",
+      "display": "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+      ],
+      "field": "request_count",
+      "value": 2
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+      ],
+      "field": "byte_count",
+      "value": 41
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+      ],
+      "field": "first_seen",
+      "value": "2026-09-21T10:00:00Z"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+      ],
+      "field": "last_seen",
+      "value": "2026-09-21T10:00:01Z"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "api.example.com",
+      "display": "api.example.com"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "flow",
+        "https|-|api.example.com:443|2026-09-21T10:00:00Z"
+      ],
+      "dst": [
+        "domain",
+        "api.example.com"
+      ],
+      "rel": "involves"
+    },
+    {
+      "type": "entity",
+      "kind": "flow",
+      "key": "https|-|cdn.example.com:443|2026-09-21T10:00:02Z",
+      "display": "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+      ],
+      "field": "request_count",
+      "value": 1
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+      ],
+      "field": "byte_count",
+      "value": 0
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+      ],
+      "field": "first_seen",
+      "value": "2026-09-21T10:00:02Z"
+    },
+    {
+      "type": "observation",
+      "entity_ref": [
+        "flow",
+        "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+      ],
+      "field": "last_seen",
+      "value": "2026-09-21T10:00:02Z"
+    },
+    {
+      "type": "entity",
+      "kind": "domain",
+      "key": "cdn.example.com",
+      "display": "cdn.example.com"
+    },
+    {
+      "type": "relation",
+      "src": [
+        "flow",
+        "https|-|cdn.example.com:443|2026-09-21T10:00:02Z"
+      ],
+      "dst": [
+        "domain",
+        "cdn.example.com"
+      ],
+      "rel": "involves"
+    }
+  ]
+}

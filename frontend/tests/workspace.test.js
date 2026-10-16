@@ -75,7 +75,7 @@ describe('bounded workspace navigation', () => {
     const wrapper = mount(View, {props: {category: 'js'}})
     await flushPromises()
     expect(wrapper.find('[role="alert"]').text()).toContain('offline')
-    expect(wrapper.text()).toContain('未执行 AST')
+    expect(wrapper.text()).toContain('不会执行 JavaScript')
     backend(() => response({...groups, rows: [], total: 0, entity_total: 0}))
     await wrapper.find('[role="alert"] button').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('没有符合条件的结果')

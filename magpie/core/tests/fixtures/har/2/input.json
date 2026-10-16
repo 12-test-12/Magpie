@@ -1,0 +1,77 @@
+{
+  "log": {
+    "version": "1.2",
+    "creator": { "name": "Chrome DevTools", "version": "141.0" },
+    "entries": [
+      {
+        "startedDateTime": "2026-09-21T10:00:00.100Z",
+        "time": 12.5,
+        "request": {
+          "method": "GET",
+          "url": "https://api.example.com/v2/pets?limit=10&token=q-visible-token",
+          "httpVersion": "HTTP/1.1",
+          "queryString": [
+            { "name": "limit", "value": "10" },
+            { "name": "token", "value": "q-visible-token" }
+          ],
+          "cookies": [],
+          "headers": [
+            { "name": "Accept", "value": "application/json" },
+            { "name": "Authorization", "value": "Bearer SECRET-SHOULD-NEVER-LAND" }
+          ],
+          "headersSize": 240,
+          "bodySize": 0
+        },
+        "response": {
+          "status": 200,
+          "statusText": "OK",
+          "httpVersion": "HTTP/1.1",
+          "cookies": [],
+          "headers": [{ "name": "Content-Type", "value": "application/json" }],
+          "content": {
+            "size": 41,
+            "mimeType": "application/json",
+            "text": "{\"password\":\"SECRET-SHOULD-NEVER-LAND\"}"
+          },
+          "redirectURL": "",
+          "headersSize": 120,
+          "bodySize": 41
+        },
+        "cache": {},
+        "timings": { "send": 1, "wait": 10, "receive": 1.5 },
+        "_resourceType": "xhr"
+      },
+      {
+        "startedDateTime": "2026-09-21T10:00:01.200Z",
+        "time": 30.0,
+        "request": {
+          "method": "POST",
+          "url": "https://api.example.com/v2/pets",
+          "queryString": [],
+          "postData": {
+            "mimeType": "application/x-www-form-urlencoded",
+            "params": [
+              { "name": "name", "value": "dog" },
+              { "name": "password", "value": "SECRET-SHOULD-NEVER-LAND" }
+            ]
+          }
+        },
+        "response": { "status": 201, "content": { "text": "created" } },
+        "cache": {},
+        "timings": {}
+      },
+      {
+        "startedDateTime": "2026-09-21T10:00:02.300Z",
+        "time": 5.0,
+        "request": {
+          "method": "GET",
+          "url": "https://cdn.example.com/logo.png",
+          "queryString": []
+        },
+        "response": { "status": 200 },
+        "cache": {},
+        "timings": {}
+      }
+    ]
+  }
+}

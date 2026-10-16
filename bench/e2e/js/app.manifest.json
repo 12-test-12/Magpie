@@ -1,0 +1,5 @@
+{
+  "magpie_js": 1,
+  "url": "https://app.example.test/assets/app.js",
+  "content": "// Synthetic local acceptance sample\nfetch('https://api.example.test/v1/profile?token=synthetic-value');\naxios.post('/api/v1/relative', {name:'demo'});\nfetch(`/api/v1/users/${userId}`);\n"
+}

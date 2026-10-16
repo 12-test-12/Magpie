@@ -6,7 +6,9 @@
     "dirsearch/1",
     "ffuf/1",
     "gau/1",
-    "katana/1"
+    "katana/1",
+    "har/2",
+    "js-manifest/1"
   ],
   "examples": [
     {

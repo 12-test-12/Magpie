@@ -73,12 +73,16 @@ HAR 与 Postman 都是 JSON，靠**顶层键**区分
 from __future__ import annotations
 
 from typing import Any, Iterable, Iterator
+import base64
+import binascii
 
 from .. import normalize
 from . import _json
 from ._apis import ApiSink
 from ._flows import FlowSink
-from .base import OfflineContext, Parser, ParseContext, Record
+from ..js_intelligence import is_js_resource
+from .js_manifest import _records as js_records
+from .base import OfflineContext, Parser, ParseContext, RawObservation, Record
 
 __all__ = ["ENTRY_FIELDS", "KNOWN_FIELDS", "REQUEST_FIELDS", "RESPONSE_FIELDS",
            "HarParser", "parse_text"]
@@ -111,7 +115,7 @@ RESPONSE_FIELDS: frozenset[str] = frozenset({
 
 class HarParser(Parser):
     tool = "har"
-    format_version = "1"
+    format_version = "2"
     known_fields = KNOWN_FIELDS
     #: 比契约低一档：抓包说的是"当时发生了什么"，一次 404 不代表这个接口不存在
     #: （反过来也一样 —— 一条三年前的记录不代表它现在还能用）。同 gau 的口径。
@@ -232,6 +236,39 @@ class HarParser(Parser):
                 *[(item.get("name"), {"in": "body"})
                   for item in _form_params(request.get("postData"))],
             ])
+        content = response.get("content") if isinstance(response, dict) else None
+        mime = content.get("mimeType", "") if isinstance(content, dict) else ""
+        try:
+            js_resource = is_js_resource(url.strip(), str(mime or ""))
+        except ValueError:
+            js_resource = False
+        if js_resource:
+            try:
+                identity = normalize.endpoint_identity(url.strip())
+            except (normalize.NormalizeError, ValueError):
+                ctx.on_bad_line(1, f"log.entries[{index}].request.url 不是可识别的 JS 资源 URL", "")
+                return
+            resource_key = str(identity["key"])
+            body = content.get("text") if isinstance(content, dict) else None
+            if isinstance(body, str):
+                encoding = content.get("encoding")
+                if encoding == "base64":
+                    try:
+                        body = base64.b64decode(body, validate=True).decode("utf-8")
+                    except (binascii.Error, UnicodeDecodeError):
+                        body = None
+                        yield RawObservation(entity_ref=("endpoint", resource_key), type="js_content_status",
+                                             value="base64_invalid")
+                elif encoding not in (None, ""):
+                    body = None
+                    yield RawObservation(entity_ref=("endpoint", resource_key), type="js_content_status",
+                                         value="unsupported_encoding")
+                if body is not None:
+                    yield from js_records(url.strip(), body, ctx,
+                                          f"$.log.entries[{index-1}].response.content.text")
+            else:
+                yield RawObservation(entity_ref=("endpoint", resource_key), type="js_content_status",
+                                     value="content_not_imported")
 
     def _flow(self, entry: dict, index: int, url: str, request: dict,
               response: Any, flows: FlowSink, ctx: ParseContext) -> Iterator[Record]:

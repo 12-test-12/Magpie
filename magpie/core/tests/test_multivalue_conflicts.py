@@ -170,7 +170,7 @@ def test_multi_method_and_multi_status_open_no_conflict(db, project, tmp_path):
                          "queryString": []},
              "response": {"status": 404}},
         ]}}, ensure_ascii=False)))
-    assert report["parser"] == "har@1", report
+    assert report["parser"] == "har@2", report
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert open_conflicts(db, project) == []
 
@@ -253,6 +253,14 @@ def test_the_declaration_is_narrow(db, project, tmp_path):
         # 成对出现，是逐次遭遇的证据（真库 125 条假冲突的根因）。
         ("observation_field", "scheme"),
         ("observation_field", "port"),
+        # 0.24.0 JS content versions/candidates and API back-references each have
+        # multiple independently contributed values on the same endpoint.
+        ("observation_field", "js_content_version"),
+        ("observation_field", "js_candidate"),
+        ("observation_field", "js_content_status"),
+        ("observation_field", "js_static_method"),
+        ("observation_field", "js_static_param"),
+        ("observation_field", "js_source_ref"),
     }, sorted(declared)
     # 声明表里每一行都必须带理由 —— 一条说不出理由的声明不该进得来。
     assert not [r for r in db.execute(

@@ -30,15 +30,16 @@ nuclei。各步的用例集中在文件后半对应的小节里（"与 httpx 撞
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from magpie.core import ingest, normalize, ops, scan, store
+from magpie.core import ingest, normalize, ops, scan, store, workspace
 from magpie.core.parsers import base, curl, dirsearch, domainlist, ffuf, \
-    fingerprint, gau, har, httpx, katana, nmap, nuclei, openapi, postman, tshark
+    fingerprint, gau, har, httpx, js_manifest, katana, nmap, nuclei, openapi, postman, tshark
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 KINDS = FIXTURES / "kinds"
@@ -134,6 +135,7 @@ GOLDEN = [("domainlist", domainlist.DomainListParser),
           ("openapi", openapi.OpenapiParser),
           ("postman", postman.PostmanParser),
           ("har", har.HarParser),
+          ("js-manifest", js_manifest.JsManifestParser),
           # 4.1 的第二个流量来源。它与 har **共用**会话摘要那一半实现
           # （`_flows.py`），但取的是另一种输入形状：一份包列表（顶层是数组），
           # 而 har 的顶层是对象。
@@ -726,7 +728,7 @@ def test_load_parsers_finds_every_parser_and_retires_the_bridge():
     assert source == "magpie.core.parsers"
     assert [p.tool for p in parsers] == [
         CURL_TOOL, "dirsearch", "domainlist", "ffuf", "fingerprint", "gau",
-        "har", "httpx", "katana", "nmap", "nuclei", "openapi", "postman",
+        "har", "httpx", "js-manifest", "katana", "nmap", "nuclei", "openapi", "postman",
         "tshark"]
 
 
@@ -1605,6 +1607,49 @@ def _obs_values(db, project_id: int, kind: str, key: str, field: str) -> list:
         "   AND o.semantic_field=?", (project_id, kind, key, field)))
 
 
+def test_js_content_versions_are_multivalue_and_undo_scoped(db, project, tmp_path):
+    first = _write(tmp_path, "app-v1.json", json.dumps({"magpie_js": 1,
+        "url": "https://app.example.test/app.js",
+        "content": "fetch('https://api.example.test/v1/items');"}))
+    second = _write(tmp_path, "app-v2.json", json.dumps({"magpie_js": 1,
+        "url": "https://app.example.test/app.js",
+        "content": "fetch('https://api.example.test/v2/items'); fetch('/relative');"}))
+    one = ingest.ingest_file(db, options(db, project, tmp_path), first)
+    two = ingest.ingest_file(db, options(db, project, tmp_path), second)
+    key = "app.example.test/app.js"
+    versions = [json.loads(v) for v in _obs_values(db, project, "endpoint", key, "js_content_version")]
+    assert {v["sha256"] for v in versions} == {
+        hashlib.sha256("fetch('https://api.example.test/v1/items');".encode()).hexdigest(),
+        hashlib.sha256("fetch('https://api.example.test/v2/items'); fetch('/relative');".encode()).hexdigest(),
+    }
+    assert len(_obs_values(db, project, "endpoint", key, "js_candidate")) == 3
+    assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=? AND kind='value_conflict' AND state='open'", (project,)).fetchone()[0] == 0
+    listing = workspace.browse(db, project, category="js", mode="list")
+    resource = next(row for row in listing["rows"] if row["entity_key"] == key)
+    assert resource["js_content"]["candidate_count"] == 2
+    detail = workspace.entity_detail(db, project, resource["id"], section="js")
+    assert detail["rows"][0]["semantic_field"] == "js_content_version"
+    api_listing = workspace.browse(db, project, category="api", mode="list")
+    api_row = next(row for row in api_listing["rows"]
+                   if row["entity_key"] == "api.example.test/v1/items")
+    api_detail = workspace.entity_detail(db, project, api_row["id"], section="observations")
+    source_ref_row = next(row for row in api_detail["rows"]
+                          if row["semantic_field"] == "js_source_ref")
+    source_ref = json.loads(source_ref_row["value"])
+    assert source_ref["resource_id"] == resource["id"]
+    assert source_ref["content_sha256"] == versions[0]["sha256"] or source_ref["content_sha256"] in {
+        version["sha256"] for version in versions}
+    assert source_ref["record_path"] == "$.content"
+    candidate_row = next(row for row in detail["rows"] if row["semantic_field"] == "js_candidate")
+    candidate = json.loads(candidate_row["value"])
+    assert candidate["target_id"] == api_row["id"]
+    ops.undo(db, job_id=two["job_id"], actor="test")
+    assert len(_obs_values(db, project, "endpoint", key, "js_content_version")) == 1
+    assert len(_obs_values(db, project, "endpoint", key, "js_candidate")) == 1
+    ops.redo(db, job_id=two["job_id"], actor="test")
+    assert len(_obs_values(db, project, "endpoint", key, "js_candidate")) == 3
+
+
 def test_endpoint_folding_merges_the_identity_and_keeps_every_raw_path(db, project,
                                                                       tmp_path):
     """**本步的核心交付标准**：三个 id 一个实体，三条原始路径逐条可见。
@@ -1987,7 +2032,7 @@ def test_apischema_four_sources_reach_exactly_one_entity(db, project, tmp_path):
         path = tmp_path / f"{tool}-{filename}"
         path.write_bytes((FIXTURES / tool / "1" / filename).read_bytes())
         report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-        assert report["parser"] == f"{tool}@1", report
+        assert report["parser"] == f"{tool}@{'2' if tool == 'har' else '1'}", report
         assert report["state"] in ("done", "partial"), report
         assert report["reconcile"]["ok"], report["reconcile"]
 
@@ -2150,12 +2195,23 @@ def test_apischema_multi_status_from_traffic_opens_no_conflict(db, project,
              "response": {"status": 404}},
         ]}}, ensure_ascii=False))
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "har@1", report
+    assert report["parser"] == "har@2", report
     assert _obs_values(db, project, "endpoint", "api.example.com/p",
                        "status") == ["200", "404"]
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert db.execute("SELECT COUNT(*) FROM inbox_items WHERE project_id=?",
                       (project,)).fetchone()[0] == 0
+
+
+def test_har_v2_absolute_ip_url_registers_ip_producer():
+    records, _ = parse_with(har.HarParser, [json.dumps({"log": {"version": "1.2",
+        "entries": [{"request": {"method": "GET", "url": "https://192.0.2.55/app.js"},
+                     "response": {"content": {"mimeType": "application/javascript",
+                                                "text": "fetch('/relative')"}}}]}})])
+    assert any(isinstance(record, base.RawEntity) and record.kind == "ip"
+               and record.key == "192.0.2.55" for record in records)
+    ip_spec = next(spec for spec in base.KIND_REGISTRY if spec.kind == "ip")
+    assert "har@2" in ip_spec.produced_by
 
 
 def test_apischema_parameter_tree_is_one_observation_per_parameter(db, project,

@@ -796,7 +796,7 @@ def test_flow_identity_is_registered_with_its_three_parts(db):
     assert row["lens"] == "traffic" and row["lens"] in base.LENSES, row["lens"]
     assert row["identity_rule"].strip()
     assert row["fixture_path"] == "fixtures/kinds/flow.json"
-    assert json.loads(row["produced_by"]) == ["har@1", "tshark@1"]
+    assert json.loads(row["produced_by"]) == ["har@1", "tshark@1", "har@2"]
     doc = json.loads((FIXTURES / "kinds" / "flow.json").read_text(encoding="utf-8"))
     assert doc["identity_rule"] == row["identity_rule"]
     # 夹具里那两条**必被拒**的样例之一：两端都不知道地址。
