@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "AddRetestBody": {
+        "properties": {
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "关联复测证据 ID",
+            "title": "Evidence Id"
+          },
+          "notes": {
+            "description": "复测记录与现象说明",
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Notes",
+            "type": "string"
+          },
+          "status": {
+            "description": "复测结论：still_vulnerable/resolved/inconclusive",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "notes"
+        ],
+        "title": "AddRetestBody",
+        "type": "object"
+      },
       "Body_post_upload_api_v1_uploads_post": {
         "properties": {
           "files": {
@@ -20,6 +54,90 @@
           }
         },
         "title": "Body_post_upload_api_v1_uploads_post",
+        "type": "object"
+      },
+      "CreateManualFindingBody": {
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "漏洞描述",
+            "title": "Description"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "关联证据 ID",
+            "title": "Evidence Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "处置判定说明",
+            "title": "Reason"
+          },
+          "severity": {
+            "description": "严重级别：critical/high/medium/low/info",
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "default": "confirmed",
+            "description": "初始处置状态",
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "description": "目标实体 ID",
+            "title": "Target Id",
+            "type": "integer"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "模板 ID",
+            "title": "Template Id"
+          },
+          "title": {
+            "description": "漏洞标题",
+            "maxLength": 300,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "severity",
+          "target_id"
+        ],
+        "title": "CreateManualFindingBody",
         "type": "object"
       },
       "EntityPatch": {
@@ -519,6 +637,57 @@
         "title": "RunBody",
         "type": "object"
       },
+      "TriageFindingBody": {
+        "properties": {
+          "duplicate_of_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "主漏洞 ID（重复项使用）",
+            "title": "Duplicate Of Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "判定理由与说明",
+            "title": "Reason"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "严重级别覆盖",
+            "title": "Severity"
+          },
+          "status": {
+            "description": "处置状态：candidate/confirmed/false_positive/duplicate/inconclusive/resolved",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TriageFindingBody",
+        "type": "object"
+      },
       "UnmergeBody": {
         "description": "路径上的实体只是**入口**（它必须真的参与过这个事件），撤销的对象是事件。",
         "properties": {
@@ -583,7 +752,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.25.0"
+    "version": "0.26.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4040,6 +4209,26 @@
           },
           {
             "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Severity",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "cursor",
             "required": false,
             "schema": {
@@ -4240,6 +4429,311 @@
           }
         },
         "summary": "证据定位与受管归档的脱敏预览"
+      }
+    },
+    "/api/v1/workspace/findings": {
+      "post": {
+        "operationId": "workspace_create_finding_api_v1_workspace_findings_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateManualFindingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Workspace Create Finding Api V1 Workspace Findings Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "人工创建漏洞发现"
+      }
+    },
+    "/api/v1/workspace/findings/{finding_id}": {
+      "get": {
+        "operationId": "workspace_get_finding_api_v1_workspace_findings__finding_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Workspace Get Finding Api V1 Workspace Findings  Finding Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "获取漏洞发现详情、处置与复测记录"
+      }
+    },
+    "/api/v1/workspace/findings/{finding_id}/retest": {
+      "post": {
+        "operationId": "workspace_add_retest_api_v1_workspace_findings__finding_id__retest_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddRetestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Workspace Add Retest Api V1 Workspace Findings  Finding Id  Retest Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "记录人工复测结果与证据"
+      }
+    },
+    "/api/v1/workspace/findings/{finding_id}/triage": {
+      "post": {
+        "operationId": "workspace_triage_finding_api_v1_workspace_findings__finding_id__triage_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TriageFindingBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Workspace Triage Finding Api V1 Workspace Findings  Finding Id  Triage Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "更新漏洞处置状态与理由"
+      }
+    },
+    "/api/v1/workspace/report": {
+      "get": {
+        "operationId": "workspace_export_report_api_v1_workspace_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "markdown",
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Workspace Export Report Api V1 Workspace Report Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "导出安全研究与发现报告"
       }
     },
     "/api/v1/workspace/summary": {

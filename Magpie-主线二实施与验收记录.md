@@ -1,6 +1,6 @@
 # Magpie 主线二实施与验收记录
 
-更新：2026-10-16。当前版本：0.25.0；工作包 C 首批验收版本为 0.23.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。下文第 1–5 节保留首批验收口径，第 6 节记录 JS 与 Endpoint 身份/业务详情增量。
+更新：2026-10-17。当前版本：0.26.0；工作包 C 首批验收版本为 0.23.0，工作包 E 验收版本为 0.25.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。下文第 1–5 节保留首批验收口径，第 6 节记录工作包 E（JS 与 Endpoint 身份/业务详情），第 7 节记录工作包 F（Finding 独立生命周期、人工复测与报告导出）。
 
 ## 1. 本次范围与理由
 
@@ -185,10 +185,49 @@
 
 本批边界：旧折叠实体不能自动精确拆分，需重新导入含明确请求关联的来源生成新贡献。完整请求样本入口目前来自 HAR；OpenAPI/Postman/curl 保留声明、参数与原观察/证据，没有冒充完整请求样本或认证检查。`apischema` 仍沿用既有起源身份，本批只迁移 Endpoint；JS 仍是有限规则分析，未实现完整 AST、变量传播或 SourceMap。严格性能基准与 Python 3.13 验证未执行。
 
-1. 工作包 E：Endpoint 身份迁移、方法/样本/参数/凭据事实与 JS 来源组织已实现，主代理全量与隔离浏览器验收通过。
-2. 工作包 E：本批 JS 本地内容关联、版本、有限规则提取与偏移证据已通过本地浏览器验收；裸 JS 手工关联、完整 AST / SourceMap 和更广的静态语法分析仍待后续。
-3. 工作包 F：独立 Finding / Note 的生命周期、关联、人工复测与报告。工具命中不自动升级为确认漏洞。
-4. 既有 Jobs / Inbox / 风险等高级页保留原行为与页面容量；本批有界查询覆盖的是新工作台页面，不声称旧高级页全部已经分页重做。
-5. 严格性能基准与 Python 3.13 验证尚未执行。后续按真实规模评估索引；不引入主动扫描、自动复测或 Agent / Planner / Worker。
+## 7. 工作包 F：Finding 独立生命周期、人工复测与报告导出（0.26.0 交付）
 
-代码直接保存在 `D:\Magpie`，整理为本地提交；远程推送由用户执行。后续会话先读 AGENTS、优化方案与两份验收记录，避免依赖对话记忆。
+### 范围与核心机制
+
+- **Schema Migration 017**：新增 `finding_triage` 与 `finding_retests` 表。
+  - `finding_triage`：记录研判状态（`candidate` 候选线索、`confirmed` 确认漏洞、`false_positive` 误报排除、`duplicate` 重复记录、`resolved` 已修复）、严重级别（`critical`/`high`/`medium`/`low`/`info`）、判定理由、重复指向 `duplicate_of_id`、处置人与处置时间。
+  - `finding_retests`：记录人工复测历史（`still_vulnerable` 仍可利用、`resolved` 已修复、`inconclusive` 结论不确定）、说明、关联证据 `evidence_id`、测试人与时间。
+  - 工具扫描导入（如 Nuclei、Gitleaks、Semgrep）默认进入 `candidate` 候选线索状态，绝不自动升级为确认漏洞；处置人通过研判显式确认。
+- **写路径与事实一致性**：
+  - 新增 `ops.create_manual_finding`：支持在资产（Host、Service、Endpoint 等）上人工录入漏洞，自动产生 `vuln` 实体与 `found_on` 关系，自动记录初始手工证据，完整支持 `ops.undo` 与 `ops.redo`。
+  - 新增 `ops.triage_finding` 与 `ops.add_retest`：处置研判与人工复测，复测结果自动联动更新 triage 状态；防止自重复引用（`duplicate_of_id != finding_id`）。
+  - `store.ACTION_NAMESPACE` 登记 `finding.triage` 与 `finding.retest` 审计动作；`add_relation` 扩展显式 `src_kind` 与 `dst_kind` 参数，避免非 host 关系的类型推断泄露。
+- **工作台与 API 路由**：
+  - `workspace.browse` 支持 `category="findings"` 列表浏览，以及 `status`（研判状态）和 `severity`（严重度）分面过滤。
+  - `workspace.finding_detail` 返回漏洞详情、目标资产锚点、初始证据、研判处置状态、复测历史记录及可选证据关联。
+  - `workspace.generate_report` 导出完整安全研究与漏洞发现报告，支持 Markdown 与 JSON 双格式，包含确认漏洞、复测审计追踪、研究笔记及免责声明。
+  - Notes 增强：列表附带关联目标跳转锚点与证据索引。
+  - HTTP 路由严格遵从 `SQL-FREE` 红线，使用标准 `ctx.writer.submit` 单写队列；OpenAPI 契约快照已刷新并通过校验。
+- **前端工作台交互**：
+  - 侧边业务导航新增「漏洞与发现 (Findings)」专属入口。
+  - 列表支持状态与严重度徽章、分面过滤、有界分页与详情联动展开。
+  - 详情页提供「处置研判 (Triage)」表单（状态流转、严重度调整、误报理由、重复指向）与「复测记录 (Retests)」历史时间线。
+  - 复测表单显式展示**红线警示**：网络不可达、超时或端口关闭严禁判定为已修复（resolved），必须选择结论不确定（inconclusive）并补充说明。
+  - 支持弹窗新建人工发现、弹窗导出 Markdown/JSON 报告并一键复制或下载。
+
+### 数据与安全约束
+
+- **零主动外联**：所有漏洞记录与复测证据均来源于本地导入或人工录入，无任何网络请求、socket 连接或主动扫描。
+- **无独立竞争事实库**：人工漏洞与复测基于既有 Entity / Observation / Relation / Evidence / Contribution 体系，受 Undo / Redo 和完整性校验管理。
+- **复测判定红线**：前端和文档明确禁止将网络不可达、超时或服务迁移作为“已修复”证据。
+
+### 自动化测试与验证
+
+- 执行 `.venv-dev\Scripts\python.exe check.py`，**退出码 0**：
+  - 11 条静态红线全部通过（包含 C2/C3/R6/R7/R7-ASSETS/PARSE-RO/PARSE-NORM/FLOOR/READONLY/READONLY-REVERSE/SQL-FREE）。
+  - 后端单元测试与六组设计验收 Gate（G2/G3/G4/G5）全部通过。
+- 执行 `npm test`（Vitest）：25 个测试文件，**167 项前端测试全绿**。
+- `npm run build` 成功，前端静态资源已完整同步至 `magpie/api/web/`。
+- 本地合成工作区：提供 `bench/findings_demo.py`，可通过 `.venv-dev\Scripts\python.exe dev.py --workspace findings-workspace` 启动本地隔离浏览器验收。
+
+### 局限与后续说明
+
+1. 本批交付完成方案工作包 F（研究闭环：Finding 生命周期、人工复测与报告导出）。
+2. 不引入 Agent / Planner / Worker 自主探测；复测仍需安全研究员人工发起并导入证据。
+3. 严格性能基准（1M 行）与 Python 3.13 验证按规范保留原基线状态；本地开发使用 Python 3.12.4。
+4. 代码保留在本地分支，不执行 `git push`，由用户自行审查并推送到远端仓库。

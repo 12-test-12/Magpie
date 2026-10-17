@@ -104,6 +104,7 @@ _QUERY_STATUS: dict[str, int] = {
     # 在调用方那里变成同一句话。
     "E_PIPELINE_NOT_FOUND": 404,
     "E_PIPELINE_RUN_NOT_FOUND": 404,
+    "E_UNSUPPORTED_FORMAT": 400,
 }
 
 #: 路由上的读查询把 `QueryError` 翻成 `ApiError` 的**唯一装饰器**。
@@ -165,11 +166,13 @@ def workspace_summary(project: str | None = None,
 def workspace_browse(project: str | None = None, category: str = "assets",
                      mode: str = "host", q: str = "", host: str | None = None,
                      prefix: str | None = None, method: str = "", source: str = "",
+                     status: str = "", severity: str = "",
                      cursor: str | None = None, limit: int = 50,
                      conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(workspace.browse(conn, _resolve_project(conn, project), category=category,
                                mode=mode, q=q, host=host, prefix=prefix, method=method,
-                               source=source, cursor=cursor, limit=limit))
+                               source=source, status=status, severity=severity,
+                               cursor=cursor, limit=limit))
 
 
 @router.get("/workspace/entities/{entity_id}", summary="有界实体详情与有效证据链")
@@ -188,6 +191,106 @@ def workspace_evidence(evidence_id: int, request: Request, project: str | None =
                        conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(workspace.evidence_detail(conn, _resolve_project(conn, project), evidence_id,
                                         _ctx(request).data_dir))
+
+
+class CreateManualFindingBody(BaseModel):
+    title: str = Field(..., max_length=300, description="漏洞标题")
+    severity: str = Field(..., description="严重级别：critical/high/medium/low/info")
+    target_id: int = Field(..., description="目标实体 ID")
+    template_id: str | None = Field(None, max_length=100, description="模板 ID")
+    description: str | None = Field(None, max_length=5000, description="漏洞描述")
+    evidence_id: int | None = Field(None, description="关联证据 ID")
+    status: str = Field("confirmed", description="初始处置状态")
+    reason: str | None = Field(None, max_length=1000, description="处置判定说明")
+
+
+class TriageFindingBody(BaseModel):
+    status: str = Field(..., description="处置状态：candidate/confirmed/false_positive/duplicate/inconclusive/resolved")
+    severity: str | None = Field(None, description="严重级别覆盖")
+    reason: str | None = Field(None, max_length=2000, description="判定理由与说明")
+    duplicate_of_id: int | None = Field(None, description="主漏洞 ID（重复项使用）")
+
+
+class AddRetestBody(BaseModel):
+    status: str = Field(..., description="复测结论：still_vulnerable/resolved/inconclusive")
+    notes: str = Field(..., min_length=1, max_length=5000, description="复测记录与现象说明")
+    evidence_id: int | None = Field(None, description="关联复测证据 ID")
+
+
+@router.post("/workspace/findings", summary="人工创建漏洞发现")
+@_translating
+def workspace_create_finding(body: CreateManualFindingBody, request: Request,
+                             project: str | None = None,
+                             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.create_manual_finding(
+            conn_, project_id=project_id, title=body.title, severity=body.severity,
+            target_entity_id=body.target_id, template_id=body.template_id,
+            description=body.description, evidence_id=body.evidence_id,
+            status=body.status, reason=body.reason, actor="api")
+
+    result = ctx.writer.submit(f"create_manual_finding {body.title}", task).result(timeout=60)
+    return ok(result, project_id=project_id)
+
+
+@router.get("/workspace/findings/{finding_id}", summary="获取漏洞发现详情、处置与复测记录")
+@_translating
+def workspace_get_finding(finding_id: int, project: str | None = None,
+                          conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(workspace.finding_detail(conn, _resolve_project(conn, project), finding_id))
+
+
+@router.post("/workspace/findings/{finding_id}/triage", summary="更新漏洞处置状态与理由")
+@_translating
+def workspace_triage_finding(finding_id: int, body: TriageFindingBody, request: Request,
+                             project: str | None = None,
+                             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.triage_finding(
+            conn_, project_id=project_id, finding_id=finding_id,
+            status=body.status, severity=body.severity,
+            reason=body.reason, duplicate_of_id=body.duplicate_of_id, actor="api")
+
+    result = ctx.writer.submit(f"triage_finding {finding_id}", task).result(timeout=60)
+    return ok(result, project_id=project_id)
+
+
+@router.post("/workspace/findings/{finding_id}/retest", summary="记录人工复测结果与证据")
+@_translating
+def workspace_add_retest(finding_id: int, body: AddRetestBody, request: Request,
+                         project: str | None = None,
+                         conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    project_id = _resolve_project(conn, project)
+    ctx = _ctx(request)
+
+    def task(conn_: sqlite3.Connection) -> dict[str, Any]:
+        return ops.add_retest(
+            conn_, project_id=project_id, finding_id=finding_id,
+            status=body.status, notes=body.notes,
+            evidence_id=body.evidence_id, actor="api")
+
+    result = ctx.writer.submit(f"add_retest {finding_id}", task).result(timeout=60)
+    return ok(result, project_id=project_id)
+
+
+@router.get("/workspace/report", summary="导出安全研究与发现报告")
+@_translating
+def workspace_export_report(project: str | None = None, format: str = "markdown",
+                            conn: sqlite3.Connection = Depends(get_conn)) -> Any:
+    pid = _resolve_project(conn, project)
+    fmt = format.lower()
+    if fmt not in ("markdown", "json"):
+        raise query.QueryError("E_UNSUPPORTED_FORMAT", "报告格式仅支持 markdown 或 json")
+    report = workspace.generate_report(conn, pid, format=fmt)
+    if fmt == "markdown":
+        return PlainTextResponse(report, media_type="text/markdown; charset=utf-8")
+    return ok(report)
 
 
 def _resolve_project(conn: sqlite3.Connection, project: str | int | None) -> int:

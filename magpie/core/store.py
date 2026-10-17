@@ -351,6 +351,7 @@ ACTION_NAMESPACE = frozenset({
     # "撤掉了几条贡献"与"把几个实体的状态放回去了"是两件事，混在一个 action 里
     # 就没法只查其中一件。
     "lifecycle.set", "work.revert", "work.replay",
+    "finding.triage", "finding.retest",
 })
 
 

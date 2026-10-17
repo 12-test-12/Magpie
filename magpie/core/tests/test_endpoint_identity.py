@@ -83,7 +83,7 @@ def test_v15_migration_preserves_folded_facts_merge_and_inactive_job(monkeypatch
 
         assert 16 in [item["version"] for item in applied]
         assert _legacy_snapshot(conn) == before
-        assert migrate.current_version(conn) == 16
+        assert migrate.current_version(conn) == len(migrate.MIGRATIONS)
         assert conn.execute(
             "SELECT COUNT(*) FROM multivalue_fields WHERE semantic_field='http_request_sample'"
         ).fetchone()[0] == 1
@@ -112,7 +112,7 @@ def test_v16_registry_failure_rolls_back_schema_and_retries(monkeypatch):
 
         conn.execute("DROP TRIGGER reject_v16")
         assert 16 in [item["version"] for item in migrate.migrate(conn)]
-        assert migrate.current_version(conn) == 16
+        assert migrate.current_version(conn) == len(migrate.MIGRATIONS)
         assert migrate.migrate(conn) == []
     finally:
         conn.close()

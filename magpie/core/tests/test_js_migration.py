@@ -25,7 +25,7 @@ def test_v14_upgrade_preserves_native_import_and_undo(tmp_path, monkeypatch):
 
     original = facts()
     store.init_db(conn)
-    assert migrate.current_version(conn) == 16
+    assert migrate.current_version(conn) == len(migrate.MIGRATIONS)
     assert facts() == original
     assert conn.execute("SELECT COUNT(*) FROM multivalue_fields WHERE semantic_field='js_candidate'").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM multivalue_fields WHERE semantic_field='http_request_sample'").fetchone()[0] == 1

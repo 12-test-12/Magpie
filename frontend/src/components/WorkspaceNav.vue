@@ -5,7 +5,7 @@ import { store } from '../store.js'
 const research = [
   ['overview', '◈', '总览', 'Overview'], ['assets', '▦', '资产', 'Assets'],
   ['services', '⊞', '服务与中间件', 'Services'], ['api', '↗', 'API 接口', 'API'],
-  ['js', '⌘', 'JS 资源', 'JavaScript'], ['vuln', '◇', '工具发现', 'Findings'],
+  ['js', '⌘', 'JS 资源', 'JavaScript'], ['findings', '◇', '漏洞与发现', 'Findings'],
   ['evidence', '▤', '证据', 'Evidence'], ['jobs', '↓', '导入历史', 'Imports'],
   ['notes', '≡', '研究笔记', 'Notes'],
 ]

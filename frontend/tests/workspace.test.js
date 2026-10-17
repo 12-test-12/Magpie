@@ -115,4 +115,67 @@ describe('bounded workspace navigation', () => {
     expect(wrapper.text()).not.toContain('JS 内容与候选')
     wrapper.unmount()
   })
+
+  it('findings workspace shows status badges and opens triage and retest tabs', async () => {
+    const findingRows = {
+      rows: [
+        {
+          id: 50, kind: 'vuln', entity_key: 'cve-2023-0001@target.example.test',
+          display_key: 'cve-2023-0001@target.example.test', title: 'SQL 注入漏洞',
+          status: 'confirmed', severity: 'high', target_asset: { id: 10, kind: 'host', display: 'target.example.test' },
+          retests_count: 1, disposition_reason: '人工验证成功',
+        },
+      ],
+      total: 1, limit: 50, next_cursor: null,
+    }
+    const findingDetail = {
+      id: 50, kind: 'vuln', entity_key: 'cve-2023-0001@target.example.test',
+      title: 'SQL 注入漏洞', severity: 'high', status: 'confirmed',
+      target_asset: { id: 10, kind: 'host', display_key: 'target.example.test' },
+      triage: { status: 'confirmed', severity: 'high', disposition_reason: '人工验证成功', updated_at: '2026-10-17 12:00:00', updated_by: 'analyst' },
+      retests: [
+        { id: 1, status: 'still_vulnerable', notes: '第一轮验证复现', created_at: '2026-10-17 12:30:00', actor: 'tester' },
+      ],
+    }
+
+    global.fetch = vi.fn(async url => {
+      const parsed = new URL(String(url), 'http://local')
+      if (parsed.pathname.endsWith('/workspace/browse')) {
+        return response(parsed.searchParams.get('mode') === 'list' ? findingRows : groups)
+      }
+      if (parsed.pathname.endsWith('/workspace/findings/50')) {
+        return response(findingDetail)
+      }
+      if (parsed.pathname.endsWith('/workspace/entities/50')) {
+        return response({ entity: { id: 50, kind: 'vuln', display_key: 'SQL 注入漏洞' }, rows: [], total: 0, next_cursor: null })
+      }
+      return response({ entity: null, rows: [], total: 0, next_cursor: null })
+    })
+
+    const wrapper = mount(View, { props: { category: 'findings' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('工具扫描命中默认归为待核实')
+    expect(wrapper.text()).toContain('人工建发现')
+    expect(wrapper.text()).toContain('导出报告')
+
+    // Click all rows to list mode
+    await wrapper.findAll('button').find(b => b.text().includes('全部结果')).trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('SQL 注入漏洞')
+    expect(wrapper.text()).toContain('已确认')
+    expect(wrapper.text()).toContain('HIGH')
+
+    // Open detail
+    await wrapper.find('.row-link').trigger('click'); await flushPromises()
+    expect(wrapper.find('.workspace-detail').exists()).toBe(true)
+    expect(wrapper.text()).toContain('处置判定')
+    expect(wrapper.text()).toContain('人工复测')
+    expect(wrapper.text()).toContain('更新处置决策')
+
+    // Switch to retests tab
+    await wrapper.findAll('.detail-tabs button').find(b => b.text() === '人工复测').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('第一轮验证复现')
+    expect(wrapper.text()).toContain('网络超时、无法连接')
+
+    wrapper.unmount()
+  })
 })

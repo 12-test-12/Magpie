@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { post } from '../api.js'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { get, post } from '../api.js'
 import { store } from '../store.js'
 import { params, requestSlot } from '../workspace.js'
 
@@ -11,13 +11,80 @@ const cursor = ref(null), previous = ref([]), evidence = ref(null), note = ref('
 const slot = requestSlot(), previewSlot = requestSlot()
 const isEvidence = computed(() => props.row.kind === 'evidence')
 const isApiEndpoint = computed(() => props.category === 'api' && props.row.kind === 'endpoint')
+const isVuln = computed(() => props.category === 'findings' || props.row.kind === 'vuln')
 const entityId = computed(() => props.row.entity_id || props.row.id)
 const title = computed(() => detail.value?.entity?.display_key || props.row.display_key || detail.value?.entity?.entity_key || props.row.entity_key || `对象 ${entityId.value}`)
 const detailTabs = computed(() => isApiEndpoint.value
   ? [['samples', '请求样本'], ['parameters', '参数结构'], ['js_cross', 'JS 交叉来源'], ['observations', '全部观测'], ['relations', '关联'], ['evidence', '来源证据']]
   : props.category === 'js' && props.row.kind === 'endpoint'
     ? [['js', 'JS 内容与候选'], ['observations', '全部观测'], ['relations', '关联'], ['evidence', '来源证据']]
-    : [['observations', '观测'], ['relations', '关联'], ['evidence', '来源证据']])
+    : isVuln.value
+      ? [['triage', '处置判定'], ['retests', '人工复测'], ['observations', '观测'], ['relations', '关联'], ['evidence', '来源证据']]
+      : [['observations', '观测'], ['relations', '关联'], ['evidence', '来源证据']])
+
+const findingDetail = ref(null)
+const triageForm = reactive({ status: 'candidate', severity: 'medium', reason: '', duplicate_of_id: null })
+const triageSubmitting = ref(false), triageMessage = ref('')
+const retestForm = reactive({ status: 'still_vulnerable', notes: '', evidence_id: null })
+const retestSubmitting = ref(false), retestMessage = ref('')
+
+async function loadFinding() {
+  if (!isVuln.value) return
+  try {
+    const res = await get('/workspace/findings/' + entityId.value + '?' + params({ project: store.project }))
+    findingDetail.value = res
+    triageForm.status = res.triage?.status || 'candidate'
+    triageForm.severity = res.triage?.severity || 'medium'
+    triageForm.reason = res.triage?.disposition_reason || ''
+    triageForm.duplicate_of_id = res.triage?.duplicate_of_id || null
+  } catch (err) {
+    // fallback
+  }
+}
+
+async function submitTriage() {
+  triageSubmitting.value = true; triageMessage.value = ''
+  try {
+    await post('/workspace/findings/' + entityId.value + '/triage?' + params({ project: store.project }), {
+      status: triageForm.status,
+      severity: triageForm.severity,
+      reason: triageForm.reason.trim() || undefined,
+      duplicate_of_id: triageForm.status === 'duplicate' && triageForm.duplicate_of_id ? Number(triageForm.duplicate_of_id) : undefined,
+    })
+    triageMessage.value = '处置判定已更新并计入审计'
+    await loadFinding()
+    store.dataRevision++
+  } catch (err) {
+    triageMessage.value = err.message
+  } finally {
+    triageSubmitting.value = false
+  }
+}
+
+async function submitRetest() {
+  retestSubmitting.value = true; retestMessage.value = ''
+  if (!retestForm.notes.trim()) {
+    retestMessage.value = '复测记录说明不能为空'
+    retestSubmitting.value = false
+    return
+  }
+  try {
+    await post('/workspace/findings/' + entityId.value + '/retest?' + params({ project: store.project }), {
+      status: retestForm.status,
+      notes: retestForm.notes.trim(),
+      evidence_id: retestForm.evidence_id ? Number(retestForm.evidence_id) : undefined,
+    })
+    retestMessage.value = '复测记录已添加并联动处置状态'
+    retestForm.notes = ''
+    retestForm.evidence_id = null
+    await loadFinding()
+    store.dataRevision++
+  } catch (err) {
+    retestMessage.value = err.message
+  } finally {
+    retestSubmitting.value = false
+  }
+}
 function objectValue(value) { try { return JSON.parse(value) } catch { return null } }
 function observationLabel(field, value) {
   if (field === 'js_static_param') return 'JS 静态参数名候选'
@@ -75,8 +142,9 @@ async function saveNote() {
   finally { saving.value = false }
 }
 watch(() => [store.project, props.row.id, props.row.kind, props.category], () => {
-  section.value = isApiEndpoint.value ? 'samples' : props.category === 'js' && props.row.kind === 'endpoint' ? 'js' : 'observations'
+  section.value = isApiEndpoint.value ? 'samples' : props.category === 'js' && props.row.kind === 'endpoint' ? 'js' : isVuln.value ? 'triage' : 'observations'
   slot.cancel(); previewSlot.cancel(); cursor.value = null; previous.value = []; load()
+  if (isVuln.value) loadFinding()
 }, { immediate: true })
 onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
 </script>
@@ -98,6 +166,111 @@ onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
         <p class="notice">{{ evidence.preview_reason }}</p><pre v-if="evidence.preview !== null">{{ evidence.preview }}</pre><p v-if="evidence.preview_truncated" class="warn">预览已截断，仅展示前 8,000 字符。</p>
         <h3>有效贡献链</h3><p v-if="!evidence.contributions?.length" class="dim">当前没有有效贡献；可能属于已撤销的历史证据。</p><p v-for="item in evidence.contributions || []" :key="item.id" class="mono">{{ item.source }} · job #{{ item.job_id }} · {{ item.subject_kind }} #{{ item.subject_id }}</p><p v-if="evidence.contributions_truncated" class="warn">仅列出前 50 条有效贡献。</p>
       </section>
+
+      <section v-else-if="section === 'triage'" class="triage-section">
+        <div class="triage-box">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong>处置研判状态</strong>
+            <span :class="['badge-status', 'status-' + (findingDetail?.triage?.status || 'candidate')]">
+              {{ findingDetail?.triage?.status || 'candidate' }}
+            </span>
+          </div>
+          <p v-if="findingDetail?.title"><strong>漏洞标题</strong>：{{ findingDetail.title }}</p>
+          <p v-if="findingDetail?.target_asset">
+            <strong>影响目标</strong>：
+            <button class="ghost inline-link" @click="emit('select', { id: findingDetail.target_asset.id, kind: findingDetail.target_asset.kind })">
+              {{ findingDetail.target_asset.display_key }} ↗
+            </button>
+          </p>
+          <p v-if="findingDetail?.triage?.disposition_reason"><strong>研判依据</strong>：{{ findingDetail.triage.disposition_reason }}</p>
+          <p v-if="findingDetail?.triage?.duplicate_of_id">
+            <strong>主漏洞</strong>：
+            <button class="ghost inline-link" @click="emit('select', { id: findingDetail.triage.duplicate_of_id, kind: 'vuln' })">
+              #{{ findingDetail.triage.duplicate_of_id }} {{ findingDetail.triage.duplicate_of_display || '' }} ↗
+            </button>
+          </p>
+          <small v-if="findingDetail?.triage?.updated_at" class="dim">最后更新：{{ findingDetail.triage.updated_at }} · {{ findingDetail.triage.updated_by || 'analyst' }}</small>
+        </div>
+
+        <form class="modal-form" @submit.prevent="submitTriage" style="background:#19222a; padding:12px; border-radius:8px; border:1px solid #2b3941;">
+          <h3 style="margin:0 0 8px; font-size:12px;">更新处置决策</h3>
+          <label>处置状态
+            <select v-model="triageForm.status">
+              <option value="confirmed">已确认 (confirmed)</option>
+              <option value="candidate">待核实 (candidate)</option>
+              <option value="resolved">已修复 (resolved)</option>
+              <option value="false_positive">误报排除 (false_positive)</option>
+              <option value="duplicate">重复发现 (duplicate)</option>
+              <option value="inconclusive">存疑 (inconclusive)</option>
+            </select>
+          </label>
+          <label>严重级别
+            <select v-model="triageForm.severity">
+              <option value="critical">严重 (critical)</option>
+              <option value="high">高危 (high)</option>
+              <option value="medium">中危 (medium)</option>
+              <option value="low">低危 (low)</option>
+              <option value="info">提示 (info)</option>
+            </select>
+          </label>
+          <label v-if="triageForm.status === 'duplicate'">主漏洞 ID
+            <input v-model="triageForm.duplicate_of_id" type="number" placeholder="主漏洞实体 ID" required />
+          </label>
+          <label>判定理由 / 核实说明
+            <textarea v-model="triageForm.reason" placeholder="记录处置决策依据…" rows="3" />
+          </label>
+          <button type="submit" class="primary" :disabled="triageSubmitting" style="margin-top:6px;">
+            {{ triageSubmitting ? '保存中…' : '更新处置状态' }}
+          </button>
+          <p v-if="triageMessage" :class="{ 'error-state': triageMessage.includes('失败') || triageMessage.includes('error'), dim: !triageMessage.includes('失败') }" style="margin:6px 0 0; font-size:11px;">
+            {{ triageMessage }}
+          </p>
+        </form>
+      </section>
+
+      <section v-else-if="section === 'retests'" class="retest-section">
+        <div class="retest-warn">
+          ⚠️ 网络超时、无法连接或登录失效严禁判定为已修复（resolved）。复测必须基于明确的重现与修复验证证据。
+        </div>
+
+        <div v-if="findingDetail?.retests?.length" class="retests-history">
+          <div v-for="rt in findingDetail.retests" :key="rt.id" class="retest-item">
+            <div class="retest-item-header">
+              <span :class="['badge-status', 'status-' + rt.status]">{{ rt.status }}</span>
+              <span class="dim">{{ rt.created_at }} · {{ rt.actor }}</span>
+            </div>
+            <p style="margin:4px 0; font-size:11px; white-space:pre-wrap;">{{ rt.notes }}</p>
+            <div v-if="rt.evidence_id">
+              <button class="ghost inline-link" @click="openEvidence(rt.evidence_id)">查看复测关联证据 #{{ rt.evidence_id }} →</button>
+            </div>
+          </div>
+        </div>
+        <p v-else class="dim" style="margin-bottom:14px;">暂无人工复测记录。</p>
+
+        <form class="modal-form" @submit.prevent="submitRetest" style="background:#19222a; padding:12px; border-radius:8px; border:1px solid #2b3941;">
+          <h3 style="margin:0 0 8px; font-size:12px;">＋ 添加人工复测记录</h3>
+          <label>复测结论 *
+            <select v-model="retestForm.status">
+              <option value="still_vulnerable">漏洞仍存在 (still_vulnerable)</option>
+              <option value="resolved">已修复验证 (resolved)</option>
+              <option value="inconclusive">存疑/无法下结论 (inconclusive)</option>
+            </select>
+          </label>
+          <label>复测说明与现象 *
+            <textarea v-model="retestForm.notes" placeholder="记录复测操作、响应状态及验证依据…" rows="3" required />
+          </label>
+          <label>关联复测证据 ID
+            <input v-model="retestForm.evidence_id" type="number" placeholder="证据 ID (可选)" />
+          </label>
+          <button type="submit" class="primary" :disabled="retestSubmitting" style="margin-top:6px;">
+            {{ retestSubmitting ? '保存中…' : '提交复测记录' }}
+          </button>
+          <p v-if="retestMessage" :class="{ 'error-state': retestMessage.includes('失败') || retestMessage.includes('空'), dim: !retestMessage.includes('失败') }" style="margin:6px 0 0; font-size:11px;">
+            {{ retestMessage }}
+          </p>
+        </form>
+      </section>
+
       <template v-else-if="detail && !loading && !error">
         <p class="dim">{{ detail.total }} 条{{ section === 'samples' ? 'HTTP 请求样本' : section === 'parameters' ? '参数名记录' : section === 'js_cross' ? 'JS 交叉来源记录' : section === 'observations' ? '有效观测' : section === 'relations' ? '有效关系' : section === 'evidence' ? '有效来源证据' : 'JS 内容记录' }} · 当前页 {{ detail.rows.length }} 条</p>
         <p v-if="isApiEndpoint && section === 'samples' && !detail.total" class="notice">当前没有已导入并关联到此接口的 HTTP 请求样本，凭据状态未知。契约声明或静态 JS 候选不表示实际发送；历史折叠身份的逐请求样本也无法从旧事实恢复。</p>

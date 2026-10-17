@@ -12,6 +12,15 @@
 
 ---
 
+## 0.26.0 — Finding 独立生命周期、人工复测与研究报告导出
+
+- 新增 Finding 独立生命周期与处置记录（`candidate` / `confirmed` / `false_positive` / `duplicate` / `inconclusive` / `resolved`）。工具命中扫描结果默认归入 `candidate`，严禁未经核实自动标为已确认漏洞。
+- 新增人工复测记录表与处置联动；人工复测明确保留证据溯源（`evidence_id`）与结论说明，超时或网络不可达严禁判定为 `resolved`。
+- 新增 `POST /api/v1/workspace/findings`（人工新建漏洞与处置）、`GET /api/v1/workspace/findings/{id}`（获取漏洞详情）、`POST /api/v1/workspace/findings/{id}/triage`（更新处置与主重复关系）、`POST /api/v1/workspace/findings/{id}/retest`（录入复测）。
+- 新增 `GET /api/v1/workspace/report`：支持导出 Markdown 与 JSON 格式的审计报告，恪守单一事实源与脱敏审计纪律。
+- 工作台浏览支持 `findings` 类别，支持按 `status` 与 `severity` 分面筛选；Notes 页面支持关联目标与证据跳转。
+- 新增 Schema Migration 017 增加 `finding_triage` 与 `finding_retests` 表。
+
 ## 0.25.0 — Endpoint v2 身份与 API 业务详情
 
 - Endpoint 身份纳入 scheme、host、有效端口、精确路径和 method；历史折叠实体保留并标明无法精确还原，不由多值观测推造请求组合。

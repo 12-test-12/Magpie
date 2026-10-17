@@ -106,6 +106,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     # Endpoint v2: scheme + host + effective port + exact path + method. Historical
     # folded identities remain intact and visibly legacy; this migration is atomic.
     Migration(16, "endpoint_identity_v2", SCHEMA_DIR / "016_endpoint_identity_v2.sql", True),
+    # Finding lifecycle, analyst triage states and verifiable retests with evidence.
+    Migration(17, "finding_lifecycle", SCHEMA_DIR / "017_finding_lifecycle.sql"),
 )
 
 
