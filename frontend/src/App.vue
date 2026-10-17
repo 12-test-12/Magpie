@@ -9,6 +9,7 @@ import TopBar from './components/TopBar.vue'
 import LeftPanel from './components/LeftPanel.vue'
 import WorkspaceNav from './components/WorkspaceNav.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
+import TasksView from './views/TasksView.vue'
 import { workspacePages } from './workspace.js'
 import DetailPanel from './components/DetailPanel.vue'
 import LogDrawer from './components/LogDrawer.vue'
@@ -123,6 +124,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              （`showDetail`）只跟着 `explore` 出现，所以这里不用改它 ——
              它已经是对的。 -->
         <PipelineView v-else-if="store.view === 'pipeline'" />
+        <TasksView v-else-if="store.view === 'tasks'" />
         <WorkspaceView v-else-if="workspacePages[store.view]" :category="store.view" @import="importOpen = true" />
         <!-- 镜头页按 `lensKeys` 动态认领（见 activeLensLabel 的注释）。 -->
         <LensView v-else-if="store.lensKeys.includes(store.view)"

@@ -154,6 +154,9 @@ def summary(conn, project_id):
         "findings_resolved": resolved_findings,
         "candidates": kinds.get("secret", 0),
         "notes": notes_count,
+        "tasks_open": scalar("SELECT COUNT(*) FROM research_tasks WHERE project_id=? AND status IN ('pending','in_progress')"),
+        "tier1_assets": scalar("SELECT COUNT(*) FROM entity_research r JOIN entities e ON e.id=r.entity_id AND e.project_id=r.project_id WHERE r.project_id=? AND r.criticality=1 AND e.kind IN ('domain','host','ip') AND e.is_current=1 AND e.merged_into IS NULL"),
+        "tier1_api": scalar("SELECT COUNT(*) FROM entity_research r JOIN entities e ON e.id=r.entity_id AND e.project_id=r.project_id WHERE r.project_id=? AND r.criticality=1 AND e.kind='endpoint' AND e.is_current=1 AND e.merged_into IS NULL"),
         "evidence": scalar("SELECT COUNT(*) FROM evidence WHERE project_id=?"),
         "pending": scalar("SELECT COUNT(*) FROM inbox_items WHERE project_id=? AND state='open'"),
         "failed_jobs": scalar("SELECT COUNT(*) FROM jobs WHERE project_id=? AND state='failed'"),
@@ -163,24 +166,29 @@ def summary(conn, project_id):
 
 
 def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
-           prefix=None, method="", source="", status="", severity="", cursor=None, limit=50):
+           prefix=None, method="", source="", status="", severity="", tag="", criticality=None, cursor=None, limit=50):
     if category not in (*CATEGORIES, "evidence", "notes") or mode not in ("host", "path", "list"):
         raise query.QueryError("E_UNSUPPORTED_FILTER", "不支持的工作台分类或分组")
-    if len(q) > 300 or len(source) > 200 or len(method) > 30:
+    if len(q) > 300 or len(source) > 200 or len(method) > 30 or len(tag) > 60:
         raise query.QueryError("E_UNSUPPORTED_FILTER", "筛选文本过长")
+    if criticality is not None and criticality not in (1, 2, 3):
+        raise query.QueryError("E_UNSUPPORTED_FILTER", "重要度仅支持 Tier 1–3")
     _register(conn)
     signature = hashlib.sha256(json.dumps(
-        [project_id, category, mode, q, host, prefix, method, source, status, severity]).encode()).hexdigest()[:20]
+        [project_id, category, mode, q, host, prefix, method, source, status, severity, tag, criticality]).encode()).hexdigest()[:20]
     if category in ("evidence", "notes"):
-        if mode != "list" or host is not None or prefix is not None or method or source or status or severity:
+        if mode != "list" or host is not None or prefix is not None or method or source or status or severity or tag or criticality is not None:
             raise query.QueryError("E_UNSUPPORTED_FILTER", "证据和笔记仅支持文本搜索与列表分页")
         if category == "evidence":
             sql = ("SELECT v.id, 'evidence' AS kind, r.locator_uri AS entity_key,"
                    " v.recovery_state AS status, r.storage_state, v.locator, v.sha256, v.created_at"
                    " FROM evidence v JOIN raw_files r ON r.id=v.raw_file_id AND r.project_id=v.project_id"
                    " WHERE v.project_id=? AND (r.locator_uri LIKE ? ESCAPE '\\'"
-                   " OR v.sha256 LIKE ? ESCAPE '\\')")
-            params = [project_id, "%" + _literal(q) + "%", "%" + _literal(q) + "%"]
+                   " OR v.sha256 LIKE ? ESCAPE '\\' OR EXISTS ("
+                   " SELECT 1 FROM contributions c JOIN jobs j ON j.id=c.job_id AND j.project_id=c.project_id"
+                   " WHERE c.project_id=v.project_id AND c.evidence_id=v.id"
+                   " AND CASE WHEN json_valid(j.coverage_scope) THEN json_extract(j.coverage_scope,'$.file') END LIKE ? ESCAPE '\\'))")
+            params = [project_id, *["%" + _literal(q) + "%"] * 3]
         else:
             sql = ("SELECT o.id, 'note' AS kind, k.entity_key, o.value AS text,"
                    " o.entity_id, e.kind AS target_kind,"
@@ -195,6 +203,14 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
             params = [project_id, "%" + _literal(q) + "%", "%" + _literal(q) + "%"]
         result = _page(conn, sql, params, cursor=cursor, signature=signature, limit=limit)
         for row in result["rows"]:
+            if category == "evidence":
+                names = conn.execute(
+                    "SELECT DISTINCT json_extract(j.coverage_scope,'$.file') AS name FROM contributions c"
+                    " JOIN jobs j ON j.id=c.job_id AND j.project_id=c.project_id WHERE c.project_id=? AND c.evidence_id=?"
+                    " AND json_valid(j.coverage_scope) ORDER BY name LIMIT 6", (project_id, row['id'])).fetchall()
+                row['source_names'] = [str(normalize.redact_secrets(r['name'])) for r in names[:5] if r['name']]
+                row['source_names_truncated'] = len(names) > 5
+                row['display_key'] = ' · '.join(row['source_names']) or str(normalize.redact_secrets(row['entity_key']))
             if "text" in row:
                 row["text"] = str(normalize.redact_secrets(row["text"]))[:2000]
             if "target_display" in row:
@@ -203,6 +219,12 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
 
     params = [project_id, *CATEGORIES[category]]
     where = [ACTIVE, "e.kind IN (" + ",".join("?" for _ in CATEGORIES[category]) + ")"]
+    if tag:
+        where.append("EXISTS (SELECT 1 FROM entity_tags t WHERE t.project_id=e.project_id AND t.entity_id=e.id AND t.tag=? AND t.deleted_at IS NULL)")
+        params.append(tag)
+    if criticality is not None:
+        where.append("EXISTS (SELECT 1 FROM entity_research r WHERE r.project_id=e.project_id AND r.entity_id=e.id AND r.criticality=?)")
+        params.append(criticality)
     if category == "js":
         where.append("(ws_js(k.entity_key)=1 OR EXISTS (SELECT 1 FROM observations jo WHERE jo.project_id=e.project_id AND jo.entity_id=e.id AND jo.is_current=1 AND jo.semantic_field IN ('js_content_version','js_content_status')))")
     if category in ("findings", "vuln"):
@@ -254,6 +276,9 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
         result = _page(conn, sql, params, cursor=cursor, signature=signature, limit=limit)
         # Bounded enrichment; never pull the project's observation table into the browser.
         for row in result["rows"]:
+            row['tags'] = query.tags_of(conn, project_id, row['id'])
+            tier = conn.execute("SELECT criticality FROM entity_research WHERE project_id=? AND entity_id=?", (project_id, row['id'])).fetchone()
+            row['criticality'] = tier[0] if tier else None
             if row.get("kind") == "endpoint":
                 decoded = normalize.decode_endpoint_key(row["entity_key"])
                 row["identity_status"] = "exact_v2" if decoded else "legacy_folded"

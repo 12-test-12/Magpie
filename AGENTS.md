@@ -12,3 +12,4 @@
 - Keep the implementation plan and progress/verification record current so later sessions recover these decisions. Re-read them before continuing; do not promise infallible conversational memory.
 - Re-read both mainline acceptance records before continuing. Local commits are allowed for this delivery; the user will push to the remote themselves.
 - Python 3.13 is the preferred development interpreter per repository documentation. If unavailable, record the compatible interpreter actually used, and do not claim a 3.13 verification.
+- On 2026-10-17 the user explicitly requested work package G: project-wide quick search/jump, manual Research Tasks/Todo, and asset/Endpoint tags and Tier 1–3 criticality. Delivery and boundaries are recorded in section 9 of `Magpie-主线二实施与验收记录.md`; local asset enrichment and plugin contracts remain deferred. Tasks are human work records, not an autonomous execution system.

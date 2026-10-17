@@ -4,6 +4,7 @@ import { get, post } from '../api.js'
 import { store } from '../store.js'
 import { params, requestSlot } from '../workspace.js'
 import FindingPanel from './FindingPanel.vue'
+import EntityResearch from './EntityResearch.vue'
 
 const props = defineProps({ row: { type: Object, required: true }, category: { type: String, required: true } })
 const emit = defineEmits(['close', 'select'])
@@ -93,6 +94,7 @@ onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
     <h2 class="mono">{{ title }}</h2><div class="detail-actions"><span class="type-label">{{ props.row.kind }}</span><button class="ghost" @click="copy">复制名称</button></div>
     <nav v-if="!isEvidence" class="detail-tabs"><button v-for="[key,label] in detailTabs" :key="key" :class="{ active: section === key }" @click="tab(key)">{{ label }}</button></nav>
     <div class="detail-content">
+      <section v-if="row.kind === 'note'" class="notice"><h3>所选笔记</h3><p style="white-space:pre-wrap; overflow-wrap:anywhere">{{ row.text }}</p><p>{{ row.created_at }}</p><button class="ghost" @click="emit('select', {id:row.entity_id, kind:row.target_kind, category:row.target_kind === 'vuln' ? 'findings' : row.target_kind === 'endpoint' ? 'api' : 'assets'})">打开笔记关联对象 →</button></section>
       <p v-if="detail?.entity?.identity_notice" class="notice">{{ detail.entity.identity_notice }}</p>
       <p v-else-if="props.row.identity_status === 'legacy_folded'" class="notice">历史身份按路径模板折叠；确切路径、方法及每次请求组合无法从现存事实完整恢复。</p>
       <section v-if="detail?.entity?.merge_groups?.length" class="merge-identities"><h3>当前有效合并组</h3><div v-for="group in detail.entity.merge_groups" :key="group.event_id"><p>合并事件 #{{ group.event_id }} · {{ group.reason }}</p><ul><li v-for="member in group.members" :key="member.entity_id"><span class="mono">{{ member.display_key }}</span><small v-if="member.identity_status === 'legacy_folded'" class="warn">历史折叠身份</small></li></ul><p v-if="group.members_truncated || detail.entity.merge_groups_truncated" class="warn">合并成员列表有上限，当前仅展示部分成员。</p></div></section>
@@ -118,6 +120,8 @@ onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
         <div v-if="previous.length || detail.next_cursor" class="detail-pagination"><button :disabled="!previous.length" @click="turn(false)">上一页</button><button :disabled="!detail.next_cursor" @click="turn(true)">下一页</button></div>
       </template>
       <form v-if="!isEvidence" class="note-form" @submit.prevent="saveNote"><h3>记录研究线索</h3><p class="dim">写入既有 AI 发现通道，尚无独立笔记状态或复测生命周期。</p><textarea v-model="note" aria-label="研究线索内容" placeholder="记录观察、依据和仍待核实的问题…" maxlength="10000" rows="3" /><button :disabled="!note.trim() || saving" type="submit">{{ saving ? '保存中…' : '保存笔记' }}</button></form>
+      <EntityResearch v-if="['domain','ip','host','endpoint'].includes(row.kind)" :entity-id="Number(entityId)" />
+      <button v-if="['domain','ip','host','endpoint','vuln'].includes(row.kind)" class="ghost" @click="store.openWorkspace('tasks', {target:{...row, id:entityId, display_key:title}})">＋ 为此对象创建研究任务</button>
       <p v-if="message" role="status">{{ message }}</p>
     </div>
   </aside>

@@ -16,7 +16,7 @@ const label = computed(() => store.VIEWS.find(v => v.key === store.view)?.label 
     <button class="ghost" title="项目管理：新建 / 归档 / 恢复 / 删除" @click="emit('manage')">管理</button>
     <div class="topbar-location"><span class="faint">/</span> {{ label }}</div>
     <span class="topbar-spacer" />
-    <button class="ghost topbar-search" title="搜索（Ctrl+K）" @click="emit('palette')">⌕ <span>搜索</span><kbd>Ctrl K</kbd></button>
+    <button class="ghost topbar-search" title="全局检索当前项目（Ctrl+K / ⌘K）" @click="emit('palette')">⌕ <span>搜索资产、接口、发现、证据、笔记…</span><kbd>Ctrl K</kbd></button>
     <span v-if="store.view === 'pipeline'" class="chip accent">✎ 编排</span><span v-else class="chip" title="探索模式只读画布；笔记与导入通过各自入口操作">🔒 只读浏览</span>
     <button class="primary" @click="emit('import')">＋ 导入</button>
   </header>

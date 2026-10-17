@@ -77,7 +77,7 @@ export default defineConfig({
   base: '/web/',
   server: {
     host: '127.0.0.1',
-    proxy: { '/api': 'http://127.0.0.1:8765' },
+    proxy: { '/api': `http://127.0.0.1:${process.env.MAGPIE_DEV_API_PORT || '8765'}` },
   },
   build: {
     outDir: fileURLToPath(new URL('../magpie/api/web', import.meta.url)),

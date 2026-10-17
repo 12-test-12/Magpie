@@ -8,6 +8,7 @@ const research = [
   ['js', '⌘', 'JS 资源', 'JavaScript'], ['findings', '◇', '漏洞与发现', 'Findings'],
   ['evidence', '▤', '证据', 'Evidence'], ['jobs', '↓', '导入历史', 'Imports'],
   ['notes', '≡', '研究笔记', 'Notes'],
+  ['tasks', '☑', '研究任务', 'Tasks'],
 ]
 const advanced = computed(() => {
   const base = [['explore', '攻击面画布'], ['pipeline', '管线编排'], ['inbox', '待确认 Inbox'],

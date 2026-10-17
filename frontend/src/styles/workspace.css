@@ -191,3 +191,10 @@ kbd { font: 10px var(--font-mono); padding: 2px 4px; color: var(--faint); border
 .retest-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; }
 .retest-warn { background: #2f2719; border: 1px solid #544426; color: #ecd498; padding: 8px 12px; border-radius: 6px; font-size: 10px; line-height: 1.6; margin-bottom: 12px; }
 .inline-link { padding: 0 4px; font-size: 11px; text-decoration: underline; color: #9ddbbf; }
+.research-badges { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:7px 0; }
+.tier-badge { font-size:11px; border:1px solid #476158; padding:2px 6px; border-radius:4px; color:#b4d1c6; }
+.tier-badge.priority { color:#f5d178; border-color:#665224; background:#3b321c; }
+.workspace-filters { flex-wrap:wrap; }
+.topbar-search { min-width:0; }
+.topbar-search span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:260px; }
+@media(max-width:1150px) { .topbar-search span { max-width:95px; } }

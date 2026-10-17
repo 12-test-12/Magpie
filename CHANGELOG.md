@@ -12,6 +12,14 @@
 
 ---
 
+## 0.28.0 — 统一快捷检索、研究任务与人工重要度
+
+- 新增 `GET /workspace/search`：当前项目的资产、API、Findings、Evidence 与 Notes 分组检索，每类默认 5 条、最多 10 条，提供总数与完整列表入口。证据支持原始导入文件名、存储定位与哈希搜索；不搜索原文正文。既有 `/search` 查询 DSL 占位契约不变。
+- 新增 `GET/POST /workspace/tasks`、`GET/PUT /workspace/tasks/{id}`：人工待办四种状态、最多 20 个现有实体关联、稳定游标分页、乐观版本校验。旧版本更新返回 409 `E_STALE_RESEARCH`；无效输入返回 400 `E_BAD_RESEARCH`。
+- 新增 `GET/PUT /workspace/entities/{id}/research`：复用 `entity_tags` 与 `ManualWriter` 保存标签增量；独立人工 Tier 1–3 重要度。工作台 `browse` 新增 `tag` / `criticality` 筛选，分组与列表共享条件，结果行增加 `tags` / `criticality`；证据行增加 `source_names` / `source_names_truncated` / `display_key`。
+- 项目摘要增加 `tasks_open`、`tier1_assets`、`tier1_api`。Schema v18 新增人工工作层表，保留原有资产/证据/贡献与身份；待办及人工重要度不随导入 Undo/Redo 删除，关联目标失效时显式显示。新工作记录保留审计，未接入通用作业 Undo/Redo。
+- HTTP 路径均在 `/api/v1` 下；OpenAPI 快照同步。CLI/MCP 现有契约不变。
+
 ## 0.27.0 — Finding 审查修复与有界详情
 
 - Finding 详情新增 `retests_count` / `retests_truncated`，内嵌复测最多 50 条；实体详情 `finding_info` 同步截断提示。完整复测沿既有 `section=retests` 游标分页读取。

@@ -108,6 +108,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(16, "endpoint_identity_v2", SCHEMA_DIR / "016_endpoint_identity_v2.sql", True),
     # Finding lifecycle, analyst triage states and verifiable retests with evidence.
     Migration(17, "finding_lifecycle", SCHEMA_DIR / "017_finding_lifecycle.sql"),
+    Migration(18, "research_workflow", SCHEMA_DIR / "018_research_workflow.sql", True),
 )
 
 

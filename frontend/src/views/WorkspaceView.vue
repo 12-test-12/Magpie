@@ -10,8 +10,8 @@ const props = defineProps({ category: { type: String, required: true } })
 const emit = defineEmits(['import'])
 const page = computed(() => workspacePages[props.category])
 const simple = computed(() => ['evidence', 'notes'].includes(props.category))
-const state = reactive({ q: '', source: '', method: '', status: '', severity: '', host: null, prefix: null, mode: 'host', cursor: null })
-const draft = reactive({ q: '', source: '', method: '', status: '', severity: '' })
+const state = reactive({ q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null, host: null, prefix: null, mode: 'host', cursor: null })
+const draft = reactive({ q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null })
 const data = ref(null), error = ref(''), loading = ref(false), selected = ref(null), scroller = ref(null)
 const history = ref([]), trail = ref([])
 const selectedCategory = ref(props.category)
@@ -45,8 +45,7 @@ function save() {
 }
 async function load(preserveSelection = false) {
   preserveSelection = preserveSelection === true
-  selectedCategory.value = props.category
-  if (!preserveSelection) selected.value = null
+  if (!preserveSelection) { selectedCategory.value = props.category; selected.value = null }
   if (!store.project) { data.value = null; return }
   loading.value = true; error.value = ''; if (!preserveSelection) data.value = null
   await slot.run('/workspace/browse?' + params({ project: store.project, category: props.category, ...state, limit: 50 }),
@@ -117,12 +116,24 @@ watch(() => [store.project, props.category], () => {
   selectedCategory.value = props.category
   save(); slot.cancel(); context = `${store.project}:${props.category}`
   const saved = workspaceMemory.get(context)
-  Object.assign(state, saved?.state || { q: '', source: '', method: '', status: '', severity: '', host: null, prefix: null,
+  Object.assign(state, { tag: '', criticality: null }, saved?.state || { q: '', source: '', method: '', status: '', severity: '', host: null, prefix: null,
     mode: simple.value ? 'list' : 'host', cursor: null })
-  Object.assign(draft, { q: state.q, source: state.source, method: state.method, status: state.status, severity: state.severity })
+  Object.assign(draft, { q: state.q, source: state.source, method: state.method, status: state.status, severity: state.severity, tag: state.tag, criticality: state.criticality })
   history.value = saved?.history || []; trail.value = saved?.trail || []; scroll = saved?.scroll || 0
   load()
 }, { immediate: true })
+watch(() => [store.workspaceJump, props.category], async ([jump]) => {
+  if (!jump || jump.project !== store.project || jump.category !== props.category) return
+  // Finish restoring the page context before applying the explicit destination.
+  // Vue can reuse this component when a search changes the business category.
+  await nextTick()
+  if (store.workspaceJump !== jump || jump.project !== store.project || jump.category !== props.category) return
+  Object.assign(state, {q:'', source:'', method:'', status:'', severity:'', tag:'', criticality:null,
+    host:null, prefix:null, mode:'list', cursor:null}, jump.filters)
+  Object.assign(draft, {q:state.q, source:state.source, method:state.method, status:state.status, severity:state.severity, tag:state.tag, criticality:state.criticality})
+  selectedCategory.value = props.category; selected.value = jump.row
+  trail.value = []; resetPage(); store.workspaceJump = null; load(true)
+}, { immediate:true })
 onBeforeUnmount(() => { save(); slot.cancel() })
 watch(() => store.dataRevision, () => { resetPage(); load(true) })
 </script>
@@ -142,13 +153,14 @@ watch(() => store.dataRevision, () => { resetPage(); load(true) })
     <form class="workspace-filters" @submit.prevent="filter">
       <label class="search-field"><span>搜索</span><input v-model="draft.q" aria-label="搜索当前工作区" placeholder="输入名称、主机或路径…" maxlength="300" /></label>
       <template v-if="!simple">
+        <template v-if="['assets','api','js'].includes(category)"><label>人工标签<input v-model="draft.tag" aria-label="按人工标签筛选" placeholder="精确标签" maxlength="60" /></label><label>重要度<select v-model="draft.criticality" aria-label="按重要度筛选"><option :value="null">全部重要度</option><option v-for="tier in [1,2,3]" :key="tier" :value="tier">Tier {{ tier }}</option></select></label></template>
         <label v-if="category !== 'findings'">来源<input v-model="draft.source" aria-label="来源名称" placeholder="精确来源名称" maxlength="200" /></label>
         <label v-if="category === 'api' || category === 'js'">方法<select v-model="draft.method" aria-label="HTTP 方法"><option value="">全部方法</option><option value="unknown">方法未知</option><option v-for="method in ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS']" :key="method">{{ method }}</option></select></label>
         <label v-if="category === 'findings'">处置状态<select v-model="draft.status" aria-label="处置状态"><option value="">全部状态</option><option value="candidate">待核实 (candidate)</option><option value="confirmed">已确认 (confirmed)</option><option value="resolved">已修复 (resolved)</option><option value="false_positive">误报排除 (false_positive)</option><option value="duplicate">重复发现 (duplicate)</option><option value="inconclusive">存疑 (inconclusive)</option></select></label>
         <label v-if="category === 'findings'">严重级别<select v-model="draft.severity" aria-label="严重级别"><option value="">全部级别</option><option value="critical">严重 (critical)</option><option value="high">高危 (high)</option><option value="medium">中危 (medium)</option><option value="low">低危 (low)</option><option value="info">提示 (info)</option></select></label>
       </template>
       <button type="submit">应用筛选</button>
-      <button type="button" class="ghost" @click="Object.assign(draft, {q:'',source:'',method:'',status:'',severity:''}); filter()">重置</button>
+      <button type="button" class="ghost" @click="Object.assign(draft, {q:'',source:'',method:'',status:'',severity:'',tag:'',criticality:null}); filter()">重置</button>
     </form>
     <div class="workspace-location">
       <div class="breadcrumbs"><button v-if="trail.length" class="ghost" @click="back">← 返回上级</button><span>{{ page.label }}</span><span v-if="state.host !== null">/ {{ state.host || '未关联主机' }}</span><span v-if="state.prefix !== null">/ {{ state.prefix }}</span></div>
@@ -167,7 +179,7 @@ watch(() => store.dataRevision, () => { resetPage(); load(true) })
             <button v-for="row in data.rows" :key="row.group_key" class="group-card" @click="descend(row)"><span class="group-icon">{{ state.mode === 'host' ? '◎' : '↳' }}</span><strong :title="row.label">{{ row.label || '未关联主机' }}</strong><span class="dim">{{ fmtInt(row.count) }} 个对象</span><span class="group-action">下钻查看 ↗</span></button>
           </div>
           <table v-else class="workspace-table"><thead><tr><th>{{ simple ? '来源 / 对象' : category === 'findings' ? '漏洞名称 / 标识' : '研究对象' }}</th><th>类型</th><th>{{ category === 'evidence' ? '原文 / 恢复状态' : category === 'notes' ? '笔记内容' : category === 'findings' ? '严重度 · 处置状态 · 影响目标' : '观测 / 状态' }}</th></tr></thead><tbody>
-            <tr v-for="row in data.rows" :key="row.id" :class="{ selected: selected?.id === row.id }"><td><button class="row-link mono" :title="row.entity_key" @click="selectRow(row)">{{ row.title || row.display_key || row.entity_key }}</button><small v-if="row.host">{{ row.host }}</small><small v-if="row.identity_status === 'legacy_folded'" class="warn">历史路径模板身份</small></td><td><span class="type-label">{{ row.kind }}</span></td><td><template v-if="category === 'evidence'">{{ row.storage_state }} / {{ row.status }}</template><template v-else-if="category === 'notes'"><span class="note-excerpt">{{ row.text }}</span><small v-if="row.target_display" class="dim" style="display: block; margin-top: 4px;">关联目标: <button class="ghost inline-link" @click.stop="selectRelated({ id: row.entity_id, kind: row.target_kind || 'entity' })">{{ row.target_display }}</button></small><small v-if="row.evidence_id" class="dim" style="display: block; margin-top: 2px;">来源证据: <button class="ghost inline-link" @click.stop="selectRelated({ id: row.evidence_id, kind: 'evidence' })">#{{ row.evidence_id }}</button></small></template><template v-else-if="category === 'findings'"><div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;"><span :class="['badge-severity', 'badge-' + (row.severity || 'info')]">{{ (row.severity || 'unknown').toUpperCase() }}</span><span :class="['badge-status', 'status-' + (row.status || 'candidate')]">{{ statusLabel(row.status) }}</span><span v-if="row.target_asset" class="dim" style="font-size: 11px;">目标: {{ row.target_asset.display || row.target_asset.display_key }}</span><small v-if="row.retests_count" class="dim">（{{ row.retests_count }} 次复测）</small></div><small v-if="row.disposition_reason" class="dim" style="display: block; margin-top: 4px;">{{ row.disposition_reason }}</small></template><template v-else-if="category === 'js'"><span>{{ jsStatus(jsVersion(row)?.status || 'content_not_imported') }}</span><small v-if="jsVersion(row)?.candidate_count !== undefined">{{ jsVersion(row).candidate_count }} 个候选</small><small v-if="jsVersion(row)?.sha256" class="mono" :title="jsVersion(row).sha256">SHA-256 {{ jsVersion(row).sha256.slice(0, 12) }}…</small><small v-if="jsVersion(row)?.reason" class="warn">{{ jsVersion(row).reason }}</small></template><template v-else-if="category === 'api'"><span class="method-label">{{ apiMethod(row) }}</span> {{ observation(row, ['status','status_code','http.status','http.status_code']) }}<small v-if="observation(row, ['declared_method']) !== '未观察'">声明方法 {{ observation(row, ['declared_method']) }}</small><small v-if="hasJsSource(row)" class="type-label" title="该接口包含来自 JavaScript 源码的静态引用候选">JS 候选</small><small v-if="row.observed_truncated" class="dim">摘要已截断，更多观测见详情</small></template><template v-else>{{ row.lifecycle === 'active' ? '活跃' : '退役' }}</template></td></tr>
+            <tr v-for="row in data.rows" :key="row.id" :class="{ selected: selected?.id === row.id }"><td><button class="row-link mono" :title="row.entity_key" @click="selectRow(row)">{{ row.title || row.display_key || row.entity_key }}</button><div v-if="row.criticality || row.tags?.length" class="research-badges"><span v-if="row.criticality" class="tier-badge" :class="{priority:row.criticality === 1}">★ Tier {{ row.criticality }}</span><span v-for="tag in (row.tags || []).slice(0,8)" :key="tag" class="type-label">{{ tag }}</span><small v-if="row.tags?.length > 8">更多标签见详情</small></div><small v-if="row.host">{{ row.host }}</small><small v-if="row.identity_status === 'legacy_folded'" class="warn">历史路径模板身份</small></td><td><span class="type-label">{{ row.kind }}</span></td><td><template v-if="category === 'evidence'">{{ row.storage_state }} / {{ row.status }}</template><template v-else-if="category === 'notes'"><span class="note-excerpt">{{ row.text }}</span><small v-if="row.target_display" class="dim" style="display: block; margin-top: 4px;">关联目标: <button class="ghost inline-link" @click.stop="selectRelated({ id: row.entity_id, kind: row.target_kind || 'entity' })">{{ row.target_display }}</button></small><small v-if="row.evidence_id" class="dim" style="display: block; margin-top: 2px;">来源证据: <button class="ghost inline-link" @click.stop="selectRelated({ id: row.evidence_id, kind: 'evidence' })">#{{ row.evidence_id }}</button></small></template><template v-else-if="category === 'findings'"><div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;"><span :class="['badge-severity', 'badge-' + (row.severity || 'info')]">{{ (row.severity || 'unknown').toUpperCase() }}</span><span :class="['badge-status', 'status-' + (row.status || 'candidate')]">{{ statusLabel(row.status) }}</span><span v-if="row.target_asset" class="dim" style="font-size: 11px;">目标: {{ row.target_asset.display || row.target_asset.display_key }}</span><small v-if="row.retests_count" class="dim">（{{ row.retests_count }} 次复测）</small></div><small v-if="row.disposition_reason" class="dim" style="display: block; margin-top: 4px;">{{ row.disposition_reason }}</small></template><template v-else-if="category === 'js'"><span>{{ jsStatus(jsVersion(row)?.status || 'content_not_imported') }}</span><small v-if="jsVersion(row)?.candidate_count !== undefined">{{ jsVersion(row).candidate_count }} 个候选</small><small v-if="jsVersion(row)?.sha256" class="mono" :title="jsVersion(row).sha256">SHA-256 {{ jsVersion(row).sha256.slice(0, 12) }}…</small><small v-if="jsVersion(row)?.reason" class="warn">{{ jsVersion(row).reason }}</small></template><template v-else-if="category === 'api'"><span class="method-label">{{ apiMethod(row) }}</span> {{ observation(row, ['status','status_code','http.status','http.status_code']) }}<small v-if="observation(row, ['declared_method']) !== '未观察'">声明方法 {{ observation(row, ['declared_method']) }}</small><small v-if="hasJsSource(row)" class="type-label" title="该接口包含来自 JavaScript 源码的静态引用候选">JS 候选</small><small v-if="row.observed_truncated" class="dim">摘要已截断，更多观测见详情</small></template><template v-else>{{ row.lifecycle === 'active' ? '活跃' : '退役' }}</template></td></tr>
           </tbody></table>
         </div>
         <WorkspaceDetail v-if="selected" :key="`${selectedCategory}:${selected.id}`" :row="selected" :category="selectedCategory" @close="selected = null" @select="selectRelated" />

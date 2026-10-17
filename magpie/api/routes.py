@@ -57,7 +57,7 @@ from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..core import ingest, ops, pipeline, query, risk, store, universal, workspace
+from ..core import ingest, ops, pipeline, query, research, risk, store, universal, workspace
 from ..core.normalize import NormalizeError
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
@@ -106,6 +106,9 @@ _QUERY_STATUS: dict[str, int] = {
     "E_PIPELINE_NOT_FOUND": 404,
     "E_PIPELINE_RUN_NOT_FOUND": 404,
     "E_UNSUPPORTED_FORMAT": 400,
+    "E_BAD_RESEARCH": 400,
+    "E_TASK_NOT_FOUND": 404,
+    "E_STALE_RESEARCH": 409,
 }
 
 #: 路由上的读查询把 `QueryError` 翻成 `ApiError` 的**唯一装饰器**。
@@ -167,12 +170,12 @@ def workspace_summary(project: str | None = None,
 def workspace_browse(project: str | None = None, category: str = "assets",
                      mode: str = "host", q: str = "", host: str | None = None,
                      prefix: str | None = None, method: str = "", source: str = "",
-                     status: str = "", severity: str = "",
+                     status: str = "", severity: str = "", tag: str = "", criticality: int | None = None,
                      cursor: str | None = None, limit: int = 50,
                      conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(workspace.browse(conn, _resolve_project(conn, project), category=category,
                                mode=mode, q=q, host=host, prefix=prefix, method=method,
-                               source=source, status=status, severity=severity,
+                               source=source, status=status, severity=severity, tag=tag, criticality=criticality,
                                cursor=cursor, limit=limit))
 
 
@@ -192,6 +195,85 @@ def workspace_evidence(evidence_id: int, request: Request, project: str | None =
                        conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(workspace.evidence_detail(conn, _resolve_project(conn, project), evidence_id,
                                         _ctx(request).data_dir))
+
+
+@router.get("/workspace/search", summary="当前项目跨资产、接口、发现、证据与笔记的快捷检索")
+@_translating
+def workspace_search(project: str | None = None, q: str = "", limit: int = 5,
+                     conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(research.quick_search(conn, _resolve_project(conn, project), q=q, limit=limit))
+
+
+class ResearchTaskBody(BaseModel):
+    title: str = Field(..., min_length=1, max_length=300)
+    description: str = Field("", max_length=10000)
+    status: str = "pending"
+    entity_ids: list[int] = Field(default_factory=list, max_length=20)
+    version: int | None = None
+
+
+@router.get("/workspace/tasks", summary="有界研究任务列表")
+@_translating
+def workspace_tasks(project: str | None = None, q: str = "", status: str = "",
+                    cursor: str | None = None, limit: int = 50, entity_id: int | None = None,
+                    conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(research.tasks(conn, _resolve_project(conn, project), q=q, status=status,
+                             cursor=cursor, limit=limit, entity_id=entity_id))
+
+
+@router.post("/workspace/tasks", summary="新建人工研究任务")
+@_translating
+def workspace_create_task(body: ResearchTaskBody, request: Request, project: str | None = None,
+                          conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    pid = _resolve_project(conn, project)
+    return ok(_ctx(request).writer.submit("research task create", lambda db: research.save_task(
+        db, project_id=pid, title=body.title, description=body.description,
+        status=body.status, entity_ids=body.entity_ids, actor="api")).result(timeout=60))
+
+
+@router.get("/workspace/tasks/{task_id}", summary="研究任务详情及现有实体关联")
+@_translating
+def workspace_task(task_id: int, project: str | None = None,
+                   conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(research.task_detail(conn, _resolve_project(conn, project), task_id))
+
+
+@router.put("/workspace/tasks/{task_id}", summary="更新研究任务（版本冲突返回 409）")
+@_translating
+def workspace_update_task(task_id: int, body: ResearchTaskBody, request: Request,
+                          project: str | None = None,
+                          conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    pid = _resolve_project(conn, project)
+    return ok(_ctx(request).writer.submit("research task update", lambda db: research.save_task(
+        db, project_id=pid, task_id=task_id, version=body.version, title=body.title,
+        description=body.description, status=body.status,
+        entity_ids=body.entity_ids, actor="api")).result(timeout=60))
+
+
+class ResearchMetadataBody(BaseModel):
+    criticality: int | None = None
+    version: int = Field(..., ge=0)
+    add_tags: list[str] = Field(default_factory=list, max_length=100)
+    remove_tags: list[str] = Field(default_factory=list, max_length=100)
+
+
+@router.get("/workspace/entities/{entity_id}/research", summary="人工标签与重要度")
+@_translating
+def workspace_metadata(entity_id: int, project: str | None = None,
+                        conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(research.metadata(conn, _resolve_project(conn, project), entity_id))
+
+
+@router.put("/workspace/entities/{entity_id}/research", summary="保存人工标签与 Tier 1–3 重要度")
+@_translating
+def workspace_save_metadata(entity_id: int, body: ResearchMetadataBody, request: Request,
+                             project: str | None = None,
+                             conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    pid = _resolve_project(conn, project)
+    return ok(_ctx(request).writer.submit("research metadata", lambda db: research.save_metadata(
+        db, project_id=pid, entity_id=entity_id, version=body.version,
+        criticality=body.criticality, add_tags=body.add_tags,
+        remove_tags=body.remove_tags, actor="api")).result(timeout=60))
 
 
 class CreateManualFindingBody(BaseModel):
