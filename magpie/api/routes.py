@@ -58,6 +58,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..core import ingest, ops, pipeline, query, risk, store, universal, workspace
+from ..core.normalize import NormalizeError
 from . import API_PREFIX
 from .errors import ApiError, not_implemented
 
@@ -217,6 +218,14 @@ class AddRetestBody(BaseModel):
     evidence_id: int | None = Field(None, description="关联复测证据 ID")
 
 
+def _finding_write(ctx, label, task):
+    """Translate expected lifecycle validation failures from the writer queue."""
+    try:
+        return ctx.writer.submit(label, task).result(timeout=60)
+    except (store.InvariantError, NormalizeError) as exc:
+        raise ApiError(400, "E_BAD_FINDING", str(exc)) from exc
+
+
 @router.post("/workspace/findings", summary="人工创建漏洞发现")
 @_translating
 def workspace_create_finding(body: CreateManualFindingBody, request: Request,
@@ -232,7 +241,7 @@ def workspace_create_finding(body: CreateManualFindingBody, request: Request,
             description=body.description, evidence_id=body.evidence_id,
             status=body.status, reason=body.reason, actor="api")
 
-    result = ctx.writer.submit(f"create_manual_finding {body.title}", task).result(timeout=60)
+    result = _finding_write(ctx, "create_manual_finding", task)
     return ok(result, project_id=project_id)
 
 
@@ -257,7 +266,7 @@ def workspace_triage_finding(finding_id: int, body: TriageFindingBody, request: 
             status=body.status, severity=body.severity,
             reason=body.reason, duplicate_of_id=body.duplicate_of_id, actor="api")
 
-    result = ctx.writer.submit(f"triage_finding {finding_id}", task).result(timeout=60)
+    result = _finding_write(ctx, f"triage_finding {finding_id}", task)
     return ok(result, project_id=project_id)
 
 
@@ -275,7 +284,7 @@ def workspace_add_retest(finding_id: int, body: AddRetestBody, request: Request,
             status=body.status, notes=body.notes,
             evidence_id=body.evidence_id, actor="api")
 
-    result = ctx.writer.submit(f"add_retest {finding_id}", task).result(timeout=60)
+    result = _finding_write(ctx, f"add_retest {finding_id}", task)
     return ok(result, project_id=project_id)
 
 

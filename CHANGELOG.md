@@ -12,6 +12,14 @@
 
 ---
 
+## 0.27.0 — Finding 审查修复与有界详情
+
+- Finding 详情新增 `retests_count` / `retests_truncated`，内嵌复测最多 50 条；实体详情 `finding_info` 同步截断提示。完整复测沿既有 `section=retests` 游标分页读取。
+- 人工发现默认使用独立标识，显式模板按精确目标区分，避免中文标题及 Endpoint 方法/路径差异被错误归并；不自动重写历史发现身份。
+- Finding 写入校验失败统一返回 HTTP 400 `E_BAD_FINDING`；重复项必须指定当前项目有效发现并拒绝循环，已撤销/已合并发现不能直接处置。
+- Markdown 与 JSON 报告均保留所有状态的初始及历次复测证据；JSON 新增发现的 `duplicate_of_id`，目标对象补充 `id`。导出包含全部有效研究笔记，移除原先无提示的 50 条/500 字符限制；统一脱敏叙述和元数据副本，不改原始证据。
+- 路由与 schema 版本均不变；更新 OpenAPI 的应用版本。
+
 ## 0.26.0 — Finding 独立生命周期、人工复测与研究报告导出
 
 - 新增 Finding 独立生命周期与处置记录（`candidate` / `confirmed` / `false_positive` / `duplicate` / `inconclusive` / `resolved`）。工具命中扫描结果默认归入 `candidate`，严禁未经核实自动标为已确认漏洞。

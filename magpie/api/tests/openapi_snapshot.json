@@ -752,7 +752,7 @@
   "info": {
     "description": "人（GUI）与 agent（CLI/MCP）共享同一份数据的 HTTP 接口。只监听回环地址；写者唯一（单写线程 + 写队列）。",
     "title": "Magpie 本地 API",
-    "version": "0.26.0"
+    "version": "0.27.0"
   },
   "openapi": "3.1.0",
   "paths": {

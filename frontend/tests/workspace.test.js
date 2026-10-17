@@ -147,6 +147,9 @@ describe('bounded workspace navigation', () => {
         return response(findingDetail)
       }
       if (parsed.pathname.endsWith('/workspace/entities/50')) {
+        if (parsed.searchParams.get('section') === 'retests') return response({
+          entity: { id: 50, kind: 'vuln' }, rows: findingDetail.retests, total: 1, next_cursor: null,
+        })
         return response({ entity: { id: 50, kind: 'vuln', display_key: 'SQL 注入漏洞' }, rows: [], total: 0, next_cursor: null })
       }
       return response({ entity: null, rows: [], total: 0, next_cursor: null })
@@ -170,11 +173,22 @@ describe('bounded workspace navigation', () => {
     expect(wrapper.text()).toContain('处置判定')
     expect(wrapper.text()).toContain('人工复测')
     expect(wrapper.text()).toContain('更新处置决策')
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('section=triage'))).toBe(false)
+    const Panel = (await import('../src/components/FindingPanel.vue')).default
+    const panelBeforeSave = wrapper.findComponent(Panel).vm.$.uid
+    await wrapper.find('.finding-panel form').trigger('submit'); await flushPromises()
+    expect(wrapper.findComponent(Panel).vm.$.uid).toBe(panelBeforeSave)
+    expect(wrapper.text()).toContain('处置判定已更新并计入审计')
 
     // Switch to retests tab
     await wrapper.findAll('.detail-tabs button').find(b => b.text() === '人工复测').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('第一轮验证复现')
     expect(wrapper.text()).toContain('网络超时、无法连接')
+
+    await wrapper.findAll('.detail-tabs button').find(b => b.text() === '处置判定').trigger('click'); await flushPromises()
+    await wrapper.find('.finding-panel .inline-link').trigger('click'); await flushPromises()
+    expect(wrapper.find('.finding-panel').exists()).toBe(false)
+    expect(wrapper.findAll('.detail-tabs button').some(b => b.text() === '处置判定')).toBe(false)
 
     wrapper.unmount()
   })

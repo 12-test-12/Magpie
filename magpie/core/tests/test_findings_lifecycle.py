@@ -244,3 +244,125 @@ def test_manual_finding_on_endpoint_target(db):
     assert detail["target_asset"]["kind"] == "endpoint"
     assert "/api/v1/users" in detail["target_asset"]["display_key"]
     assert "app.example.test" in detail["target_asset"]["display_key"]
+
+
+def test_distinct_chinese_titles_do_not_merge_or_overwrite_triage(db):
+    pid = ops.create_project(db, "titles", {})
+    host = seed_host(db, pid)
+    first = ops.create_manual_finding(db, project_id=pid, title="越权访问", severity="high", target_entity_id=host)
+    second = ops.create_manual_finding(db, project_id=pid, title="敏感数据泄露", severity="low", target_entity_id=host)
+    assert first["finding_id"] != second["finding_id"]
+    assert workspace.browse(db, pid, category="findings", mode="list", q="越权访问")["total"] == 1
+    assert workspace.finding_detail(db, pid, first["finding_id"])["title"] == "越权访问"
+    ops.undo(db, second["job_id"])
+    assert workspace.browse(db, pid, category="findings", mode="list")["total"] == 1
+    assert workspace.finding_detail(db, pid, first["finding_id"])["severity"] == "high"
+
+
+def test_manual_template_preserves_exact_endpoint_identity(db):
+    from magpie.core import normalize
+    pid = ops.create_project(db, "methods", {})
+    seed_host(db, pid)
+    raw = ops.add_raw_file(db, project_id=pid, locator_uri="file:///methods", content="methods")
+    ev = ops.add_evidence(db, project_id=pid, raw_file_id=raw, locator={}, snippet="methods")
+    job = ops.start_job(db, project_id=pid, kind="scan", coverage="partial")
+    ids = []
+    for method, path in [("GET", "/Orders/123"), ("POST", "/Orders/123"), ("GET", "/orders/456")]:
+        key = normalize.endpoint_identity("https://app.example.test" + path, method=method)["key"]
+        ops.add_observation(db, project_id=pid, job_id=job, evidence_id=ev, source_id=1,
+                            entity_key=key, kind="endpoint", semantic_field="method", value=method)
+        ids.append(store.resolve_entity(db, pid, key))
+    ops.finish_job(db, job, "done")
+    store.recompute(db)
+    findings = [ops.create_manual_finding(db, project_id=pid, title="同一模板", template_id="access-check",
+                severity="high", target_entity_id=target)["finding_id"] for target in ids]
+    assert len(set(findings)) == 3
+    assert [workspace.finding_detail(db, pid, fid)["target_asset"]["id"] for fid in findings] == ids
+
+
+def test_notes_first_query_registers_functions_and_report_keeps_all_notes(db):
+    pid = ops.create_project(db, "notes", {})
+    host = seed_host(db, pid)
+    for i in range(51):
+        ops.add_finding(db, project_id=pid, entity_id=host, text=f"研究笔记 {i}")
+    # No preceding API/asset browse call to initialize ws_display.
+    assert workspace.browse(db, pid, category="notes", mode="list")["total"] == 51
+    report = workspace.generate_report(db, pid, format="json")
+    assert report["summary"]["notes_count"] == 51
+    assert len(report["research_notes"]) == 51
+
+
+def test_resolved_report_retains_initial_and_retest_provenance_and_redacts(db):
+    pid = ops.create_project(db, "report", {})
+    host = seed_host(db, pid)
+    created = ops.create_manual_finding(db, project_id=pid, title="报告验证", severity="high",
+        target_entity_id=host, description="password=initial-secret")
+    raw = ops.add_raw_file(db, project_id=pid, locator_uri="file:///retest.txt", content="retest proof")
+    ev = ops.add_evidence(db, project_id=pid, raw_file_id=raw, locator={"line": 9}, snippet="proof")
+    ops.add_retest(db, project_id=pid, finding_id=created["finding_id"], status="resolved",
+        notes="人工已验证修复 password=retest-secret", evidence_id=ev)
+    ops.add_finding(db, project_id=pid, entity_id=host, text="password=note-secret")
+    md = workspace.generate_report(db, pid)
+    report = workspace.generate_report(db, pid, format="json")
+    text = json.dumps(report, ensure_ascii=False)
+    assert "retest.txt" in md and '"line":9' in md
+    assert str(created["evidence_id"]) in md
+    assert report["resolved_findings"][0]["retests"][0]["evidence_id"] == ev
+    for secret in ("initial-secret", "retest-secret", "note-secret"):
+        assert secret not in md and secret not in text
+    # Redaction must not modify the fact/evidence store.
+    assert "initial-secret" in db.execute("SELECT value FROM observations WHERE semantic_field='description'").fetchone()[0]
+
+
+def test_duplicate_requires_target_rejects_cycles_and_retest_clears_link(db):
+    pid = ops.create_project(db, "duplicates", {})
+    host = seed_host(db, pid)
+    a, b = [ops.create_manual_finding(db, project_id=pid, title=name, severity="low",
+                                     target_entity_id=host)["finding_id"] for name in ("A", "B")]
+    with pytest.raises(store.InvariantError, match="指定主漏洞"):
+        ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate")
+    ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate", duplicate_of_id=b)
+    with pytest.raises(store.InvariantError, match="循环"):
+        ops.triage_finding(db, project_id=pid, finding_id=b, status="duplicate", duplicate_of_id=a)
+    ops.add_retest(db, project_id=pid, finding_id=a, status="still_vulnerable", notes="人工再次重现")
+    assert workspace.finding_detail(db, pid, a)["triage"]["duplicate_of_id"] is None
+
+
+@pytest.mark.parametrize("operation", ["triage", "retest"])
+def test_lifecycle_write_does_not_commit_callers_transaction(db, operation):
+    pid = ops.create_project(db, "transactions", {})
+    host = seed_host(db, pid)
+    fid = ops.create_manual_finding(db, project_id=pid, title="事务", severity="low", target_entity_id=host)["finding_id"]
+    db.execute("BEGIN IMMEDIATE")
+    if operation == "triage":
+        ops.triage_finding(db, project_id=pid, finding_id=fid, status="false_positive", reason="外层测试")
+    else:
+        ops.add_retest(db, project_id=pid, finding_id=fid, status="resolved", notes="外层测试")
+    assert db.in_transaction
+    db.rollback()
+    detail = workspace.finding_detail(db, pid, fid)
+    assert detail["status"] == "confirmed" and detail["retests"] == []
+
+
+def test_bounded_retests_and_undone_finding_rejected(db):
+    pid = ops.create_project(db, "bounded", {})
+    host = seed_host(db, pid)
+    created = ops.create_manual_finding(db, project_id=pid, title="分页", severity="low", target_entity_id=host)
+    fid = created["finding_id"]
+    for i in range(51):
+        ops.add_retest(db, project_id=pid, finding_id=fid, status="inconclusive", notes=f"记录 {i}")
+    detail = workspace.finding_detail(db, pid, fid)
+    assert len(detail["retests"]) == 50 and detail["retests_truncated"]
+    assert detail["retests_count"] == 51
+    ids, cursor = [], None
+    while True:
+        page = workspace.entity_detail(db, pid, fid, section="retests", cursor=cursor, limit=20)
+        ids.extend(row["id"] for row in page["rows"])
+        cursor = page["next_cursor"]
+        if not cursor:
+            break
+    assert len(ids) == len(set(ids)) == 51
+    assert len(workspace.generate_report(db, pid, format="json")["confirmed_findings"][0]["retests"]) == 51
+    ops.undo(db, created["job_id"])
+    with pytest.raises(store.InvariantError):
+        ops.triage_finding(db, project_id=pid, finding_id=fid, status="confirmed")
