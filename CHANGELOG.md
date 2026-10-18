@@ -12,6 +12,14 @@
 
 ---
 
+## 0.29.0 — 人工判定写入保护与依据缺口
+
+- Finding 详情新增 `triage.version`，人工创建返回 `version`。研判与复测请求现在必须携带非负整数 `expected_version`；缺失/类型错误返回 422，旧版本返回 409 `E_STALE_FINDING`，失败不写状态、历史或审计。复测即使不改变研判结论也推进同一版本。
+- 人工新建 Finding 默认状态从 `confirmed` 改为 `candidate`。新建与研判的非 candidate 状态必须填写非空理由，缺少理由返回 400 `E_BAD_FINDING`；历史记录不补造理由或重判状态。
+- Finding 详情/报告新增 `decision_basis_missing`，详情/JSON 报告的复测记录新增 `evidence_basis`（`linked_evidence` 或 `manual_statement_only`）。Markdown 如实说明人工登记、无证据和历史理由缺口，不声称系统已验证修复或证据充分性。
+- `GET /workspace/tasks?status=open` 读取 pending 与 in_progress 的组合，支持现有分页；`open` 不可写为任务状态。总览 Finding/任务摘要进入同范围筛选。
+- Schema v19 只增加研判版本元数据；事实、原文、证据、贡献、历史研判与复测不改写。Python ops 研判/复测入口也要求显式 `expected_version`；现有 CLI/MCP 命令和 HTTP 路径不变。
+
 ## 0.28.0 — 统一快捷检索、研究任务与人工重要度
 
 - 新增 `GET /workspace/search`：当前项目的资产、API、Findings、Evidence 与 Notes 分组检索，每类默认 5 条、最多 10 条，提供总数与完整列表入口。证据支持原始导入文件名、存储定位与哈希搜索；不搜索原文正文。既有 `/search` 查询 DSL 占位契约不变。

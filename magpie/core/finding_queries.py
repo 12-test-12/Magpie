@@ -37,7 +37,7 @@ def finding_detail(conn, project_id, finding_id, *, retest_limit=50):
         res["host"] = ""
 
     triage = conn.execute(
-        "SELECT status, severity, title, disposition_reason, duplicate_of_id, updated_at, updated_by"
+        "SELECT status, severity, title, disposition_reason, duplicate_of_id, updated_at, updated_by, version"
         " FROM finding_triage WHERE project_id=? AND finding_id=?",
         (project_id, finding_id)).fetchone()
     obs_sev = (conn.execute(
@@ -48,6 +48,7 @@ def finding_detail(conn, project_id, finding_id, *, retest_limit=50):
         (project_id, finding_id)).fetchone() or [key])[0]
 
     res["triage"] = {
+        "version": triage["version"] if triage else 0,
         "status": triage["status"] if triage else "candidate",
         "severity": (triage["severity"] if triage and triage["severity"] else obs_sev).lower(),
         "title": triage["title"] if triage and triage["title"] else obs_title,
@@ -59,6 +60,7 @@ def finding_detail(conn, project_id, finding_id, *, retest_limit=50):
     res["title"] = res["triage"]["title"]
     res["severity"] = res["triage"]["severity"]
     res["status"] = res["triage"]["status"]
+    res["decision_basis_missing"] = res["status"] != "candidate" and not (res["triage"]["disposition_reason"] or "").strip()
     obs_desc = (conn.execute(
         "SELECT value FROM observations WHERE project_id=? AND entity_id=? AND is_current=1 AND semantic_field='description' ORDER BY id DESC LIMIT 1",
         (project_id, finding_id)).fetchone() or [""])[0]
@@ -114,6 +116,8 @@ def finding_detail(conn, project_id, finding_id, *, retest_limit=50):
         " WHERE fr.project_id=? AND fr.finding_id=? ORDER BY fr.id DESC LIMIT ?",
         (project_id, finding_id, retest_limit if retest_limit is not None else -1)).fetchall()]
     res["retests"] = retests
+    for retest in retests:
+        retest["evidence_basis"] = "linked_evidence" if retest["evidence_id"] is not None else "manual_statement_only"
     res["retests_count"] = count
     res["retests_truncated"] = count > len(retests)
     return public_value(res)

@@ -125,7 +125,7 @@ def test_quick_search_groups_original_filename_title_note_and_undo(db):
 def test_v17_migration_preserves_facts_and_is_idempotent(monkeypatch):
     conn = store.connect(':memory:')
     all_migrations = migrate.MIGRATIONS
-    monkeypatch.setattr(migrate, 'MIGRATIONS', all_migrations[:-1])
+    monkeypatch.setattr(migrate, 'MIGRATIONS', tuple(m for m in all_migrations if m.version <= 17))
     store.init_db(conn)
     pid = ops.create_project(conn, 'legacy', {})
     seed_host(conn, pid)

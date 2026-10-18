@@ -56,11 +56,13 @@ def task_detail(conn, project_id, task_id):
 
 def tasks(conn, project_id, *, q='', status='', cursor=None, limit=50, entity_id=None):
     from .workspace import _literal, _page
-    if len(q) > 300 or (status and status not in STATUSES):
+    if len(q) > 300 or (status and status not in (*STATUSES, 'open')):
         _bad('不支持的任务筛选')
     where = ['project_id=?', "(title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"]
     args = [project_id, '%' + _literal(q) + '%', '%' + _literal(q) + '%']
-    if status:
+    if status == 'open':
+        where.append("status IN ('pending','in_progress')")
+    elif status:
         where.append('status=?'); args.append(status)
     if entity_id is not None:
         where.append('id IN (SELECT task_id FROM research_task_links WHERE project_id=? AND entity_id=?)')

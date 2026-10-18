@@ -6,7 +6,7 @@ import { params } from '../workspace.js'
 const emit = defineEmits(['created'])
 let generation = 0
 const showCreateModal = ref(false)
-const createForm = reactive({ title: '', target_id: '', severity: 'high', status: 'confirmed', reason: '', description: '' })
+const createForm = reactive({ title: '', target_id: '', severity: 'high', status: 'candidate', reason: '', description: '' })
 const createSubmitting = ref(false)
 const createError = ref('')
 
@@ -15,6 +15,7 @@ async function submitCreateFinding() {
   createError.value = ''
   if (!createForm.title.trim()) { createError.value = '漏洞标题不能为空'; return }
   if (!createForm.target_id) { createError.value = '目标实体 ID 不能为空'; return }
+  if (createForm.status !== 'candidate' && !createForm.reason.trim()) { createError.value = '已确认发现必须填写判定理由；没有证据时请明确说明缺口'; return }
   createSubmitting.value = true
   try {
     await post('/workspace/findings?' + params({ project }), {
@@ -27,7 +28,7 @@ async function submitCreateFinding() {
     })
     if (current !== generation) return
     showCreateModal.value = false
-    Object.assign(createForm, { title: '', target_id: '', severity: 'high', status: 'confirmed', reason: '', description: '' })
+    Object.assign(createForm, { title: '', target_id: '', severity: 'high', status: 'candidate', reason: '', description: '' })
     emit('created')
   } catch (err) {
     if (current === generation) createError.value = err.message
@@ -80,7 +81,7 @@ async function downloadReport(format) {
 watch(() => store.project, () => {
   generation++; showCreateModal.value = false; showExportModal.value = false
   createError.value = ''; exportError.value = ''; createSubmitting.value = false; exporting.value = false
-  Object.assign(createForm, { title: '', target_id: '', severity: 'high', status: 'confirmed', reason: '', description: '' })
+  Object.assign(createForm, { title: '', target_id: '', severity: 'high', status: 'candidate', reason: '', description: '' })
 })
 onBeforeUnmount(() => { generation++ })
 </script>
@@ -97,7 +98,7 @@ onBeforeUnmount(() => { generation++ })
           <label>目标实体 ID *<input v-model="createForm.target_id" type="number" placeholder="关联主机或接口实体 ID" required /><small class="dim">必须是当前项目已存在的实体 ID（如 host/endpoint）</small></label>
           <label>严重级别<select v-model="createForm.severity"><option value="critical">严重 (critical)</option><option value="high">高危 (high)</option><option value="medium">中危 (medium)</option><option value="low">低危 (low)</option><option value="info">提示 (info)</option></select></label>
           <label>初始处置状态<select v-model="createForm.status"><option value="confirmed">已确认 (confirmed)</option><option value="candidate">待核实 (candidate)</option></select></label>
-          <label>判定理由 / 核实依据<textarea v-model="createForm.reason" placeholder="说明该发现如何核实确认…" /></label>
+          <label>判定理由 / 核实依据<textarea v-model="createForm.reason" :required="createForm.status !== 'candidate'" placeholder="说明核实依据；缺少证据时请明确记录缺口…" /></label>
           <label>详细描述与复现细节<textarea v-model="createForm.description" placeholder="漏洞现象、影响接口与复现步骤…" /></label>
           <p v-if="createError" class="error-state" style="margin: 0; font-size: 11px;">{{ createError }}</p>
           <div class="modal-actions">

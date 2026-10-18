@@ -109,6 +109,7 @@ _QUERY_STATUS: dict[str, int] = {
     "E_BAD_RESEARCH": 400,
     "E_TASK_NOT_FOUND": 404,
     "E_STALE_RESEARCH": 409,
+    "E_STALE_FINDING": 409,
 }
 
 #: 路由上的读查询把 `QueryError` 翻成 `ApiError` 的**唯一装饰器**。
@@ -283,11 +284,12 @@ class CreateManualFindingBody(BaseModel):
     template_id: str | None = Field(None, max_length=100, description="模板 ID")
     description: str | None = Field(None, max_length=5000, description="漏洞描述")
     evidence_id: int | None = Field(None, description="关联证据 ID")
-    status: str = Field("confirmed", description="初始处置状态")
+    status: str = Field("candidate", description="初始处置状态；非 candidate 必须填写理由")
     reason: str | None = Field(None, max_length=1000, description="处置判定说明")
 
 
 class TriageFindingBody(BaseModel):
+    expected_version: int = Field(..., ge=0, strict=True, description="详情 triage.version；过期返回 409")
     status: str = Field(..., description="处置状态：candidate/confirmed/false_positive/duplicate/inconclusive/resolved")
     severity: str | None = Field(None, description="严重级别覆盖")
     reason: str | None = Field(None, max_length=2000, description="判定理由与说明")
@@ -295,6 +297,7 @@ class TriageFindingBody(BaseModel):
 
 
 class AddRetestBody(BaseModel):
+    expected_version: int = Field(..., ge=0, strict=True, description="详情 triage.version；过期返回 409")
     status: str = Field(..., description="复测结论：still_vulnerable/resolved/inconclusive")
     notes: str = Field(..., min_length=1, max_length=5000, description="复测记录与现象说明")
     evidence_id: int | None = Field(None, description="关联复测证据 ID")
@@ -344,7 +347,7 @@ def workspace_triage_finding(finding_id: int, body: TriageFindingBody, request: 
 
     def task(conn_: sqlite3.Connection) -> dict[str, Any]:
         return ops.triage_finding(
-            conn_, project_id=project_id, finding_id=finding_id,
+            conn_, project_id=project_id, finding_id=finding_id, expected_version=body.expected_version,
             status=body.status, severity=body.severity,
             reason=body.reason, duplicate_of_id=body.duplicate_of_id, actor="api")
 
@@ -362,7 +365,7 @@ def workspace_add_retest(finding_id: int, body: AddRetestBody, request: Request,
 
     def task(conn_: sqlite3.Connection) -> dict[str, Any]:
         return ops.add_retest(
-            conn_, project_id=project_id, finding_id=finding_id,
+            conn_, project_id=project_id, finding_id=finding_id, expected_version=body.expected_version,
             status=body.status, notes=body.notes,
             evidence_id=body.evidence_id, actor="api")
 

@@ -27,6 +27,7 @@ def generate_report(conn, project_id, format="markdown"):
             "status": finding["status"], "severity": finding["severity"],
             "title": finding["title"], "description": finding["description"],
             "disposition_reason": finding["triage"]["disposition_reason"],
+            "decision_basis_missing": finding["decision_basis_missing"],
             "duplicate_of_id": finding["triage"]["duplicate_of_id"],
             "target": finding["target_asset"],
             "initial_evidence": finding["initial_evidence"],
@@ -94,10 +95,10 @@ def generate_report(conn, project_id, format="markdown"):
         f"",
         f"| 状态分类 | 数量 | 说明 |",
         f"|---|---:|---|",
-        f"| **已确认漏洞（Confirmed）** | **{len(confirmed_list)}** | 经人工复核或有效复测证据验证 |",
+        f"| **已确认漏洞（Confirmed）** | **{len(confirmed_list)}** | 人工登记为已确认；依据及缺口见明细 |",
         f"| **待核实发现（Candidate）** | {len(candidate_list)} | 扫描器工具命中或静态候选，未完成人工判定 |",
-        f"| **已修复漏洞（Resolved）** | {len(resolved_list)} | 经后续导入的复测证据验证修复 |",
-        f"| **误报处置（False Positive）** | {len(fp_list)} | 经人工核实非漏洞，已记录排除理由 |",
+        f"| **已修复漏洞（Resolved）** | {len(resolved_list)} | 人工登记为已修复；不代表系统验证了修复真实性 |",
+        f"| **误报处置（False Positive）** | {len(fp_list)} | 人工登记为误报；依据及缺口见明细 |",
         f"| **重复发现（Duplicate）** | {len(dup_list)} | 关联至主漏洞记录 |",
         f"| **存疑未决（Inconclusive）** | {len(inc_list)} | 证据不足或环境限制无法确认 |",
         f"",
@@ -153,8 +154,8 @@ def generate_report(conn, project_id, format="markdown"):
         f"",
         f"1. **零主动网络扫描**：本报告全部数据、接口识别与漏洞发现均基于用户显式导入的文件（如 HAR、Nuclei JSONL、OpenAPI、JS 清单等）或人工记录，系统不向任何外部网络地址发起主动探测。",
         f"2. **工具命中与确认分立**：自动化工具输出的命中仅记为观察事实与候选，不直接等同于已被利用或真实漏洞；必须经过人工审查与证据链路校验。",
-        f"3. **复测真实性保证**：网络超时、凭据过期或目标不可达不能作为“漏洞已修复”的推论。所有修复判定均需提供人工复测记录与实际证据。",
-        f"4. **证据可追溯**：每个发现均可回查原始导入定位、片段哈希与受管归档，防止虚构或不可复现的报告产出。",
+        f"3. **人工复测边界**：网络超时、凭据过期或目标不可达不能推出漏洞已修复。未关联复测证据时仅有人工说明；证据引用也不代表系统验证了证据充分性。",
+        f"4. **来源与缺口**：本报告列出已有的来源定位、片段哈希及证据引用。原文可能未归档或不可用；历史缺少判定理由的记录明确提示，不补造依据。",
         f"",
     ])
 
@@ -171,18 +172,22 @@ def _finding_markdown(finding, number):
         lines.append(f"- **主漏洞**：#{f['duplicate_of_id']}")
     if f.get("disposition_reason"):
         lines.append(f"- **判定理由/分析说明**：{f['disposition_reason']}")
+    if f.get("decision_basis_missing"):
+        lines.append("- **依据缺口**：历史记录未填写判定理由，不能据此视为已完成证据核实。")
     if f.get("description"):
         lines.append(f"- **详细描述**：\n  > {f['description']}")
     ev = f.get("initial_evidence")
     if ev:
         lines.append(f"- **首次发现证据**：#{ev['id']} · `{ev.get('locator_uri')}`")
         lines.append(f"  - 片段定位：`{ev.get('locator')}` · SHA-256: `{ev.get('sha256')}`")
+    if f['status'] == 'resolved' and not any(rt['status'] == 'resolved' for rt in f.get('retests', [])):
+        lines.append("- **复测缺口**：当前为人工已修复判定，尚无已修复复测记录。")
     for rt in f.get("retests", []):
         lines.append(f"- **人工复测** [{rt['created_at']}] {rt['actor']} · **{rt['status']}**")
         lines.append(f"  - 说明：{rt['notes']}")
         if rt.get("sha256"):
             lines.append(f"  - 关联复测证据：#{rt['evidence_id']} · `{rt.get('locator_uri')}` · `{rt.get('locator')}` · SHA-256 `{rt['sha256']}`")
         else:
-            lines.append("  - 未关联独立复测证据；结论依据为人工说明，仍需检查证据缺口。")
+            lines.append("  - 未关联复测证据，仅有人工说明；仍需检查证据缺口。")
     lines.append("")
     return lines

@@ -8,12 +8,29 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from . import normalize, ops, store
+from . import normalize, ops, query, store
 from .store import InvariantError, atomic, log_activity, now, sha256_hex
 
 FINDING_STATUSES = ops.FINDING_STATUSES
 FINDING_SEVERITIES = ops.FINDING_SEVERITIES
 RETEST_STATUSES = ops.RETEST_STATUSES
+
+
+def _decision_reason(status, reason):
+    text = (reason or "").strip()
+    if status != "candidate" and not text:
+        raise InvariantError("确认、修复、误报、重复或存疑判定必须填写理由；没有证据时请明确说明缺口")
+    return text
+
+
+def _check_version(conn, project_id, finding_id, expected_version):
+    _require_finding(conn, project_id, finding_id)
+    if type(expected_version) is not int or expected_version < 0:
+        raise InvariantError("必须提供已读取的 Finding expected_version（非负整数）")
+    row = conn.execute("SELECT version FROM finding_triage WHERE project_id=? AND finding_id=?",
+                       (project_id, finding_id)).fetchone()
+    if expected_version != (row[0] if row else 0):
+        raise query.QueryError("E_STALE_FINDING", "发现判定或复测已被修改，请重新载入后检查并保存；本次未写入")
 
 
 def _require_finding(conn, project_id, finding_id):
@@ -29,7 +46,7 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
                           template_id: str | None = None,
                           description: str | None = None,
                           evidence_id: int | None = None,
-                          status: str = "confirmed",
+                          status: str = "candidate",
                           reason: str | None = None,
                           actor: str = "analyst",
                           dry_run: bool = False,
@@ -52,6 +69,7 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
         raise InvariantError(f"处置状态只能是 {list(FINDING_STATUSES)} 之一，收到 {status!r}")
     if st == "duplicate":
         raise InvariantError("请先创建发现，再通过处置研判指定主漏洞")
+    reason_text = _decision_reason(st, reason)
 
     with ops.batch_txn(conn, dry_run, _shared_txn):
         row = conn.execute(
@@ -143,7 +161,7 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
                 "INSERT INTO finding_triage"
                 " (project_id, finding_id, status, severity, title, disposition_reason, updated_at, updated_by)"
                 " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(project_id, finding_id) DO NOTHING",
-                (project_id, finding_id, st, sev, name, (reason or "人工录入发现").strip(), now(), actor))
+                (project_id, finding_id, st, sev, name, reason_text, now(), actor))
 
         ops.finish_job(conn, job_id, "done", actor=actor)
         return {
@@ -152,16 +170,17 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
             "finding_id": finding_id, "finding_key": key,
             "status": st, "severity": sev, "target_id": target_entity_id,
             "title": name, "evidence_id": evidence_id,
+            "version": conn.execute("SELECT version FROM finding_triage WHERE project_id=? AND finding_id=?",
+                                    (project_id, finding_id)).fetchone()[0] if not dry_run else None,
         }
 
 
 def triage_finding(conn: sqlite3.Connection, *, project_id: int, finding_id: int,
-                   status: str, severity: str | None = None,
+                   expected_version: int, status: str, severity: str | None = None,
                    reason: str | None = None, duplicate_of_id: int | None = None,
                    actor: str = "analyst") -> dict[str, Any]:
     """更新漏洞发现的人工处置状态与判定（工作包 F）。"""
     store.require_row_factory(conn, caller="ops.triage_finding")
-    _require_finding(conn, project_id, finding_id)
     st = str(status).lower()
     if st not in FINDING_STATUSES:
         raise InvariantError(f"处置状态只能是 {list(FINDING_STATUSES)} 之一，收到 {status!r}")
@@ -172,6 +191,13 @@ def triage_finding(conn: sqlite3.Connection, *, project_id: int, finding_id: int
         raise InvariantError("重复发现必须指定主漏洞")
     if st != "duplicate":
         duplicate_of_id = None
+    reason_text = _decision_reason(st, reason)
+    with atomic(conn):
+        _check_version(conn, project_id, finding_id, expected_version)
+        return _save_triage(conn, project_id, finding_id, st, sev, reason_text, duplicate_of_id, actor, expected_version)
+
+
+def _save_triage(conn, project_id, finding_id, st, sev, reason_text, duplicate_of_id, actor, expected_version):
     if duplicate_of_id is not None:
         if duplicate_of_id == finding_id:
             raise InvariantError("漏洞不能标记为自身的重复项")
@@ -188,49 +214,48 @@ def triage_finding(conn: sqlite3.Connection, *, project_id: int, finding_id: int
             current = parent[0] if parent else None
 
     t_now = now()
-    with atomic(conn):
-        conn.execute(
-            "INSERT INTO finding_triage (project_id, finding_id, status, severity, disposition_reason, duplicate_of_id, updated_at, updated_by)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(project_id, finding_id) DO UPDATE SET"
-            "   status=excluded.status,"
-            "   severity=COALESCE(excluded.severity, finding_triage.severity),"
-            "   disposition_reason=excluded.disposition_reason,"
-            "   duplicate_of_id=excluded.duplicate_of_id,"
-            "   updated_at=excluded.updated_at,"
-            "   updated_by=excluded.updated_by",
-            (project_id, finding_id, st, sev, (reason or "").strip(), duplicate_of_id, t_now, actor))
-        log_activity(conn, actor=actor, action="finding.triage", target_kind="entity",
-                     target_id=finding_id, detail={"status": st, "severity": sev, "reason": reason, "duplicate_of_id": duplicate_of_id})
+    conn.execute(
+        "INSERT INTO finding_triage (project_id, finding_id, status, severity, disposition_reason, duplicate_of_id, updated_at, updated_by, version)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)"
+        " ON CONFLICT(project_id, finding_id) DO UPDATE SET"
+        "   status=excluded.status,"
+        "   severity=COALESCE(excluded.severity, finding_triage.severity),"
+        "   disposition_reason=excluded.disposition_reason,"
+        "   duplicate_of_id=excluded.duplicate_of_id,"
+        "   updated_at=excluded.updated_at,"
+        "   updated_by=excluded.updated_by,version=finding_triage.version+1",
+        (project_id, finding_id, st, sev, reason_text, duplicate_of_id, t_now, actor))
+    log_activity(conn, actor=actor, action="finding.triage", target_kind="entity",
+                 target_id=finding_id, detail={"status": st, "severity": sev, "reason": reason_text, "duplicate_of_id": duplicate_of_id,
+                                               "previous_version": expected_version, "version": expected_version + 1})
     return {"finding_id": finding_id, "status": st, "severity": sev,
-            "disposition_reason": (reason or "").strip(), "duplicate_of_id": duplicate_of_id,
+            "disposition_reason": reason_text, "duplicate_of_id": duplicate_of_id, "version": expected_version + 1,
             "updated_at": t_now, "updated_by": actor}
 
 
 def add_retest(conn: sqlite3.Connection, *, project_id: int, finding_id: int,
-               status: str, notes: str, evidence_id: int | None = None,
+               expected_version: int, status: str, notes: str, evidence_id: int | None = None,
                actor: str = "analyst") -> dict[str, Any]:
     """添加人工复测记录并按结论联动状态（工作包 F）。
 
     注意：网络超时、目标不可达或登录凭据失效不得判定为 resolved。
     """
     store.require_row_factory(conn, caller="ops.add_retest")
-    _require_finding(conn, project_id, finding_id)
     st = str(status).lower()
     if st not in RETEST_STATUSES:
         raise InvariantError(f"复测结论只能是 {list(RETEST_STATUSES)} 之一，收到 {status!r}")
     note_text = (notes or "").strip()
     if not note_text:
         raise InvariantError("复测记录说明不能为空")
-    if evidence_id is not None:
-        ev_row = conn.execute(
-            "SELECT id FROM evidence WHERE id=? AND project_id=?",
-            (evidence_id, project_id)).fetchone()
-        if ev_row is None:
-            raise InvariantError(f"复测证据 {evidence_id} 不在项目 {project_id} 里")
-
     t_now = now()
     with atomic(conn):
+        _check_version(conn, project_id, finding_id, expected_version)
+        if evidence_id is not None:
+            ev_row = conn.execute(
+                "SELECT id FROM evidence WHERE id=? AND project_id=?",
+                (evidence_id, project_id)).fetchone()
+            if ev_row is None:
+                raise InvariantError(f"复测证据 {evidence_id} 不在项目 {project_id} 里")
         cursor = conn.execute(
             "INSERT INTO finding_retests (project_id, finding_id, status, notes, evidence_id, actor, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -246,12 +271,21 @@ def add_retest(conn: sqlite3.Connection, *, project_id: int, finding_id: int,
                 "   duplicate_of_id=NULL,"
                 "   disposition_reason=excluded.disposition_reason,"
                 "   updated_at=excluded.updated_at,"
-                "   updated_by=excluded.updated_by",
+                "   updated_by=excluded.updated_by,version=finding_triage.version+1",
                 (project_id, finding_id, new_triage_status,
                  f"人工复测联动（结论：{st}）: {note_text[:100]}", t_now, actor))
+        else:
+            # An inconclusive retest is also a revision, even without a decision change.
+            conn.execute(
+                "INSERT INTO finding_triage(project_id,finding_id,status,updated_at,updated_by)"
+                " VALUES(?,?,'candidate',?,?) ON CONFLICT(project_id,finding_id) DO UPDATE SET"
+                " version=finding_triage.version+1,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                (project_id, finding_id, t_now, actor))
         log_activity(conn, actor=actor, action="finding.retest", target_kind="entity",
-                     target_id=finding_id, detail={"retest_id": retest_id, "status": st, "notes": note_text, "evidence_id": evidence_id})
+                     target_id=finding_id, detail={"retest_id": retest_id, "status": st, "notes": note_text, "evidence_id": evidence_id,
+                                                   "previous_version": expected_version, "version": expected_version + 1})
     return {"retest_id": retest_id, "finding_id": finding_id, "status": st,
+            "version": expected_version + 1,
             "notes": note_text, "evidence_id": evidence_id, "created_at": t_now, "actor": actor}
 
 

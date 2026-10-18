@@ -87,7 +87,7 @@ def build() -> None:
         ops.triage_finding(conn, project_id=project_id, finding_id=tool_finding_id,
                            status="false_positive",
                            reason="测试探针误报：调试端点已通过前置反向代理拦截，仅内部白名单可访问，外部返回 404",
-                           actor="security-analyst")
+                           actor="security-analyst", expected_version=workspace.finding_detail(conn, project_id, tool_finding_id)['triage']['version'])
 
         # 4. Manual finding: SQL injection on login endpoint
         res = ops.create_manual_finding(
@@ -126,7 +126,7 @@ def build() -> None:
         ops.add_retest(conn, project_id=project_id, finding_id=manual_finding_id,
                        status="still_vulnerable",
                        notes="第一轮人工复测：提交单引号 payload 依然返回 SQL 语法错误，尚未修复。",
-                       actor="qa-tester")
+                       actor="qa-tester", expected_version=workspace.finding_detail(conn, project_id, manual_finding_id)['triage']['version'])
 
         # Round 2: Resolved with evidence
         raw_retest = ops.add_raw_file(conn, project_id=project_id, locator_uri="file:///retest_login.http",
@@ -137,7 +137,7 @@ def build() -> None:
                        status="resolved",
                        notes="第二轮人工复测：后端已替换为 PreparedStatement 参数化查询，输入特殊字符返回校验错误，漏洞已解决。",
                        evidence_id=ev_retest,
-                       actor="security-analyst")
+                       actor="security-analyst", expected_version=workspace.finding_detail(conn, project_id, manual_finding_id)['triage']['version'])
 
         store.recompute(conn)
         store.assert_integrity(conn)

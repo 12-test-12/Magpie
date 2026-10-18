@@ -18,6 +18,26 @@ beforeEach(async () => {
 })
 afterEach(() => { vi.useRealTimers() })
 
+it('opens the same Finding and open-task scope as the overview counts', async () => {
+  const Overview = (await import('../src/views/OverviewView.vue')).default
+  store.projects = [{id:1,name:'demo',counts:{entities:10}}]
+  global.fetch = vi.fn(async () => response({assets:2, api:2, evidence:1, findings_confirmed:1, findings_candidate:2,
+    tasks_open:2, recent_jobs:[], count_basis:'合成数据'}))
+  const wrapper = mount(Overview); await flushPromises()
+  await wrapper.findAll('button').find(b => b.text().includes('已确认漏洞')).trigger('click')
+  expect(store.workspaceJump.filters).toEqual({status:'confirmed'})
+  await wrapper.findAll('button').find(b => b.text().includes('工具发现')).trigger('click')
+  expect(store.workspaceJump.filters).toEqual({status:'candidate'})
+  await wrapper.findAll('button').find(b => b.text().includes('待处理与进行中')).trigger('click')
+  expect(store.workspaceJump.filters).toEqual({status:'open'})
+  wrapper.unmount()
+  global.fetch = vi.fn(async () => response({rows:[],total:2,next_cursor:null}))
+  const tasks = mount(Tasks); await flushPromises()
+  expect(tasks.find('[aria-label="筛选任务状态"]').element.value).toBe('open')
+  expect(global.fetch.mock.calls.at(-1)[0]).toContain('status=open')
+  tasks.unmount()
+})
+
 it('searches the backend, groups counts, and opens a result directly without a graph', async () => {
   global.fetch = vi.fn(async () => response({groups}))
   const wrapper = mount(Palette)

@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 const response = data => ({ ok: true, status: 200, json: async () => ({ ok: true, data }) })
-const finding = (id, title) => ({ id, kind: 'vuln', title, triage: { status: 'candidate', severity: 'high' } })
+const finding = (id, title) => ({ id, kind: 'vuln', title, triage: { status: 'candidate', severity: 'high', version: 1 } })
 let store, Panel
 beforeEach(async () => {
   vi.resetModules()
@@ -70,5 +70,49 @@ it('does not apply an old mutation completion to another project', async () => {
   expect(wrapper.text()).toContain('新发现')
   expect(wrapper.text()).not.toContain('已更新并计入审计')
   expect(store.dataRevision).toBe(revision)
+  wrapper.unmount()
+})
+
+it('preserves a conflicted decision draft and requires explicit reload before another write', async () => {
+  let revision = 1
+  global.fetch = vi.fn(async (url, options) => {
+    if (options?.method === 'POST') return {ok:false, status:409, json:async () => ({ok:false, error:{code:'E_STALE_FINDING', message:'发现已被修改'}})}
+    return response({...finding(1, '冲突发现'), triage:{status:'candidate', severity:'high', version:revision}})
+  })
+  const wrapper = mount(Panel, {props:{findingId:1, section:'triage'}})
+  await flushPromises()
+  await wrapper.find('textarea').setValue('旧窗口草稿，需要保留')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  const posts = () => global.fetch.mock.calls.filter(([,o]) => o?.method === 'POST')
+  expect(JSON.parse(posts()[0][1].body).expected_version).toBe(1)
+  expect(wrapper.find('textarea').element.value).toBe('旧窗口草稿，需要保留')
+  expect(wrapper.find('[role="alert"]').text()).toContain('本次未写入')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(posts()).toHaveLength(1)
+  revision = 2
+  await wrapper.find('[role="alert"] button').trigger('click'); await flushPromises()
+  expect(wrapper.find('textarea').element.value).toBe('')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(JSON.parse(posts().at(-1)[1].body).expected_version).toBe(2)
+  wrapper.unmount()
+})
+
+it('blocks an unsupported decision and sends the loaded revision with a retest', async () => {
+  global.fetch = vi.fn(async (url, options) => options?.method === 'POST'
+    ? response({version:2}) : String(url).includes('/workspace/entities/')
+      ? response({rows:[],total:0,next_cursor:null}) : response(finding(1, '人工依据')))
+  const wrapper = mount(Panel, {props:{findingId:1, section:'triage'}})
+  await flushPromises()
+  await wrapper.find('select').setValue('confirmed')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(wrapper.text()).toContain('必须填写理由')
+  expect(global.fetch.mock.calls.some(([,o]) => o?.method === 'POST')).toBe(false)
+  await wrapper.setProps({section:'retests'}); await flushPromises()
+  expect(wrapper.text()).toContain('未关联复测证据，仅有人工说明')
+  await wrapper.find('textarea').setValue('本地人工复测说明')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  const [, options] = global.fetch.mock.calls.find(([,o]) => o?.method === 'POST')
+  expect(JSON.parse(options.body)).toMatchObject({expected_version:1, status:'inconclusive'})
+  expect(wrapper.text()).toContain('原处置判定保留')
   wrapper.unmount()
 })

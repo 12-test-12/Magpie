@@ -122,14 +122,14 @@ def test_tool_hit_default_candidate_and_triage_flow(db):
     # Triage: Mark as False Positive
     ops.triage_finding(db, project_id=project_id, finding_id=vuln_id,
                        status="false_positive", reason="测试探针误报，响应体包含错误关键字但未实际执行",
-                       actor="analyst")
+                       actor="analyst", expected_version=workspace.finding_detail(db, project_id, vuln_id)['triage']['version'])
     finding = workspace.finding_detail(db, project_id, vuln_id)
     assert finding["triage"]["status"] == "false_positive"
     assert "测试探针误报" in finding["triage"]["disposition_reason"]
 
     # Triage: Confirm finding
     ops.triage_finding(db, project_id=project_id, finding_id=vuln_id,
-                       status="confirmed", reason="重现成功，确认存在", actor="lead")
+                       status="confirmed", reason="重现成功，确认存在", actor="lead", expected_version=workspace.finding_detail(db, project_id, vuln_id)['triage']['version'])
     finding = workspace.finding_detail(db, project_id, vuln_id)
     assert finding["triage"]["status"] == "confirmed"
 
@@ -145,7 +145,7 @@ def test_retest_records_and_evidence_linkage(db):
 
     # 1. First retest: still vulnerable
     ops.add_retest(db, project_id=project_id, finding_id=finding_id,
-                   status="still_vulnerable", notes="第一轮复测：依然可以访问他人资源", actor="tester1")
+                   status="still_vulnerable", notes="第一轮复测：依然可以访问他人资源", actor="tester1", expected_version=workspace.finding_detail(db, project_id, finding_id)['triage']['version'])
     detail = workspace.finding_detail(db, project_id, finding_id)
     assert len(detail["retests"]) == 1
     assert detail["retests"][0]["status"] == "still_vulnerable"
@@ -157,7 +157,7 @@ def test_retest_records_and_evidence_linkage(db):
                                  locator={"step": "retest_verify"}, snippet="HTTP/1.1 403 Forbidden")
     ops.add_retest(db, project_id=project_id, finding_id=finding_id,
                    status="resolved", notes="第二轮复测：已返回 403 拒绝访问，修复生效",
-                   evidence_id=retest_ev, actor="tester2")
+                   evidence_id=retest_ev, actor="tester2", expected_version=workspace.finding_detail(db, project_id, finding_id)['triage']['version'])
 
     detail = workspace.finding_detail(db, project_id, finding_id)
     assert len(detail["retests"]) == 2
@@ -200,17 +200,17 @@ def test_duplicate_finding_validation(db):
     host_id = seed_host(db, project_id=project_id, key="dup.example.test")
 
     f1 = ops.create_manual_finding(db, project_id=project_id, title="漏洞A", severity="low",
-                                  target_entity_id=host_id, status="confirmed")["finding_id"]
+                                  target_entity_id=host_id, status="confirmed", reason="合成测试人工判定依据")["finding_id"]
     f2 = ops.create_manual_finding(db, project_id=project_id, title="漏洞B", severity="low",
-                                  target_entity_id=host_id, status="candidate")["finding_id"]
+                                  target_entity_id=host_id, status="candidate", reason="合成测试人工判定依据")["finding_id"]
 
     # Cannot duplicate self
     with pytest.raises(store.InvariantError, match="不能标记为自身"):
-        ops.triage_finding(db, project_id=project_id, finding_id=f1, status="duplicate", duplicate_of_id=f1)
+        ops.triage_finding(db, project_id=project_id, finding_id=f1, status="duplicate", duplicate_of_id=f1, expected_version=workspace.finding_detail(db, project_id, f1)['triage']['version'], reason="合成测试人工判定依据")
 
     # Valid duplicate
     ops.triage_finding(db, project_id=project_id, finding_id=f2, status="duplicate",
-                       duplicate_of_id=f1, reason="重复上报同一接口问题")
+                       duplicate_of_id=f1, reason="重复上报同一接口问题", expected_version=workspace.finding_detail(db, project_id, f2)['triage']['version'])
     detail = workspace.finding_detail(db, project_id, f2)
     assert detail["triage"]["status"] == "duplicate"
     assert detail["triage"]["duplicate_of_id"] == f1
@@ -249,8 +249,8 @@ def test_manual_finding_on_endpoint_target(db):
 def test_distinct_chinese_titles_do_not_merge_or_overwrite_triage(db):
     pid = ops.create_project(db, "titles", {})
     host = seed_host(db, pid)
-    first = ops.create_manual_finding(db, project_id=pid, title="越权访问", severity="high", target_entity_id=host)
-    second = ops.create_manual_finding(db, project_id=pid, title="敏感数据泄露", severity="low", target_entity_id=host)
+    first = ops.create_manual_finding(db, project_id=pid, title="越权访问", severity="high", target_entity_id=host, status="confirmed", reason="合成测试人工判定依据")
+    second = ops.create_manual_finding(db, project_id=pid, title="敏感数据泄露", severity="low", target_entity_id=host, status="confirmed", reason="合成测试人工判定依据")
     assert first["finding_id"] != second["finding_id"]
     assert workspace.browse(db, pid, category="findings", mode="list", q="越权访问")["total"] == 1
     assert workspace.finding_detail(db, pid, first["finding_id"])["title"] == "越权访问"
@@ -275,7 +275,7 @@ def test_manual_template_preserves_exact_endpoint_identity(db):
     ops.finish_job(db, job, "done")
     store.recompute(db)
     findings = [ops.create_manual_finding(db, project_id=pid, title="同一模板", template_id="access-check",
-                severity="high", target_entity_id=target)["finding_id"] for target in ids]
+                severity="high", target_entity_id=target, status="confirmed", reason="合成测试人工判定依据")["finding_id"] for target in ids]
     assert len(set(findings)) == 3
     assert [workspace.finding_detail(db, pid, fid)["target_asset"]["id"] for fid in findings] == ids
 
@@ -296,11 +296,11 @@ def test_resolved_report_retains_initial_and_retest_provenance_and_redacts(db):
     pid = ops.create_project(db, "report", {})
     host = seed_host(db, pid)
     created = ops.create_manual_finding(db, project_id=pid, title="报告验证", severity="high",
-        target_entity_id=host, description="password=initial-secret")
+        target_entity_id=host, description="password=initial-secret", status="confirmed", reason="合成测试人工判定依据")
     raw = ops.add_raw_file(db, project_id=pid, locator_uri="file:///retest.txt", content="retest proof")
     ev = ops.add_evidence(db, project_id=pid, raw_file_id=raw, locator={"line": 9}, snippet="proof")
     ops.add_retest(db, project_id=pid, finding_id=created["finding_id"], status="resolved",
-        notes="人工已验证修复 password=retest-secret", evidence_id=ev)
+        notes="人工已验证修复 password=retest-secret", evidence_id=ev, expected_version=workspace.finding_detail(db, pid, created["finding_id"])['triage']['version'])
     ops.add_finding(db, project_id=pid, entity_id=host, text="password=note-secret")
     md = workspace.generate_report(db, pid)
     report = workspace.generate_report(db, pid, format="json")
@@ -318,13 +318,13 @@ def test_duplicate_requires_target_rejects_cycles_and_retest_clears_link(db):
     pid = ops.create_project(db, "duplicates", {})
     host = seed_host(db, pid)
     a, b = [ops.create_manual_finding(db, project_id=pid, title=name, severity="low",
-                                     target_entity_id=host)["finding_id"] for name in ("A", "B")]
+                                     target_entity_id=host, status="confirmed", reason="合成测试人工判定依据")["finding_id"] for name in ("A", "B")]
     with pytest.raises(store.InvariantError, match="指定主漏洞"):
-        ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate")
-    ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate", duplicate_of_id=b)
+        ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate", expected_version=workspace.finding_detail(db, pid, a)['triage']['version'], reason="合成测试人工判定依据")
+    ops.triage_finding(db, project_id=pid, finding_id=a, status="duplicate", duplicate_of_id=b, expected_version=workspace.finding_detail(db, pid, a)['triage']['version'], reason="合成测试人工判定依据")
     with pytest.raises(store.InvariantError, match="循环"):
-        ops.triage_finding(db, project_id=pid, finding_id=b, status="duplicate", duplicate_of_id=a)
-    ops.add_retest(db, project_id=pid, finding_id=a, status="still_vulnerable", notes="人工再次重现")
+        ops.triage_finding(db, project_id=pid, finding_id=b, status="duplicate", duplicate_of_id=a, expected_version=workspace.finding_detail(db, pid, b)['triage']['version'], reason="合成测试人工判定依据")
+    ops.add_retest(db, project_id=pid, finding_id=a, status="still_vulnerable", notes="人工再次重现", expected_version=workspace.finding_detail(db, pid, a)['triage']['version'])
     assert workspace.finding_detail(db, pid, a)["triage"]["duplicate_of_id"] is None
 
 
@@ -332,12 +332,12 @@ def test_duplicate_requires_target_rejects_cycles_and_retest_clears_link(db):
 def test_lifecycle_write_does_not_commit_callers_transaction(db, operation):
     pid = ops.create_project(db, "transactions", {})
     host = seed_host(db, pid)
-    fid = ops.create_manual_finding(db, project_id=pid, title="事务", severity="low", target_entity_id=host)["finding_id"]
+    fid = ops.create_manual_finding(db, project_id=pid, title="事务", severity="low", target_entity_id=host, status="confirmed", reason="合成测试人工判定依据")["finding_id"]
     db.execute("BEGIN IMMEDIATE")
     if operation == "triage":
-        ops.triage_finding(db, project_id=pid, finding_id=fid, status="false_positive", reason="外层测试")
+        ops.triage_finding(db, project_id=pid, finding_id=fid, status="false_positive", reason="外层测试", expected_version=workspace.finding_detail(db, pid, fid)['triage']['version'])
     else:
-        ops.add_retest(db, project_id=pid, finding_id=fid, status="resolved", notes="外层测试")
+        ops.add_retest(db, project_id=pid, finding_id=fid, status="resolved", notes="外层测试", expected_version=workspace.finding_detail(db, pid, fid)['triage']['version'])
     assert db.in_transaction
     db.rollback()
     detail = workspace.finding_detail(db, pid, fid)
@@ -347,10 +347,10 @@ def test_lifecycle_write_does_not_commit_callers_transaction(db, operation):
 def test_bounded_retests_and_undone_finding_rejected(db):
     pid = ops.create_project(db, "bounded", {})
     host = seed_host(db, pid)
-    created = ops.create_manual_finding(db, project_id=pid, title="分页", severity="low", target_entity_id=host)
+    created = ops.create_manual_finding(db, project_id=pid, title="分页", severity="low", target_entity_id=host, status="confirmed", reason="合成测试人工判定依据")
     fid = created["finding_id"]
     for i in range(51):
-        ops.add_retest(db, project_id=pid, finding_id=fid, status="inconclusive", notes=f"记录 {i}")
+        ops.add_retest(db, project_id=pid, finding_id=fid, status="inconclusive", notes=f"记录 {i}", expected_version=workspace.finding_detail(db, pid, fid)['triage']['version'])
     detail = workspace.finding_detail(db, pid, fid)
     assert len(detail["retests"]) == 50 and detail["retests_truncated"]
     assert detail["retests_count"] == 51
@@ -365,4 +365,4 @@ def test_bounded_retests_and_undone_finding_rejected(db):
     assert len(workspace.generate_report(db, pid, format="json")["confirmed_findings"][0]["retests"]) == 51
     ops.undo(db, created["job_id"])
     with pytest.raises(store.InvariantError):
-        ops.triage_finding(db, project_id=pid, finding_id=fid, status="confirmed")
+        ops.triage_finding(db, project_id=pid, finding_id=fid, status="confirmed", expected_version=52, reason="合成测试人工判定依据")

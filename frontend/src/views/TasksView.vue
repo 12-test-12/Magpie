@@ -58,6 +58,7 @@ watch(() => store.project, () => {
 }, {immediate:true})
 watch(() => store.workspaceJump, jump => {
   if (jump?.category !== 'tasks' || jump.project !== store.project) return
+  q.value = jump.filters?.q || ''; status.value = jump.filters?.status || ''; filter()
   if (jump.row?.target) edit(null, jump.row.target)
   store.workspaceJump = null
 }, {immediate:true})
@@ -67,7 +68,7 @@ onBeforeUnmount(() => { generation++; slot.cancel(); detailSlot.cancel() })
   <div class="research-page workspace-page">
     <header class="page-heading"><div><div class="eyebrow">RESEARCH TASKS</div><h1>研究任务与待办</h1><p>记录人工研究线索、验证进度和协作依赖。</p></div><button class="primary" :disabled="!store.project" @click="edit()">＋ 新建研究任务</button></header>
     <p class="notice">任务由研究员手动维护。关联对象复用当前项目资产与发现；导入撤销不会删除待办。状态变更不发起网络测试。</p>
-    <form class="workspace-filters" @submit.prevent="filter"><label class="search-field">搜索<input v-model="q" aria-label="搜索研究任务" placeholder="标题或描述…" maxlength="300" /></label><label>任务状态<select v-model="status" aria-label="筛选任务状态"><option value="">全部状态</option><option v-for="(label,key) in labels" :key="key" :value="key">{{ label }}</option></select></label><button>应用筛选</button><button type="button" @click="load">刷新</button></form>
+    <form class="workspace-filters" @submit.prevent="filter"><label class="search-field">搜索<input v-model="q" aria-label="搜索研究任务" placeholder="标题或描述…" maxlength="300" /></label><label>任务状态<select v-model="status" aria-label="筛选任务状态"><option value="">全部状态</option><option value="open">待处理与进行中</option><option v-for="(label,key) in labels" :key="key" :value="key">{{ label }}</option></select></label><button>应用筛选</button><button type="button" @click="load">刷新</button></form>
     <div class="workspace-body task-body">
       <div class="workspace-results">
         <p v-if="!store.project" class="workspace-state">先创建或选择项目。</p>

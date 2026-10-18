@@ -1529,7 +1529,7 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
                           template_id: str | None = None,
                           description: str | None = None,
                           evidence_id: int | None = None,
-                          status: str = "confirmed",
+                          status: str = "candidate",
                           reason: str | None = None,
                           actor: str = "analyst",
                           dry_run: bool = False,
@@ -1544,23 +1544,23 @@ def create_manual_finding(conn: sqlite3.Connection, *, project_id: int,
 
 
 def triage_finding(conn: sqlite3.Connection, *, project_id: int, finding_id: int,
-                   status: str, severity: str | None = None,
+                   expected_version: int, status: str, severity: str | None = None,
                    reason: str | None = None, duplicate_of_id: int | None = None,
                    actor: str = "analyst") -> dict[str, Any]:
     """Compatibility facade for finding_ops.triage_finding."""
     from .finding_ops import triage_finding as operation
     return operation(
-        conn, project_id=project_id, finding_id=finding_id, status=status,
+        conn, project_id=project_id, finding_id=finding_id, expected_version=expected_version, status=status,
         severity=severity, reason=reason, duplicate_of_id=duplicate_of_id, actor=actor)
 
 
 def add_retest(conn: sqlite3.Connection, *, project_id: int, finding_id: int,
-               status: str, notes: str, evidence_id: int | None = None,
+               expected_version: int, status: str, notes: str, evidence_id: int | None = None,
                actor: str = "analyst") -> dict[str, Any]:
     """Compatibility facade for finding_ops.add_retest."""
     from .finding_ops import add_retest as operation
     return operation(
-        conn, project_id=project_id, finding_id=finding_id, status=status,
+        conn, project_id=project_id, finding_id=finding_id, expected_version=expected_version, status=status,
         notes=notes, evidence_id=evidence_id, actor=actor)
 
 
