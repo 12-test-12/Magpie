@@ -59,7 +59,7 @@ def main():
     finally:
         for child in reversed(children):
             if child.poll() is None:
-                if sys.platform == "win32":
+                if sys.platform == "win32":   
                     subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"], capture_output=True)
                 else:
                     child.terminate()

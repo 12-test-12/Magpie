@@ -69,7 +69,7 @@ def detect(text: str, filename: str = "") -> str:
         return "csv"
     return "text"
 
-
+# 递归生成器
 def leaves(value: Any, path: str = "$", depth: int = 0):
     if depth > 24:
         raise ValueError("嵌套深度超过 24 层")

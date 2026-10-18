@@ -421,3 +421,15 @@
 - Agent / Planner / Worker、自主探索、主动测试与自动复测均未增加。
 - 工作区原有 `dev.py` 行尾空白改动保留且不纳入本批提交；没有操作真实项目、推送远程、发布或制作分发包。前端生成资源随源码同步，本批整理为本地提交供用户检查。
 - 最终源码与文档 `git diff --check` 通过（排除用户原有 `dev.py` 和第三方生成资源）；001–018、normalize/store/ingest 的 Git 差异为空。本轮两个开发服务均已停止，8881/5281 与 8882/5282 不再监听，合成资料与截图保留。
+
+### 10.5 用户要求的带窗口浏览器复验（2026-10-18）
+
+用户再次要求在浏览器实际操作。本次另建 `.magpie-dev/browser-recheck-20261018/` 合成库，用 `dev.py --workspace browser-recheck-20261018 --api-port 8883 --web-port 5283` 启动；没有操作真实项目或覆盖原验收库，没有修改业务代码。
+
+桌面控制连接仍报告 native pipe unavailable，改用本机已有 Chrome，以 **headless=false 的可见窗口**实际执行页面点击、填写、提交、切换页面与下载。原计划录像因缺少 Playwright ffmpeg 编码器而未生成；没有安装编码器，改存带截图与 DOM 快照的操作 trace，不将 trace 宣称为视频。
+
+本次 11 个检查点全部通过：开放任务 2 项、已确认 1 项、初始待核实 0 项均从总览进入同范围；新建默认 candidate/version 1；确认时空理由触发浏览器必填校验且没有发出写请求；双页面旧版本提交真实返回 409、草稿保留且禁用重提；显式重载后可继续保存无附件复测到 resolved/version 3；1000×850 无横向溢出；实际下载 Markdown/JSON 均明确仅人工说明；空项目不串数据；直接打开后端生产静态页面显示 0.29.0。捕获 pageerror 为 0。
+
+页面新增 Finding #6“浏览器复验：人工判定写入保护”，最终 resolved/version 3。新截图：[总览](docs/browser-recheck-20261018/overview.jpg)、[版本冲突](docs/browser-recheck-20261018/finding-conflict.jpg)、[人工说明复测](docs/browser-recheck-20261018/manual-retest.jpg)、[窄桌面](docs/browser-recheck-20261018/manual-retest-narrow.jpg)、[开放任务](docs/browser-recheck-20261018/open-tasks.jpg)。完整操作记录为 `_scratch/browser-recheck-trace.zip`，结果与日志为 `_scratch/browser-recheck-result.json`、`_scratch/browser-recheck-visible.log`，实际下载为 `_scratch/browser-recheck-report.md/json`。
+
+本次服务保留给用户继续试用，浏览器地址见 `_scratch/browser-recheck-dev.log`；token 不写入本记录。源码与既有两个用户工作区改动均未修改，未新增提交、推送或发布。
