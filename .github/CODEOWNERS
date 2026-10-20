@@ -1,0 +1,4 @@
+# Repository owner, adapted to Magpie instead of copying the reference team's owners.
+# A personal repository cannot approve its own PR. Enable required approvals only
+# after adding another trusted reviewer; Required Checks can be required now.
+* @12-test-12

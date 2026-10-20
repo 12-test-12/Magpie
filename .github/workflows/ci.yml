@@ -1,205 +1,175 @@
-# Magpie 的 CI 与可分发打包（LARI-48）。四个 job，各自的判据：
-#
-#   check     两平台（ubuntu / windows × Python 3.13）跑 `python check.py`，
-#             exit 0 才算绿 —— 静态红线 + core/api/cli/adapters pytest +
-#             verify 验收脚本，与本地口径逐字同一份入口。
-#   frontend  `npm ci && npm run build` 后 `git diff --exit-code magpie/api/web/`
-#             —— 产物入库且幂等（5.3/5.5 同款判据）。顺带跑前端单测（npm test）。
-#   package   依赖上面两组全绿；PyInstaller **onedir** 打双平台可分发包，
-#             对**解压后**的产物跑 packaging/smoke.sh（只读命令 + schema 迁移 +
-#             回环起服务 + GUI 静态资源零出站 grep），再 upload-artifact。
-#   release   把两个平台的包挂上 Release 页，两条路径：推 `main` → 滚动
-#             **prerelease `edge`**（每次推送整只重建，Release 页面永远是
-#             最新包 —— 不打 tag 也有产物可下）；`v*` tag → **draft** 正式
-#             Release（重跑时只 --clobber 换资产，不再撞"已存在"）。
-#
-# 关于 `check.py bench`（严格性能契约）**为什么不进 CI**：
-#   bench 的判据是计时（1M 行 ≤ 60s / 导入 10 万观测 < 60s / 冷启动 < 1s），
-#   而 GitHub 共享 runner 的负载会让这类数字整段漂移 —— 阶段 4/5 交付里多次
-#   实测归因过（同一份代码导入 52s→95s）。在 CI 里跑它，红了不携带任何代码
-#   信息，只会训练下一个人忽略红。本地严格口径不变：`py -3.13 check.py bench`
-#   （MAGPIE_PERF_STRICT=1）仍是发版前的门。这不是删掉，是明说它在哪跑。
-#
-# 关于构建期网络：pip / npm 下载是**构建行为**（判据 4 明说不算运行时出站）；
-# 产物的运行时零外联由 smoke.sh 的回环断言与 GUI 资源 grep 守。
-
-name: CI
+name: Magpie CI
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    branches: ['**']
   pull_request:
-
-# 同一分支/PR 的新推送取消旧跑；tag 跑不取消（它要留下完整的首跑记录）。
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  # Windows runner 的管道默认是 locale 编码（cp1252），check.py 的中文输出会
-  # 直接 UnicodeEncodeError —— 那是假红。UTF-8 模式对 Linux 无副作用。
   PYTHONUTF8: '1'
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
 jobs:
-  check:
-    name: check.py (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: 装依赖（dev + api + api-yaml —— 四步里 api/adapters/verify 都要它们）
-        run: python -m pip install -e ".[dev,api,api-yaml]"
-      - name: check.py（11 条静态红线 + 四组 pytest + verify 验收脚本）
-        run: python check.py
+      - name: Install workflow parser
+        run: python -m pip install PyYAML==6.0.2
+      - name: Facts, versions, workflow structure and immutable migrations
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: python scripts/ci/contracts.py --base "$CI_BASE_SHA"
+      - name: Existing application red lines
+        run: python check.py lint
+      - name: Delivery gate and artifact integrity regressions
+        run: python -m unittest discover -s scripts/ci/tests -v
+      - name: GitHub Actions expression and shell checks
+        run: docker run --rm -v "$PWD:/repo:ro" --workdir /repo rhysd/actionlint:1.7.12 -color
 
-  frontend:
-    name: 前端产物幂等（build ≡ 入库 magpie/api/web/）
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          # 钉**精确补丁号**（不是 '22'）：入库产物逐字节判据要求构建输入全等 ——
-          # 源码行尾已由 .gitattributes 钉 LF，node 也必须与产出这批产物的
-          # 本机版本（frontend/README.md 记录的 nvm 22.19.0）一个字不差。
-          node-version: '22.19.0'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 装前端依赖（lockfile 钉死）
-        run: npm ci
-      - name: 前端单测（聚合 / 布局 / 只读断言）
-        run: npm test
-      - name: 构建
-        run: npm run build
-      - name: 产物与入库版本逐字节一致（不一致 = 忘了提交构建产物）
-        working-directory: .
-        run: git diff --exit-code magpie/api/web/
-
-  package:
-    name: 打包 ${{ matrix.os }}
-    needs: [check, frontend]
+  backend:
+    name: Backend (${{ matrix.os }} / Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            suffix: linux-x86_64
-            archive: tar.gz
-          - os: windows-latest
-            suffix: windows-x86_64
-            archive: zip
-    runs-on: ${{ matrix.os }}
+          - {os: ubuntu-latest, python: '3.13'}
+          - {os: windows-latest, python: '3.13'}
+          - {os: ubuntu-latest, python: '3.11'}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install application and coverage test tools
+        run: |
+          python -m pip install -e ".[dev,api,api-yaml]"
+          python -m pip install pytest-cov==7.0.0
+      - name: Complete existing checks, with honest pytest coverage
+        shell: bash
+        env:
+          PYTEST_ADDOPTS: --cov=magpie --cov-append --cov-report=xml:_scratch/ci/coverage.xml
+        run: |
+          mkdir -p _scratch/ci
+          python check.py 2>&1 | tee _scratch/ci/check.log
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: backend-${{ matrix.os }}-py${{ matrix.python }}-${{ github.sha }}
+          path: _scratch/ci/
+          if-no-files-found: error
+          retention-days: 14
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.19.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Locked dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Complete frontend tests
+        run: npm test
+        working-directory: frontend
+      - name: Rebuild bundled production assets
+        run: npm run build
+        working-directory: frontend
+      - name: Check both tracked differences and untracked build outputs
+        run: python scripts/ci/contracts.py --web-only
+
+  browser:
+    name: Browser
+    needs: [contracts, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: pyproject.toml
-      # PyInstaller 收集依赖是**构建期**行为；fastapi/uvicorn/pyyaml 进包是
-      # `magpie app` 能一条命令起来的前提。装完即断网也与冒烟无关 —— 冒烟
-      # 全程只有回环请求。
-      - name: 装打包依赖
-        run: |
-          python -m pip install ".[api,api-yaml]"
-          python -m pip install pyinstaller
-      - name: PyInstaller onedir（spec 见 packaging/magpie.spec）
-        run: pyinstaller --noconfirm --clean packaging/magpie.spec
-      - name: 组装分发包（README 灌入版本号；Windows 用 python -m zipfile 免依赖）
-        shell: bash
-        run: |
-          VERSION=$(python -c "import magpie; print(magpie.__version__)")
-          sed "s/@VERSION@/${VERSION}/g" packaging/README-pack.md > dist/magpie/README.md
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar -czf "magpie-${VERSION}-${{ matrix.suffix }}.tar.gz" -C dist magpie
-          else
-            (cd dist && python -m zipfile -c "../magpie-${VERSION}-${{ matrix.suffix }}.zip" magpie)
-          fi
-          ls -l magpie-"${VERSION}"-*
-      - name: 冒烟（对解压后的产物：只读命令 / schema 迁移 / 回环起服务 / 资源零出站）
-        shell: bash
-        run: |
-          RT="${RUNNER_TEMP//\\//}"            # Windows 的反斜杠转正斜杠，bash 才认
-          mkdir -p "$RT/smoke"
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar -xzf magpie-*.tar.gz -C "$RT/smoke"
-          else
-            # 用 python -m zipfile 而不是 unzip：Git Bash 是否带 unzip 因镜像
-            # 而异，而 python 由 setup-python 保证在场（解压布局同 tar：根级 magpie/）。
-            python -m zipfile -e magpie-*.zip "$RT/smoke"
-          fi
-          MAGPIE_EXPECTED_VERSION=$(python -c "import magpie; print(magpie.__version__)") \
-            bash packaging/smoke.sh "$RT/smoke/magpie"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          name: magpie-${{ matrix.suffix }}
-          path: |
-            magpie-*.tar.gz
-            magpie-*.zip
-          if-no-files-found: error
-
-  release:
-    name: 产物挂 Release（main → edge prerelease / v* tag → draft）
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    needs: package
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write          # 挂 Release / 移动 edge 指向是本 job 唯一的写权限
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: 挂产物（main → 滚动 prerelease `edge`；v* tag → draft 正式 Release）
+          node-version: '22.19.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install build and isolated browser tools
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 本 job 没有 checkout，gh 找不到 git remote 就会退化成自己跑 git，
-          # 撞 "not a git repository"（gh 的解析链：--repo → GH_REPO → git
-          # remote）。显式给 GH_REPO，gh 全程走 API，与本地有没有仓库无关。
-          GH_REPO: ${{ github.repository }}
+          BROWSER_TOOLS: ${{ runner.temp }}/magpie-browser-tools
         run: |
-          set -euo pipefail
-          ls -l dist/
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            # 滚动 prerelease：整只重建（删 release → 挪 tag → 重建并挂包），
-            # 页面上永远是这次推送的产物。`edge` 不匹配 v*，即使 GITHUB_TOKEN
-            # 会触发的事件也回不成 CI（何况它不回触发），没有递归风险。
-            if gh release view edge >/dev/null 2>&1; then
-              gh release delete edge --yes
-            fi
-            # gh release delete 不删 tag；tag 不挪走，--target 就钉在旧提交上。
-            # 404（tag 本就不存在）当成功处理。
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/edge" \
-              >/dev/null 2>&1 || true
-            gh release create edge dist/* \
-              --prerelease --target "$GITHUB_SHA" \
-              --title "edge（main 最新构建）" \
-              --notes "main 分支最新构建的滚动预发布：每次推送整只重建，资产永远是当次 CI 的双平台包。"
-          else
-            # tag 路径：首次挂 draft（正式发布前留一道人工审阅）；重跑时
-            # release 已在，只 --clobber 换资产 —— 否则 gh release create 会
-            # 撞 "release already exists" 把重跑卡红。
-            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-              gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-            else
-              gh release create "$GITHUB_REF_NAME" dist/* \
-                --draft --generate-notes --title "$GITHUB_REF_NAME"
-            fi
-          fi
+          python -m pip install -e ".[api,api-yaml]"
+          npm ci --prefix frontend
+          npm install --prefix "$BROWSER_TOOLS" --no-save --no-package-lock --ignore-scripts playwright@1.62.1
+          "$BROWSER_TOOLS/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Real browser, isolated dev.py workspace and production page
+        env:
+          MAGPIE_PLAYWRIGHT_ROOT: ${{ runner.temp }}/magpie-browser-tools/node_modules
+          MAGPIE_BROWSER_HEADLESS: '1'
+        run: python scripts/ci/browser.py
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: browser-${{ github.sha }}
+          path: _scratch/ci-browser/
+          if-no-files-found: error
+          retention-days: 14
+
+  required:
+    name: Required Checks
+    if: always()
+    needs: [contracts, backend, frontend, browser]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every required job must actually succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          if set(results) != {'contracts', 'backend', 'frontend', 'browser'}:
+              raise SystemExit('Required job results are missing')
+          failed = {name: value['result'] for name, value in results.items() if value['result'] != 'success'}
+          if failed:
+              raise SystemExit(f'Required checks did not pass: {failed}')
+          print('Contracts, all Backend environments, Frontend and Browser passed')
+          PY

@@ -1,0 +1,195 @@
+name: Magpie Delivery
+
+# Must first land on main before GitHub exposes Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful Magpie CI run ID on main
+        required: true
+        type: string
+      expected_sha:
+        description: Full source SHA matching that CI run and local review
+        required: true
+        type: string
+      local_browser_verified:
+        description: I verified this source locally in a real browser before requesting packages
+        required: true
+        default: false
+        type: boolean
+      local_evidence:
+        description: Committed Markdown verification record (path without section anchor)
+        required: true
+        default: Magpie-主线二实施与验收记录.md
+        type: string
+      create_draft:
+        description: Also create a new draft Release (never publish or overwrite)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-${{ inputs.expected_sha }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+jobs:
+  gate:
+    name: Delivery Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_sha: ${{ steps.verify.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Verify source, completed CI and explicit local-browser declaration
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          LOCAL_VERIFIED: ${{ inputs.local_browser_verified }}
+          LOCAL_EVIDENCE: ${{ inputs.local_evidence }}
+        run: |
+          [[ "$CI_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid CI run ID'; exit 1; }
+          mkdir -p _scratch/delivery
+          gh api "repos/$GH_REPO/actions/runs/$CI_RUN_ID" > _scratch/delivery/run.json
+          python scripts/ci/delivery.py gate _scratch/delivery/run.json \
+            --sha "$EXPECTED_SHA" --repository "$GH_REPO" --verified "$LOCAL_VERIFIED" \
+            --evidence "$LOCAL_EVIDENCE" --dispatch-ref "$GITHUB_REF"
+          printf 'source_sha=%s\n' "$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package (${{ matrix.platform }})
+    needs: gate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, platform: linux-x86_64}
+          - {os: windows-latest, platform: windows-x86_64}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install packaging tools separately from runtime requirements
+        run: |
+          python -m pip install ".[api,api-yaml]"
+          python -m pip install pyinstaller==6.16.0
+      - name: PyInstaller onedir
+        run: python -m PyInstaller --noconfirm --clean packaging/magpie.spec
+      - name: Archive and record provenance
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+          PLATFORM: ${{ matrix.platform }}
+        run: python scripts/ci/delivery.py package dist/magpie _scratch/delivery "$PLATFORM" --sha "$SOURCE_SHA"
+        shell: bash
+      - name: Smoke-test the extracted deliverable
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, shutil
+          source = next(p for p in pathlib.Path('_scratch/delivery').iterdir() if p.name.endswith(('.zip', '.tar.gz')))
+          shutil.unpack_archive(str(source), '_scratch/extracted-package')
+          PY
+          MAGPIE_EXPECTED_VERSION=$(python -c "import magpie; print(magpie.__version__)") \
+            bash packaging/smoke.sh "$PWD/_scratch/extracted-package/magpie"
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: magpie-${{ needs.gate.outputs.source_sha }}-${{ matrix.platform }}
+          path: _scratch/delivery/
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Verify Deliverables
+    needs: [gate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.integrity.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: magpie-${{ needs.gate.outputs.source_sha }}-*
+          path: _scratch/deliverables
+          merge-multiple: true
+      - name: Verify both platforms, commit, version, sizes and hashes
+        id: integrity
+        env:
+          SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+        run: |
+          VERSION=$(python scripts/ci/delivery.py verify _scratch/deliverables --sha "$SOURCE_SHA")
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: verified-deliverables-${{ needs.gate.outputs.source_sha }}
+          path: _scratch/deliverables/
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    name: Draft Release
+    if: inputs.create_draft
+    needs: [gate, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: verified-deliverables-${{ needs.gate.outputs.source_sha }}
+          path: deliverables
+      - name: Create a fresh tag and draft, preserving every existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          test "$(python scripts/ci/delivery.py verify deliverables --sha "$SOURCE_SHA")" = "$VERSION"
+          # POST fails if this ref already exists; no force, deletion or clobber.
+          gh api --method POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/v$VERSION" -f "sha=$SOURCE_SHA"
+          printf 'Source: %s\nCI/local review completed before packaging. Verify SHA256SUMS before use.\n' "$SOURCE_SHA" > notes.md
+          gh release create "v$VERSION" deliverables/* --repo "$GH_REPO" --verify-tag \
+            --draft --title "Magpie $VERSION" --notes-file notes.md

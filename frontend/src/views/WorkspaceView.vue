@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { store } from '../store.js'
 import { fmtInt } from '../format.js'
-import { params, remember, requestSlot, workspaceMemory, workspacePages } from '../workspace.js'
+import { apiResearchDefaults, params, remember, requestSlot, workspaceMemory, workspacePages } from '../workspace.js'
+import ApiResearchFilters from '../components/ApiResearchFilters.vue'
 import WorkspaceDetail from '../components/WorkspaceDetail.vue'
 import FindingActions from '../components/FindingActions.vue'
 
@@ -10,11 +11,12 @@ const props = defineProps({ category: { type: String, required: true } })
 const emit = defineEmits(['import'])
 const page = computed(() => workspacePages[props.category])
 const simple = computed(() => ['evidence', 'notes'].includes(props.category))
-const state = reactive({ q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null, host: null, prefix: null, mode: 'host', cursor: null })
-const draft = reactive({ q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null })
+const state = reactive({ ...apiResearchDefaults(), q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null, host: null, prefix: null, mode: 'host', cursor: null })
+const draft = reactive({ ...apiResearchDefaults(), q: '', source: '', method: '', status: '', severity: '', tag: '', criticality: null })
 const data = ref(null), error = ref(''), loading = ref(false), selected = ref(null), scroller = ref(null)
 const history = ref([]), trail = ref([])
 const selectedCategory = ref(props.category)
+const researchFilters = ref(null)
 const slot = requestSlot()
 let context = '', scroll = 0
 const pageIndex = computed(() => history.value.length + 1)
@@ -55,6 +57,8 @@ async function load(preserveSelection = false) {
 }
 function resetPage() { state.cursor = null; history.value = []; scroll = 0 }
 function filter() {
+  researchFilters.value?.collapse()
+  if (props.category !== 'api') Object.assign(draft, apiResearchDefaults())
   Object.assign(state, draft); state.host = null; state.prefix = null
   state.mode = simple.value ? 'list' : 'host'; trail.value = []; resetPage(); load()
 }
@@ -116,9 +120,9 @@ watch(() => [store.project, props.category], () => {
   selectedCategory.value = props.category
   save(); slot.cancel(); context = `${store.project}:${props.category}`
   const saved = workspaceMemory.get(context)
-  Object.assign(state, { tag: '', criticality: null }, saved?.state || { q: '', source: '', method: '', status: '', severity: '', host: null, prefix: null,
+  Object.assign(state, apiResearchDefaults(), { tag: '', criticality: null }, saved?.state || { q: '', source: '', method: '', status: '', severity: '', host: null, prefix: null,
     mode: simple.value ? 'list' : 'host', cursor: null })
-  Object.assign(draft, { q: state.q, source: state.source, method: state.method, status: state.status, severity: state.severity, tag: state.tag, criticality: state.criticality })
+  Object.assign(draft, Object.fromEntries(Object.keys(apiResearchDefaults()).map(key => [key, state[key]])), { q: state.q, source: state.source, method: state.method, status: state.status, severity: state.severity, tag: state.tag, criticality: state.criticality })
   history.value = saved?.history || []; trail.value = saved?.trail || []; scroll = saved?.scroll || 0
   load()
 }, { immediate: true })
@@ -128,9 +132,9 @@ watch(() => [store.workspaceJump, props.category], async ([jump]) => {
   // Vue can reuse this component when a search changes the business category.
   await nextTick()
   if (store.workspaceJump !== jump || jump.project !== store.project || jump.category !== props.category) return
-  Object.assign(state, {q:'', source:'', method:'', status:'', severity:'', tag:'', criticality:null,
+  Object.assign(state, apiResearchDefaults(), {q:'', source:'', method:'', status:'', severity:'', tag:'', criticality:null,
     host:null, prefix:null, mode:'list', cursor:null}, jump.filters)
-  Object.assign(draft, {q:state.q, source:state.source, method:state.method, status:state.status, severity:state.severity, tag:state.tag, criticality:state.criticality})
+  Object.assign(draft, Object.fromEntries(Object.keys(apiResearchDefaults()).map(key => [key, state[key]])), {q:state.q, source:state.source, method:state.method, status:state.status, severity:state.severity, tag:state.tag, criticality:state.criticality})
   selectedCategory.value = props.category; selected.value = jump.row
   trail.value = []; resetPage(); store.workspaceJump = null; load(true)
 }, { immediate:true })
@@ -159,8 +163,9 @@ watch(() => store.dataRevision, () => { resetPage(); load(true) })
         <label v-if="category === 'findings'">处置状态<select v-model="draft.status" aria-label="处置状态"><option value="">全部状态</option><option value="candidate">待核实 (candidate)</option><option value="confirmed">已确认 (confirmed)</option><option value="resolved">已修复 (resolved)</option><option value="false_positive">误报排除 (false_positive)</option><option value="duplicate">重复发现 (duplicate)</option><option value="inconclusive">存疑 (inconclusive)</option></select></label>
         <label v-if="category === 'findings'">严重级别<select v-model="draft.severity" aria-label="严重级别"><option value="">全部级别</option><option value="critical">严重 (critical)</option><option value="high">高危 (high)</option><option value="medium">中危 (medium)</option><option value="low">低危 (low)</option><option value="info">提示 (info)</option></select></label>
       </template>
+      <ApiResearchFilters v-if="category === 'api'" ref="researchFilters" :model-value="draft" :applied="state" @update:model-value="Object.assign(draft, $event)" />
       <button type="submit">应用筛选</button>
-      <button type="button" class="ghost" @click="Object.assign(draft, {q:'',source:'',method:'',status:'',severity:'',tag:'',criticality:null}); filter()">重置</button>
+      <button type="button" class="ghost" @click="Object.assign(draft, apiResearchDefaults(), {q:'',source:'',method:'',status:'',severity:'',tag:'',criticality:null}); filter()">重置</button>
     </form>
     <div class="workspace-location">
       <div class="breadcrumbs"><button v-if="trail.length" class="ghost" @click="back">← 返回上级</button><span>{{ page.label }}</span><span v-if="state.host !== null">/ {{ state.host || '未关联主机' }}</span><span v-if="state.prefix !== null">/ {{ state.prefix }}</span></div>

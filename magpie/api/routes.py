@@ -172,11 +172,17 @@ def workspace_browse(project: str | None = None, category: str = "assets",
                      mode: str = "host", q: str = "", host: str | None = None,
                      prefix: str | None = None, method: str = "", source: str = "",
                      status: str = "", severity: str = "", tag: str = "", criticality: int | None = None,
+                     parameter_name: str = "", parameter_location: str = "",
+                     response_status: int | None = None, response_mime: str = "",
+                     credential: str = "", api_origin: str = "",
                      cursor: str | None = None, limit: int = 50,
                      conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(workspace.browse(conn, _resolve_project(conn, project), category=category,
                                mode=mode, q=q, host=host, prefix=prefix, method=method,
                                source=source, status=status, severity=severity, tag=tag, criticality=criticality,
+                               parameter_name=parameter_name, parameter_location=parameter_location,
+                               response_status=response_status, response_mime=response_mime,
+                               credential=credential, api_origin=api_origin,
                                cursor=cursor, limit=limit))
 
 

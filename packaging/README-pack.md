@@ -43,5 +43,5 @@ magpie.exe app --no-browser
 
 ---
 
-对应源码版本 `@VERSION@`；构建流水线与打包脚本见仓库 `.github/workflows/ci.yml`
+对应源码版本 `@VERSION@`；验证与手动打包流程分别见仓库 `.github/workflows/ci.yml`、`.github/workflows/delivery.yml`，使用说明见 `docs/ci-delivery.md`。
 和 `packaging/`。

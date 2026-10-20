@@ -12,6 +12,13 @@
 
 ---
 
+## 0.30.0 — API 研究筛选与请求样本对照
+
+- `GET /workspace/browse` 增加仅用于 API 分类的 `parameter_name`、`parameter_location`、`response_status`、`response_mime`、`credential`、`api_origin`；条件绑定游标，分组、列表和总数共用谓词。响应/凭据/参数组合不得跨请求拼接。
+- 区分有有效 HTTP 请求样本、仅 JS 静态来源、仅契约声明；参数名按精确字面匹配，MIME 忽略大小写及已保存值的 charset。缺失/未知数据不推断为无鉴权或漏洞。
+- 样本页可跨分页选择两份摘要，比较状态、类型、大小、参数名、请求头名和凭据类别，并分别打开证据；最多保留两份副本，切换对象/项目或数据版本时清空。未知和截断明确提示，不比较原始参数值或响应正文。
+- 应用版本 0.30.0，schema 仍为 v19；不变更解析器、身份、原文、Contribution 或 Undo/Redo，不新增数据库表及主动请求。
+
 ## 0.29.0 — 人工判定写入保护与依据缺口
 
 - Finding 详情新增 `triage.version`，人工创建返回 `version`。研判与复测请求现在必须携带非负整数 `expected_version`；缺失/类型错误返回 422，旧版本返回 409 `E_STALE_FINDING`，失败不写状态、历史或审计。复测即使不改变研判结论也推进同一版本。

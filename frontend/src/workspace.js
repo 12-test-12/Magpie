@@ -13,6 +13,8 @@ export const workspacePages = {
 // Session navigation memory, bounded to the most recent project/page contexts.
 // It contains filters and position only; never facts or copies of backend data.
 export const workspaceMemory = new Map()
+export const apiResearchDefaults = () => ({ parameter_name: '', parameter_location: '', response_status: null,
+  response_mime: '', credential: '', api_origin: '' })
 export function remember(key, value) {
   workspaceMemory.delete(key)
   // Navigation values are JSON primitives; JSON also unwraps nested Vue proxies.

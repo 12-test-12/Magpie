@@ -16,6 +16,6 @@
 
 from __future__ import annotations
 
-__version__ = "0.29.0"       # 与 pyproject.toml 保持一致（人工判定写入保护）
+__version__ = "0.30.0"       # 与 pyproject.toml 保持一致（API 研究筛选与样本对照）
 
 __all__ = ["__version__"]
