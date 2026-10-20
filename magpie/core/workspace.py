@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
-from . import normalize, query
+from . import api_research, normalize, query
 from .finding_queries import finding_detail, public_value
 from .research_report import generate_report
 
@@ -166,7 +166,9 @@ def summary(conn, project_id):
 
 
 def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
-           prefix=None, method="", source="", status="", severity="", tag="", criticality=None, cursor=None, limit=50):
+           prefix=None, method="", source="", status="", severity="", tag="", criticality=None,
+           parameter_name="", parameter_location="", response_status=None, response_mime="",
+           credential="", api_origin="", cursor=None, limit=50):
     if category not in (*CATEGORIES, "evidence", "notes") or mode not in ("host", "path", "list"):
         raise query.QueryError("E_UNSUPPORTED_FILTER", "不支持的工作台分类或分组")
     if len(q) > 300 or len(source) > 200 or len(method) > 30 or len(tag) > 60:
@@ -174,8 +176,13 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
     if criticality is not None and criticality not in (1, 2, 3):
         raise query.QueryError("E_UNSUPPORTED_FILTER", "重要度仅支持 Tier 1–3")
     _register(conn)
+    research_where, research_args = api_research.filters(
+        conn, category, parameter_name=parameter_name, parameter_location=parameter_location,
+        response_status=response_status, response_mime=response_mime,
+        credential=credential, api_origin=api_origin, method=method)
     signature = hashlib.sha256(json.dumps(
-        [project_id, category, mode, q, host, prefix, method, source, status, severity, tag, criticality]).encode()).hexdigest()[:20]
+        [project_id, category, mode, q, host, prefix, method, source, status, severity, tag, criticality,
+         parameter_name, parameter_location, response_status, response_mime, credential, api_origin]).encode()).hexdigest()[:20]
     if category in ("evidence", "notes"):
         if mode != "list" or host is not None or prefix is not None or method or source or status or severity or tag or criticality is not None:
             raise query.QueryError("E_UNSUPPORTED_FILTER", "证据和笔记仅支持文本搜索与列表分页")
@@ -219,6 +226,8 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
 
     params = [project_id, *CATEGORIES[category]]
     where = [ACTIVE, "e.kind IN (" + ",".join("?" for _ in CATEGORIES[category]) + ")"]
+    where.extend(research_where)
+    params.extend(research_args)
     if tag:
         where.append("EXISTS (SELECT 1 FROM entity_tags t WHERE t.project_id=e.project_id AND t.entity_id=e.id AND t.tag=? AND t.deleted_at IS NULL)")
         params.append(tag)

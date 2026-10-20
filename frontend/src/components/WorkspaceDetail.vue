@@ -5,6 +5,7 @@ import { store } from '../store.js'
 import { params, requestSlot } from '../workspace.js'
 import FindingPanel from './FindingPanel.vue'
 import EntityResearch from './EntityResearch.vue'
+import RequestSampleComparison from './RequestSampleComparison.vue'
 
 const props = defineProps({ row: { type: Object, required: true }, category: { type: String, required: true } })
 const emit = defineEmits(['close', 'select'])
@@ -85,6 +86,7 @@ watch(() => [store.project, props.row.id, props.row.kind, props.category], () =>
   section.value = isApiEndpoint.value ? 'samples' : props.category === 'js' && props.row.kind === 'endpoint' ? 'js' : isVuln.value ? 'triage' : 'observations'
   slot.cancel(); previewSlot.cancel(); cursor.value = null; previous.value = []; load()
 }, { immediate: true })
+watch(() => store.dataRevision, () => { previewSlot.cancel(); cursor.value = null; previous.value = []; load() })
 onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
 </script>
 
@@ -100,6 +102,8 @@ onBeforeUnmount(() => { slot.cancel(); previewSlot.cancel() })
       <section v-if="detail?.entity?.merge_groups?.length" class="merge-identities"><h3>当前有效合并组</h3><div v-for="group in detail.entity.merge_groups" :key="group.event_id"><p>合并事件 #{{ group.event_id }} · {{ group.reason }}</p><ul><li v-for="member in group.members" :key="member.entity_id"><span class="mono">{{ member.display_key }}</span><small v-if="member.identity_status === 'legacy_folded'" class="warn">历史折叠身份</small></li></ul><p v-if="group.members_truncated || detail.entity.merge_groups_truncated" class="warn">合并成员列表有上限，当前仅展示部分成员。</p></div></section>
       <p v-if="loading" role="status" class="dim">正在载入详情…</p>
       <div v-if="error" role="alert" class="error-state"><p>{{ error }}</p><button @click="load">重试</button></div>
+      <RequestSampleComparison v-if="isApiEndpoint && section === 'samples'" v-show="!evidence"
+        :rows="detail?.rows || []" :context="`${store.project}:${entityId}:${store.dataRevision}`" @evidence="openEvidence" />
       <section v-if="evidence" class="evidence-preview">
         <button v-if="!isEvidence" class="ghost" @click="evidence = null">← 返回来源列表</button>
         <h3>原始证据 #{{ evidence.id }}</h3><dl><dt>文件定位</dt><dd class="mono">{{ evidence.locator_uri }}</dd><dt>片段定位</dt><dd class="mono">{{ evidence.locator || '定位已不可用' }}</dd><dt>片段 SHA-256</dt><dd class="mono">{{ evidence.sha256 }}</dd><dt>原文持有 / 恢复状态</dt><dd>{{ evidence.storage_state }} / {{ evidence.recovery_state }}</dd></dl>

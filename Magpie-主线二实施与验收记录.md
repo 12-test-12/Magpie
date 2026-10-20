@@ -1,6 +1,6 @@
 # Magpie 主线二实施与验收记录
 
-更新：2026-10-18。当前版本：0.29.0 / schema v19；工作包 C 首批验收版本为 0.23.0，工作包 E 验收版本为 0.25.0，工作包 F 首批版本为 0.26.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。第 1–7 节保留各批验收口径，第 8 节记录 F 的审查修复，第 9 节记录 G，第 10 节记录人工判定写入收口。
+更新：2026-10-20。当前版本：0.30.0 / schema v19；工作包 C 首批验收版本为 0.23.0，工作包 E 验收版本为 0.25.0，工作包 F 首批版本为 0.26.0。前置交付：主线一本地提交 `c43ef79`，工作包 C 本地提交 `8992368`。第 1–7 节保留各批验收口径，第 8 节记录 F 的审查修复，第 9 节记录 G，第 10 节记录人工判定写入收口，第 11 节记录 API 研究筛选和样本对照。
 
 ## 1. 本次范围与理由
 
@@ -433,3 +433,64 @@
 页面新增 Finding #6“浏览器复验：人工判定写入保护”，最终 resolved/version 3。新截图：[总览](docs/browser-recheck-20261018/overview.jpg)、[版本冲突](docs/browser-recheck-20261018/finding-conflict.jpg)、[人工说明复测](docs/browser-recheck-20261018/manual-retest.jpg)、[窄桌面](docs/browser-recheck-20261018/manual-retest-narrow.jpg)、[开放任务](docs/browser-recheck-20261018/open-tasks.jpg)。完整操作记录为 `_scratch/browser-recheck-trace.zip`，结果与日志为 `_scratch/browser-recheck-result.json`、`_scratch/browser-recheck-visible.log`，实际下载为 `_scratch/browser-recheck-report.md/json`。
 
 本次服务保留给用户继续试用，浏览器地址见 `_scratch/browser-recheck-dev.log`；token 不写入本记录。源码与既有两个用户工作区改动均未修改，未新增提交、推送或发布。
+
+## 11. 2026-10-20：API 研究筛选与两份样本摘要对照（0.30.0）
+
+### 11.1 先写方案与本批范围
+
+用户要求先写 Markdown，再完善第一部分 API 研究功能，报告暂缓。业务代码修改前已完成[API 研究筛选实施方案](./docs/api-research-filters-plan.md)，随后在 `codex/api-research-filters` 实施。基线为 `2c428e7`，应用版本更新至 **0.30.0**，schema 保持 **v19**。
+
+| 功能 | 已实现行为 |
+|---|---|
+| 参数查询 | 精确、区分大小写的参数名，可组合 query/body/path/header/cookie/unknown 位置；% 和 _ 不作为通配符 |
+| 请求摘要查询 | HTTP 样本状态码 100–599、精确 MIME（忽略大小写及已保存值的 charset）、已有凭据类别 |
+| 同样本约束 | 响应/凭据/有请求样本条件与方法、参数组合必须来自同一份请求；不拼接不同请求，也不借用仅 JS 参数 |
+| 来源性质 | 有有效请求样本、JS 静态来源且无样本、契约声明且无样本/JS；多来源保留，未知格式样本不误归类为无样本 |
+| 页面与分页 | 新条件进入游标签名；主机/路径分组、计数和列表使用同一谓词；分类/项目切换与会话导航沿用原请求保护 |
+| 筛选空间 | 条件区默认可展开，应用后收起并保留已应用条件摘要，避免窄桌面结果区域被挤占 |
+| 两份样本对照 | 同接口跨样本分页选择最多两份摘要，对照时间、状态、MIME、大小、参数名、头名称及凭据类别；可移除并分别打开来源证据 |
+| 数据更新 | 切换项目/接口或有效数据版本后清空对照；数据更新重新载入详情，不继续显示旧样本列表 |
+
+核心 `api_research.py` 只派生查询，不产生新事实；路由仅传参，保持 SQL-FREE。没有修改解析器、旧迁移、身份/归一化、原文、Evidence、Contribution、导入与 Undo/Redo，也没有新增联网入口。报告、Finding 输入、JS/Notes/任务扩展与 Agent 未纳入本批。
+
+### 11.2 自动验证
+
+- 实际使用 `.venv-dev` **Python 3.12.4**、Node **22.19.0**。`py -0p` 未列出 Python 3.13，不声称完成 3.13 验证。
+- `.venv-dev/Scripts/python.exe -X utf8 -u check.py` 完整执行**退出 0**：11 条静态红线、core **705**、API **170**、CLI **84**、adapters **21**，后端合计 **980 项**；六组设计验收 **23/23、27/27、71/71、26/26、35/35、45/45**。日志 `_scratch/api-research-check-final.log`。
+- 完整回归后，复核补充深嵌套 JSON、未知 HTTP 样本不得冒充仅 JS，以及历史多方法/JS 参数不得借给请求样本的回归；最终 API 研究、HTTP 和原工作区三文件合计 **33 passed**，并重新通过 11 条静态检查。日志 `_scratch/api-research-extra-final.log`、`_scratch/api-research-lint-final.log`。未把后补用例冒充先前全量计数。
+- 最终前端完整测试 **28 文件 / 185 项**通过，包括组合筛选、切换分类不泄漏、返回恢复、重置、跨页选择/上限/证据打开、切换项目清空和有效数据更新重载。`npm run build` 成功，产物通过正常构建同步到 `magpie/api/web/`。日志 `_scratch/api-research-frontend-final.log`、`_scratch/api-research-build.log`。
+- OpenAPI 有意新增 browse 的六个可选查询参数及版本，未新增路由；快照按规范更新，并通过校验。读查询前后数据库逐行导出不变、跨项目、同请求约束、分组/分页一致性、条件绑定游标及 Undo/Redo 均有永久回归。
+- 首次静态检查发现 core 测试从 bench 顶层导入夹具不符合边界，已改为读取永久合成夹具，未放宽检查规则。
+
+### 11.3 本地实际浏览器验收
+
+浏览器控制和 Node REPL 工具均在初始化阶段报 `failed to write kernel assets`，未控制用户已有浏览器。阅读 computer-use 技能及浏览器优先指引后，改用本机已有 Chrome 与运行时自带 Playwright，**headless=false** 启动真实窗口，未安装软件、未操作真实项目。
+
+可复用合成生成器 `bench/api_research_demo.py`、样例 `bench/e2e/api-research/`，只使用 `.example.test` 与合成内容。数据库已存在时生成器拒绝覆盖；正常复看仅运行启动命令：
+
+```powershell
+.venv-dev/Scripts/python.exe dev.py --workspace api-research-20261020 --api-port 8884 --web-port 5284
+```
+
+最终代码和构建下实际完成以下操作：
+
+1. 在“API 研究筛选 · 合成验收”项目组合 redirect/query/200/`application/json`/Cookie/有请求样本，主机分组、路径下钻和列表均为 **1 个接口**。
+2. 打开该接口 **24 份样本**，第一页 **20**、第二页 **4**；跨页选择两份，保留第一份并实际展示摘要变化，分别保留记录路径及证据入口。
+3. 打开所选样本的受管归档，查看来源位置、哈希、脱敏预览和有效贡献链。
+4. 将凭据条件改为 Bearer，200+Bearer+redirect 为 **0**；改为 401+Bearer+user_id/`text/plain` 为 **1**，没有跨请求误配。
+5. JS 无样本筛选为 **1 个接口**；仅声明为 **2 个对象**（一个 Endpoint 和既有 apischema 根对象），保留 API 分类原有范围，不将两个对象误称为两个接口。
+6. 切换空项目为 0，无跨项目结果；回到原项目后用 `key_%` 精确参数名命中 **1**，%/_ 为字面字符。
+7. 桌面 **1440×1000** 与窄桌面 **1000×850** 实际检查，后者 document width 为 1000；条件收起后结果可操作，详情可滚动和关闭。
+8. 直接打开后端 `8884/web/` 的生产静态页面，显示 **0.30.0**，实际填写 redirect/200/Cookie 并提交，仍命中 **1**；最终捕获 pageerror 为 **0**。
+
+最终结果与日志 `_scratch/api-research-browser-result.json`、`_scratch/api-research-browser.log`。真实截图：[组合筛选](docs/api-research/filters.jpg)、[跨页样本对照](docs/api-research/sample-comparison.jpg)、[证据回查](docs/api-research/evidence.jpg)、[窄桌面](docs/api-research/narrow.jpg)。浏览器脚本前几次运行分别修正了 apischema 计数期望、项目切换后匹配到其他请求响应及收起条件区的选择器；未把部分运行冒充最终通过。
+
+### 11.4 保留边界与本地交付
+
+- 筛选使用当前已保存且有效的摘要，不联网验证；未命中不能证明目标不具备该特征。参数名是精确匹配，不是语义搜索。
+- 同样本参数组合只能核查样本实际保存的 query/body/header 名称；不能从其他观测补造该请求的 path/cookie 参数。单独参数查询仍可读取既有位置观测与 JS 静态参数名。
+- 参数/头名称可能受原有导入上限截断；两份摘要相同不能证明请求值、响应正文、权限行为或完整数据相同。凭据 unknown 可与已识别类别共存，不解释为无鉴权。
+- 坏 JSON、过深 JSON、缺关键字段和未知版本仍保留在原记录，不升级为有效样本，也不因此宣称只有 JS/声明。详情沿原入口检查未知数据。
+- 本轮没有运行严格性能基准或十万接口的新条件端到端性能测量。查询沿既有有效观测派生，未增建索引或改写缓存事实，不宣称大规模性能契约达标。
+- 用户原有暂存的 `docs/browser-recheck-20261018/` 截图和未跟踪 `docs/agent-assistant-plan.md` 保留，不纳入本批交付；本批仅整理本地提交，不合并、不推送、不制作发布包。
+- 本轮开发服务保留供用户试用，完整临时地址见 `_scratch/api-research-dev.log`，token 不写入文档；测试数据、脚本与日志保留在 `.magpie-dev/`、`_scratch/`，不进入提交。

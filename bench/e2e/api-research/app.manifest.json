@@ -1,0 +1,1 @@
+{"magpie_js": 1, "url": "https://static.example.test/app.js", "content": "axios.post('https://api.example.test/api/js-only?redirect=x');axios.post('https://api.example.test/api/mixed');"}
