@@ -69,3 +69,6 @@ parent.json
 issues.json
 .venv-dev/
 .magpie-dev/
+.coverage
+.coverage.*
+htmlcov/

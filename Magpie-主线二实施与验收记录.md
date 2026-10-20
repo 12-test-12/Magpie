@@ -494,3 +494,11 @@
 - 本轮没有运行严格性能基准或十万接口的新条件端到端性能测量。查询沿既有有效观测派生，未增建索引或改写缓存事实，不宣称大规模性能契约达标。
 - 用户原有暂存的 `docs/browser-recheck-20261018/` 截图和未跟踪 `docs/agent-assistant-plan.md` 保留，不纳入本批交付；本批仅整理本地提交，不合并、不推送、不制作发布包。
 - 本轮开发服务保留供用户试用，完整临时地址见 `_scratch/api-research-dev.log`，token 不写入文档；测试数据、脚本与日志保留在 `.magpie-dev/`、`_scratch/`，不进入提交。
+
+## 12. 2026-10-20：分层 CI 与手动交付工程
+
+用户要求参考 BobcGn/final 制作适合本项目的工程流水线，并表示可能直接在 GitHub 上实验。先完成[工程流水线方案](docs/ci-delivery-plan.md)，随后在 `codex/ci-delivery-pipeline` 实施；基线 `10648bc`，不更改应用 0.30.0/schema v19，不扩展导入管线或 Agent。
+
+日常 `Magpie CI` 包括 Contracts、三组后端环境、前端、真实浏览器合成验收及统一 Required Checks；分支 push 即触发验证。原 main 自动删除/重建 edge 的发布步骤替换为独立 `Magpie Delivery`：成功 main CI、固定 SHA、本地浏览器声明及对应记录存在后才打包，校验双平台清单和哈希，默认只保留 artifacts，另选才创建新标签和草稿。未推送、合并、发布或更改远程保护规则。
+
+完整实现、实际测试结果、环境限制及 GitHub 首次试跑事项见[工程流水线验收记录](docs/ci-delivery-verification.md)，操作见[使用说明](docs/ci-delivery.md)。历史各节的测试数字不回写；本批没有运行严格性能基准或真实冻结包验收。未跟踪的 `docs/agent-assistant-plan.md` 保留且不纳入提交。

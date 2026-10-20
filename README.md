@@ -127,7 +127,7 @@ docker compose logs -f magpie            # token 在日志里
 
 固定 token 用 `MAGPIE_TOKEN` 环境变量（不设则每次启动随机生成）。镜像里的产品仍**只绑回环** —— 容器内由 `socat` 转发，对外暴露与否由 `-p` 显式决定。
 
-**分发包**：推 `main` 触发 GitHub Actions，Release 页的滚动 prerelease **`edge`** 永远是最新一份双平台（Windows / Linux）PyInstaller 包，解压即用、不装 Python 也能跑；`v*` tag 挂正式 Release。
+**分发包**：所有开发分支推送后自动运行 `Magpie CI`，检查代码、前端构建和真实浏览器流程。打包另用手动 `Magpie Delivery`：选取 main 上通过 CI 且完成本地浏览器验收的提交，生成 Windows / Linux 解压即用包及 SHA-256 清单；默认仅保存构建制品，可选择创建草稿 Release。不会自动更新 edge 或发布。首次启用及试跑步骤见[工程流水线使用说明](docs/ci-delivery.md)。
 
 ### 前端开发模式（改 GUI 才需要）
 
