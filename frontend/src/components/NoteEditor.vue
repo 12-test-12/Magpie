@@ -17,6 +17,20 @@ function load() {
     data.value = result; Object.assign(form,{text:result.text,archived:result.archived,reason:'',refs:result.evidence_links || []}); conflict.value = false
   }, text => {error.value = text}, () => {loading.value = false})
 }
+function adoptLatest() {
+  loading.value = true; error.value = ''
+  slot.run('/workspace/notes/' + props.noteId + '?' + params({project:store.project}), result => {
+    data.value = result; conflict.value = false; message.value = `已同步最新版本 ${result.version}，当前草稿已保留，可直接保存。`
+  }, text => {error.value = text}, () => {loading.value = false})
+}
+async function copyDraft() {
+  try {
+    await navigator.clipboard.writeText(form.text)
+    message.value = '草稿正文已复制到剪贴板。'
+  } catch {
+    message.value = '复制不可用，请手动选中编辑区正文复制。'
+  }
+}
 function loadHistory() {
   historySlot.run('/workspace/notes/' + props.noteId + '/history?' + params({project:store.project,cursor:historyCursor.value,limit:20}),
     result => {history.value = result}, text => {error.value = text})
@@ -44,7 +58,15 @@ onBeforeUnmount(() => {generation++; slot.cancel(); historySlot.cancel()})
 </script>
 <template>
   <section class="note-editor"><h3>所选笔记 · 研究笔记与人工修订</h3><p v-if="loading" role="status">正在载入笔记…</p>
-    <div v-if="error" role="alert" class="error-state"><p>{{ error }}</p><button type="button" @click="load">重新载入笔记</button><p v-if="conflict">本次未写入，草稿已保留。重新载入会替换编辑区，请先检查并保留需要的内容。</p></div>
+    <div v-if="error" role="alert" class="error-state">
+      <p>{{ error }}</p>
+      <div class="conflict-actions">
+        <button type="button" @click="load">重新载入笔记</button>
+        <button v-if="conflict" type="button" class="ghost" @click="copyDraft">复制当前草稿</button>
+        <button v-if="conflict" type="button" @click="adoptLatest">保留草稿并同步最新版本</button>
+      </div>
+      <p v-if="conflict">本次未写入，草稿已保留。可点击“保留草稿并同步最新版本”直接重试，或先复制草稿再重新载入。</p>
+    </div>
     <template v-if="data"><p>版本 {{ data.version }} · {{ data.archived ? '已归档' : '活动笔记' }}</p>
       <p class="notice">编辑区与历史为脱敏副本；保存追加人工修订，不修改原始笔记。导入撤销后保留历史，不能继续编辑。</p>
       <button type="button" class="ghost" @click="emit('select',{id:data.entity_id,kind:data.target_kind,category:data.target_kind === 'vuln' ? 'findings' : data.target_kind === 'endpoint' ? 'api' : 'assets'})">打开关联对象 →</button>
@@ -61,4 +83,4 @@ onBeforeUnmount(() => {generation++; slot.cancel(); historySlot.cancel()})
     </template><p v-if="message" role="status">{{ message }}</p>
   </section>
 </template>
-<style scoped>label { display:block; margin:12px 0; } textarea { display:block; width:100%; box-sizing:border-box; } pre { white-space:pre-wrap; overflow-wrap:anywhere; } article { border-top:1px solid var(--line); padding:10px 0; }</style>
+<style scoped>label { display:block; margin:12px 0; } textarea { display:block; width:100%; box-sizing:border-box; } pre { white-space:pre-wrap; overflow-wrap:anywhere; } article { border-top:1px solid var(--line); padding:10px 0; } .conflict-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }</style>

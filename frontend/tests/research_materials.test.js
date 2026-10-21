@@ -29,6 +29,24 @@ it('preserves note drafts after stale writes and requires explicit reload', asyn
   wrapper.unmount()
 })
 
+it('allows adopting latest version while preserving user draft', async () => {
+  let version = 0
+  global.fetch = vi.fn(async (url,opts={}) => {
+    if (opts.method === 'PUT') return response(null,409,'E_STALE_RESEARCH')
+    return response({...note,version,text:version ? '另一窗口内容' : note.text})
+  })
+  const wrapper = mount(Editor,{props:{noteId:70}}); await flushPromises()
+  await wrapper.find('[aria-label="编辑笔记正文"]').setValue('我的重要草稿')
+  await wrapper.find('[aria-label="笔记修改理由"]').setValue('补充理由')
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined()
+  version = 2
+  await wrapper.findAll('button').find(b => b.text() === '保留草稿并同步最新版本').trigger('click'); await flushPromises()
+  expect(wrapper.find('[aria-label="编辑笔记正文"]').element.value).toBe('我的重要草稿')
+  expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined()
+  wrapper.unmount()
+})
+
 it('records archive and evidence references without replacing the original text', async () => {
   let payload
   global.fetch = vi.fn(async (url,opts={}) => {

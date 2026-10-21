@@ -251,17 +251,20 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
             where.append("LOWER(COALESCE((SELECT ft.severity FROM finding_triage ft WHERE ft.project_id=e.project_id AND ft.finding_id=e.id), (SELECT o.value FROM observations o WHERE o.project_id=e.project_id AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='severity' ORDER BY o.id DESC LIMIT 1), 'unknown'))=?")
             params.append(severity.lower())
     if q:
-        search = "(k.entity_key LIKE ? ESCAPE '\\' OR ws_display(k.entity_key) LIKE ? ESCAPE '\\'"
-        params.append("%" + _literal(q) + "%")
-        search += (" OR EXISTS(SELECT 1 FROM entity_manual_values mv WHERE mv.project_id=e.project_id"
-                   " AND mv.entity_id=e.id AND mv.display_name LIKE ? ESCAPE '\\')")
-        params.append('%' + _literal(q) + '%')
-        params.append("%" + _literal(q) + "%")
+        kw = "%" + _literal(q) + "%"
+        search = (
+            "(k.entity_key LIKE ? ESCAPE '\\' OR ws_display(k.entity_key) LIKE ? ESCAPE '\\'"
+            " OR EXISTS(SELECT 1 FROM entity_manual_values mv WHERE mv.project_id=e.project_id"
+            " AND mv.entity_id=e.id AND mv.display_name LIKE ? ESCAPE '\\')"
+        )
+        params.extend([kw, kw, kw])
         if category in ("findings", "vuln"):
-            search += (" OR EXISTS (SELECT 1 FROM observations o WHERE o.project_id=e.project_id"
-                       " AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='title'"
-                       " AND o.value LIKE ? ESCAPE '\\')")
-            params.append("%" + _literal(q) + "%")
+            search += (
+                " OR EXISTS (SELECT 1 FROM observations o WHERE o.project_id=e.project_id"
+                " AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='title'"
+                " AND o.value LIKE ? ESCAPE '\\')"
+            )
+            params.append(kw)
         where.append(search + ")")
     if host is not None:
         where.append("ws_host(e.kind,k.entity_key)=?")
