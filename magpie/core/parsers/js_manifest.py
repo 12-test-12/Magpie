@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Iterable, Iterator
 
 from .. import normalize
-from ..js_intelligence import extract, redact_url
+from ..js_intelligence import extract, redact_url, indicators, RULE_VERSION
 from . import _json
 from ._urls import EndpointSink
 from .base import ParseContext, Parser, RawObservation, Record
@@ -13,8 +14,8 @@ from .base import ParseContext, Parser, RawObservation, Record
 
 class JsManifestParser(Parser):
     tool = "js-manifest"
-    format_version = "2"
-    known_fields = frozenset({"magpie_js", "url", "content"})
+    format_version = "3"
+    known_fields = frozenset({"magpie_js", "url", "content", "source_name", "source_sha256"})
 
     @classmethod
     def sniff(cls, sample: str, filename: str) -> float:
@@ -39,11 +40,17 @@ class JsManifestParser(Parser):
         if not isinstance(doc.get("url"), str) or not isinstance(doc.get("content"), str):
             ctx.on_bad_line(1, "JS manifest 需要 url 与 content 字符串", "")
             return
-        yield from _records(doc["url"], doc["content"], ctx, "$.content")
+        if 'source_sha256' in doc and doc['source_sha256'] != hashlib.sha256(doc['content'].encode('utf-8')).hexdigest():
+            ctx.on_bad_line(1,'JS 原始文本哈希不一致','')
+            return
+        if 'source_name' in doc and (not isinstance(doc['source_name'],str) or len(doc['source_name']) > 200):
+            ctx.on_bad_line(1,'JS 原始名称无效','')
+            return
+        yield from _records(doc["url"], doc["content"], ctx, "$.content", source_name=doc.get('source_name'))
 
 
 def _records(url: str, content: str, ctx: ParseContext, record_path: str,
-             method: str = "") -> Iterator[Record]:
+             method: str = "", source_name: str | None = None) -> Iterator[Record]:
     if len(content.encode("utf-8")) > 16 * 1024 * 1024:
         ctx.on_bad_line(1, "JavaScript 内容超过 16 MiB 上限", "")
         result = {"status": "limit_exceeded", "reason": "内容超过 16 MiB"}
@@ -61,11 +68,17 @@ def _records(url: str, content: str, ctx: ParseContext, record_path: str,
     yield RawObservation(entity_ref=("endpoint", key), type="js_content_version",
                          value=json.dumps({"sha256": result.get("sha256"),
                                            "status": result.get("status"), "rule_id": "js-literal-call",
-                                           "rule_version": "1", "record_path": record_path,
+                                           "rule_version": RULE_VERSION, "record_path": record_path,
+                                           "source_name": source_name,
                                            "candidate_count": len(result.get("candidates", [])),
                                            "unsupported_count": result.get("unsupported_count", 0),
                                            "truncated": bool(result.get("truncated")),
                                            "reason": result.get("reason")}, ensure_ascii=False, separators=(",", ":")))
+    signals = indicators(content, cancelled=ctx.cancelled)
+    for indicator in signals['rows']:
+        yield RawObservation(entity_ref=('endpoint',key),type='js_indicator',
+            value=json.dumps({**indicator,'content_sha256':result.get('sha256'),'record_path':record_path,
+                              'scan_truncated':signals['truncated']},ensure_ascii=False,separators=(',',':')))
     sink = EndpointSink()
     for candidate in result.get("candidates", []):
         safe = dict(candidate)

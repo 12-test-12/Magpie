@@ -35,6 +35,7 @@ import { store } from '../store.js'
 import FsPicker from '../components/FsPicker.vue'
 import UniversalImport from '../components/UniversalImport.vue'
 import ImportCoverage from '../components/ImportCoverage.vue'
+import LocalTextInput from '../components/LocalTextInput.vue'
 
 const emit = defineEmits(['close'])
 
@@ -256,6 +257,7 @@ function onBatch(payload) {
       <textarea v-model="paths" rows="5"
         placeholder="D:\recon\subfinder.txt&#10;D:\recon\httpx.jsonl&#10;D:\recon\traffic.har&#10;D:\recon\app.manifest.json" />
       <FsPicker v-if="picker" @pick="addPath" @close="picker = false" />
+      <LocalTextInput @staged="addPath($event.path); parser = ''; universalOpen = false; universalReady = null" />
 
       <div class="grid2">
         <div>

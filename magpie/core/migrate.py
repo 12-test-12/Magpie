@@ -110,6 +110,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(17, "finding_lifecycle", SCHEMA_DIR / "017_finding_lifecycle.sql"),
     Migration(18, "research_workflow", SCHEMA_DIR / "018_research_workflow.sql", True),
     Migration(19, "finding_write_version", SCHEMA_DIR / "019_finding_write_version.sql", True),
+    Migration(20, "research_materials", SCHEMA_DIR / "020_research_materials.sql", True),
 )
 
 

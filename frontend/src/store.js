@@ -262,6 +262,7 @@ export const VIEWS = [
   { key: 'evidence', label: '证据', hint: '原始定位、归档与脱敏预览', group: 'lens' },
   { key: 'notes', label: '研究笔记', hint: '现有发现通道中的笔记', group: 'lens' },
   { key: 'tasks', label: '研究任务', hint: '人工待办与关联线索', group: 'lens' },
+  { key: 'changes', label: '增量变化', hint: '当前有效贡献带来的新增与变化', group: 'lens' },
   { key: 'vuln', label: '漏洞', hint: '镜头：漏洞（nuclei 的命中）', group: 'lens' },
   // 5.5：风险评分 + 攻击面概览。**纯读侧派生**（GET /risk），与镜头平级 ——
   // 它回答的是"这些事实合起来意味着什么"，不是又一个镜头。

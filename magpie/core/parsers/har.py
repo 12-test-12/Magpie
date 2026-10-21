@@ -117,7 +117,7 @@ RESPONSE_FIELDS: frozenset[str] = frozenset({
 
 class HarParser(Parser):
     tool = "har"
-    format_version = "3"
+    format_version = "4"
     known_fields = KNOWN_FIELDS
     #: 比契约低一档：抓包说的是"当时发生了什么"，一次 404 不代表这个接口不存在
     #: （反过来也一样 —— 一条三年前的记录不代表它现在还能用）。同 gau 的口径。

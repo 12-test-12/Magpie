@@ -231,9 +231,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = sub.add_parser(
         "search", parents=[_LOCATION, _FORMAT, _PROJECT],
-        help="搜索（§8，尚未实现 —— 与 /api/v1/search 一样响亮地拒绝）",
-        description="**尚未实现**。搜索 DSL 属于计划书 §8；本步不发明第二套查询语义。")
-    search.add_argument("query", metavar="<DSL>", help="查询串")
+        help="项目内字面检索（资产、接口、发现、证据与笔记）",
+        description="复用工作区快捷检索；每类返回前 5 条与总数，不解析 DSL，不搜索原文正文。")
+    search.add_argument("query", metavar="<text>", help="字面关键词")
 
     diff = sub.add_parser(
         "diff", parents=[_LOCATION, _FORMAT, _PROJECT],
@@ -407,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
         "出站：ask —— 本工具唯一的出站点，**默认关闭**，"
         "MAGPIE_ASK_ENABLE=1 + MAGPIE_ASK_URL=<http(s)://…> 显式开启才发请求。"
         "export 默认脱敏（不带原文正文），--full 才带 stored 归档原文并给可见告警。"
-        "search 尚未实现 —— 它以 E_NOT_IMPLEMENTED 响亮失败，而不是返回空结果。"
+        "search 复用工作区字面检索，每类返回前 5 条与总数；不解析 DSL。"
         "契约与退出码表见 `magpie schema --json`；具名查询的清单也在那里。")
     return parser
 

@@ -4,8 +4,8 @@
   "identity_rule": "host:port（无端口时退化为 host:scheme）。**同一主机上的 80 与 443 是两个服务** —— 它们的标题、状态码、中间件可以完全不同，合并会丢掉这个区别。",
   "golden": [
     "httpx/1",
-    "har/3",
-    "js-manifest/2"
+    "har/4",
+    "js-manifest/3"
   ],
   "examples": [
     {

@@ -2,6 +2,8 @@
 
 ## Current agreed scope (2026-10-15)
 
+- On 2026-10-21 the user indefinitely deferred Agent work and authorized completing the first three gaps from the project review: local JS intake/finite static analysis, Note revisions/archive/evidence and Task evidence links, and change/search/paste/manual-field entry points. Follow `docs/research-workflow-completion-plan.md`; this batch is 0.31.0/schema v20. Preserve original facts and evidence, require versions/reasons for replacement writes, validate in an isolated local browser, then commit locally. Do not push remotely. Earlier batch-specific deferrals/version freezes do not prohibit this explicitly authorized batch. The untracked Agent plan remains untouched.
+
 - Mainline one was delivered locally in `c43ef79`. The user explicitly started mainline two on 2026-10-15.
 - Implement mainline two in `Magpie-探索引擎优化方案与实施路线.md`, beginning with work package C: research workspace navigation, overview, grouped and paginated asset/API browsing, bounded details and evidence provenance. Current delivery and remaining E/F work are recorded in `Magpie-主线二实施与验收记录.md`.
 - Defer Agent / Planner / Worker and autonomous active testing. Keep the existing read-only relationship canvas; do not build an autonomous exploration engine.

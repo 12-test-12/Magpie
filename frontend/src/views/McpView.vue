@@ -42,7 +42,7 @@ const EQUIV = {
   jobs: { http: 'GET /jobs 或 /jobs/{id}' },
   risk: { http: 'GET /risk' },
   agent_context: { http: 'GET /agent/context' },
-  diff: { http: 'GET /diff（尚未实现 —— 501 信封原样显示）' },
+  diff: { http: 'GET /diff（有界摘要；完整事实明细仍使用 CLI / MCP）' },
   add_finding: { http: 'POST /notes', needs: ['int-ref'], write: true },
   schema: { http: null, note: '仅 CLI / MCP，无 HTTP 等价' },
   timeline: { http: null, note: '仅 CLI / MCP，无 HTTP 等价' },

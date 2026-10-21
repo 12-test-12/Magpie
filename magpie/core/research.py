@@ -51,10 +51,14 @@ def task_detail(conn, project_id, task_id):
     result['links'] = [_target(conn, project_id, r[0], require_current=False) for r in conn.execute(
         'SELECT entity_id FROM research_task_links WHERE project_id=? AND task_id=? ORDER BY entity_id',
         (project_id, task_id))]
+    from .notes import evidence_ref
+    result['evidence_links'] = [evidence_ref(conn, project_id, r[0]) for r in conn.execute(
+        'SELECT evidence_id FROM research_task_evidence WHERE project_id=? AND task_id=? ORDER BY evidence_id',
+        (project_id, task_id))]
     return result
 
 
-def tasks(conn, project_id, *, q='', status='', cursor=None, limit=50, entity_id=None):
+def tasks(conn, project_id, *, q='', status='', cursor=None, limit=50, entity_id=None, evidence_id=None):
     from .workspace import _literal, _page
     if len(q) > 300 or (status and status not in (*STATUSES, 'open')):
         _bad('不支持的任务筛选')
@@ -67,7 +71,10 @@ def tasks(conn, project_id, *, q='', status='', cursor=None, limit=50, entity_id
     if entity_id is not None:
         where.append('id IN (SELECT task_id FROM research_task_links WHERE project_id=? AND entity_id=?)')
         args.extend([project_id, entity_id])
-    signature = hashlib.sha256(json.dumps([project_id, 'tasks', q, status, entity_id]).encode()).hexdigest()[:20]
+    if evidence_id is not None:
+        where.append('id IN (SELECT task_id FROM research_task_evidence WHERE project_id=? AND evidence_id=?)')
+        args.extend([project_id, evidence_id])
+    signature = hashlib.sha256(json.dumps([project_id, 'tasks', q, status, entity_id, evidence_id]).encode()).hexdigest()[:20]
     page = _page(conn, 'SELECT id FROM research_tasks WHERE ' + ' AND '.join(where), args,
                  cursor=cursor, signature=signature, limit=limit)
     page['rows'] = [task_detail(conn, project_id, r['id']) for r in page['rows']]
@@ -75,7 +82,7 @@ def tasks(conn, project_id, *, q='', status='', cursor=None, limit=50, entity_id
 
 
 def save_task(conn, *, project_id, title, description='', status='pending',
-              entity_ids=(), task_id=None, version=None, actor='analyst'):
+              entity_ids=(), evidence_ids=None, task_id=None, version=None, actor='analyst'):
     title = title.strip()
     if not title or len(title) > 300 or len(description) > 10000 or status not in STATUSES:
         _bad('任务标题须为 1–300 字符，描述最多 10000 字符，状态须为 pending/in_progress/done/shelved')
@@ -85,6 +92,9 @@ def save_task(conn, *, project_id, title, description='', status='pending',
         before = task_detail(conn, project_id, task_id) if task_id is not None else None
         if before and version != before['version']:
             raise query.QueryError('E_STALE_RESEARCH', '任务已被修改，请重新载入后再保存')
+        from .notes import validate_evidence
+        refs = validate_evidence(conn, project_id, evidence_ids if evidence_ids is not None else
+                                 [r['id'] for r in before['evidence_links']] if before else [])
         # Existing withdrawn links may be retained during a status change. New
         # links must point to effective, unmerged targets in the same project.
         previous_ids = {r['id'] for r in before['links']} if before else set()
@@ -102,6 +112,8 @@ def save_task(conn, *, project_id, title, description='', status='pending',
                 ' VALUES(?,?,?,?,?,?,?,?)', (project_id, title, description, status, stamp, actor, stamp, actor)).lastrowid
         conn.executemany('INSERT INTO research_task_links(project_id,task_id,entity_id) VALUES(?,?,?)',
                          [(project_id, task_id, eid) for eid in sorted(set(entity_ids))])
+        conn.execute('DELETE FROM research_task_evidence WHERE project_id=? AND task_id=?', (project_id, task_id))
+        conn.executemany('INSERT INTO research_task_evidence VALUES(?,?,?)', [(project_id,task_id,r['id']) for r in refs])
         result = task_detail(conn, project_id, task_id)
         store.log_activity(conn, actor=actor,
                            action='research.task.update' if before else 'research.task.create',

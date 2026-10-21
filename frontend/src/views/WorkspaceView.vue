@@ -152,11 +152,11 @@ watch(() => store.dataRevision, () => { resetPage(); load(true) })
       </div>
     </header>
     <div v-if="category === 'api'" class="notice">接口按 scheme、主机、有效端口、精确路径和方法区分；历史折叠身份会明确标记。请求样本只展示脱敏摘要与参数名，缺少凭据不代表未授权或存在漏洞。</div>
-    <div v-if="category === 'js'" class="notice">仅处理已导入的内容（支持包含 JS 响应体的 HAR 或通过 *.manifest.json 导入的独立 JS），按字面量识别静态调用候选；不会执行 JavaScript，也不推断相对 URL 的运行基址。候选引用不代表浏览器实际发送了请求。</div>
+    <div v-if="category === 'js'" class="notice">仅处理已导入的内容（支持包含 JS 响应体的 HAR 或通过 *.manifest.json 导入的独立 JS），识别字面量与静态字符串拼接调用、URL/域名引用和脱敏敏感串候选；不会执行 JavaScript，也不推断相对 URL 的运行基址。候选引用不代表浏览器实际发送了请求。</div>
     <div v-if="category === 'findings'" class="notice">工具扫描命中默认归为待核实（Candidate）；严禁将未经核实的外部扫描结果直接视作已确认漏洞。复测记录须保留证据定位，网络超时或不可达严禁判定为已修复。</div>
     <form class="workspace-filters" @submit.prevent="filter">
       <label class="search-field"><span>搜索</span><input v-model="draft.q" aria-label="搜索当前工作区" placeholder="输入名称、主机或路径…" maxlength="300" /></label>
-      <template v-if="!simple">
+      <label v-if="category === 'notes'">笔记范围<select v-model="draft.status" aria-label="笔记归档筛选"><option value="">活动笔记</option><option value="archived">已归档</option><option value="all">所有笔记</option></select></label><template v-if="!simple">
         <template v-if="['assets','api','js'].includes(category)"><label>人工标签<input v-model="draft.tag" aria-label="按人工标签筛选" placeholder="精确标签" maxlength="60" /></label><label>重要度<select v-model="draft.criticality" aria-label="按重要度筛选"><option :value="null">全部重要度</option><option v-for="tier in [1,2,3]" :key="tier" :value="tier">Tier {{ tier }}</option></select></label></template>
         <label v-if="category !== 'findings'">来源<input v-model="draft.source" aria-label="来源名称" placeholder="精确来源名称" maxlength="200" /></label>
         <label v-if="category === 'api' || category === 'js'">方法<select v-model="draft.method" aria-label="HTTP 方法"><option value="">全部方法</option><option value="unknown">方法未知</option><option v-for="method in ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS']" :key="method">{{ method }}</option></select></label>

@@ -489,17 +489,14 @@ def test_patch_entity_tags_and_protection(loaded):
     assert removed.json()["data"]["protected_fields"] == []
 
 
-def test_patch_refuses_to_fake_a_value_write(loaded):
-    """人工写**值**没有走 HTTP 的路径 —— 它必须 501，而不是静默只改了个标记。
-
-    静默地"收下 review_status 但什么都不做"是最坏的一种：调用方以为改成功了。
-    """
+def test_patch_requires_version_and_reason_for_value_writes(loaded):
+    """Incomplete human-field writes fail explicitly without a partial write."""
     entity_id = loaded.get("/api/v1/entities?limit=1",
                            headers=HEADERS).json()["data"][0]["id"]
     response = loaded.patch(f"/api/v1/entities/{entity_id}", headers=HEADERS,
                             json={"review_status": "confirmed"})
-    assert response.status_code == 501
-    assert response.json()["error"]["code"] == "E_NOT_IMPLEMENTED"
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "E_BAD_RESEARCH"
 
 
 def test_empty_patch_rejected(loaded):
@@ -609,22 +606,10 @@ def test_agent_context_is_markdown_plus_json(loaded):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("method,path", [
-    ("GET", "/api/v1/search?q=x"),
-    ("GET", "/api/v1/diff?since=last"),
-    ("POST", "/api/v1/paste"),
-    # 三条 `/pipelines` 从 3.7b 起是**真端点**（编排模式落地），这里的 501 断言
-    # 相应地删掉 —— 留下它们就等于在断言"这一块还没做"，而那句话已经不成立。
-    # 它们的行为由 `test_pipelines.py` 接管。
-])
-def test_unimplemented_endpoints_are_loud(client, method, path):
-    """501 + 结构化错误，**不是**空数组 —— 空数组会被读成"这里就是没有"。"""
-    response = client.request(method, path, headers=HEADERS,
-                              json={} if method == "POST" else None)
-    assert response.status_code == 501, f"{path} 返回了 {response.status_code}"
-    error = response.json()["error"]
-    assert error["code"] == "E_NOT_IMPLEMENTED"
-    assert error["plan"], "必须说清它属于哪一步，否则没人知道该等什么"
+def test_old_read_stubs_are_live_and_paste_requires_content(loaded):
+    assert loaded.get('/api/v1/search?q=example',headers=HEADERS).status_code == 200
+    assert loaded.get('/api/v1/diff?since=last',headers=HEADERS).status_code == 200
+    assert loaded.post('/api/v1/paste',headers=HEADERS,json={}).status_code == 422
 
 
 def test_openapi_documents_every_route(client):

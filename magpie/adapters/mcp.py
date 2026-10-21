@@ -144,8 +144,7 @@ WRITE_TOOLS = frozenset({
 #: 也受双向断言保护 —— 少剔一个、多剔一个都会红。
 EXCLUDED_READ_COMMANDS: dict[str, str] = {
     "export": "导出落盘（写文件系统）—— 任务书明文不进工具面",
-    "search": "计划书 §8 尚未实现（E_NOT_IMPLEMENTED 恒红对 agent 是噪声）；"
-              "搜索式读取由 ls 的 --q 与具名查询承担",
+    "search": "项目字面检索已由 CLI / HTTP 提供；MCP 工具清单本批保持兼容，使用 ls 的 --q 与具名查询",
     "ask": "出站命令（5.4：唯一出站点，需 MAGPIE_ASK_ENABLE 显式开启）—— "
            "出站与工具面无关，一律不进工具面（5.4 任务书明文）",
 }

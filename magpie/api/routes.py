@@ -108,6 +108,8 @@ _QUERY_STATUS: dict[str, int] = {
     "E_UNSUPPORTED_FORMAT": 400,
     "E_BAD_RESEARCH": 400,
     "E_TASK_NOT_FOUND": 404,
+    "E_NOTE_NOT_FOUND": 404,
+    "E_BAD_SINCE": 400,
     "E_STALE_RESEARCH": 409,
     "E_STALE_FINDING": 409,
 }
@@ -216,6 +218,7 @@ class ResearchTaskBody(BaseModel):
     description: str = Field("", max_length=10000)
     status: str = "pending"
     entity_ids: list[int] = Field(default_factory=list, max_length=20)
+    evidence_ids: list[int] | None = Field(default=None, max_length=20)
     version: int | None = None
 
 
@@ -223,9 +226,10 @@ class ResearchTaskBody(BaseModel):
 @_translating
 def workspace_tasks(project: str | None = None, q: str = "", status: str = "",
                     cursor: str | None = None, limit: int = 50, entity_id: int | None = None,
+                    evidence_id: int | None = None,
                     conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
     return ok(research.tasks(conn, _resolve_project(conn, project), q=q, status=status,
-                             cursor=cursor, limit=limit, entity_id=entity_id))
+                             cursor=cursor, limit=limit, entity_id=entity_id, evidence_id=evidence_id))
 
 
 @router.post("/workspace/tasks", summary="新建人工研究任务")
@@ -235,7 +239,7 @@ def workspace_create_task(body: ResearchTaskBody, request: Request, project: str
     pid = _resolve_project(conn, project)
     return ok(_ctx(request).writer.submit("research task create", lambda db: research.save_task(
         db, project_id=pid, title=body.title, description=body.description,
-        status=body.status, entity_ids=body.entity_ids, actor="api")).result(timeout=60))
+        status=body.status, entity_ids=body.entity_ids, evidence_ids=body.evidence_ids, actor="api")).result(timeout=60))
 
 
 @router.get("/workspace/tasks/{task_id}", summary="研究任务详情及现有实体关联")
@@ -254,7 +258,7 @@ def workspace_update_task(task_id: int, body: ResearchTaskBody, request: Request
     return ok(_ctx(request).writer.submit("research task update", lambda db: research.save_task(
         db, project_id=pid, task_id=task_id, version=body.version, title=body.title,
         description=body.description, status=body.status,
-        entity_ids=body.entity_ids, actor="api")).result(timeout=60))
+        entity_ids=body.entity_ids, evidence_ids=body.evidence_ids, actor="api")).result(timeout=60))
 
 
 class ResearchMetadataBody(BaseModel):
@@ -689,22 +693,25 @@ class EntityPatch(BaseModel):
     #: 收到就 501 —— 收下它再静默丢掉，比不收更坏。
     review_status: str | None = None
     display_name: str | None = None
+    expected_version: int | None = Field(default=None, ge=0, strict=True)
+    clear_values: bool = False
 
 
 @router.patch("/entities/{entity_id}", summary="改标签 / 人工保护标记")
+@_translating
 def patch_entity(entity_id: int, body: EntityPatch, request: Request,
                  project: str | None = None,
                  conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
-    if body.review_status is not None or body.display_name is not None:
-        raise not_implemented("人工写入字段的**值**（review_status / display_name）",
-                              plan="2.6 的写路径（ManualWriter.set_field_value）")
+    values_requested = bool({'display_name','review_status'} & body.model_fields_set) or body.clear_values
+    if values_requested and (body.expected_version is None or not (body.reason or '').strip()):
+        raise ApiError(400, 'E_BAD_RESEARCH', '人工字段修改须携带 expected_version 和理由')
     project_id = _resolve_project(conn, project)
     # 不存在 → 404（**在排队之前**：一个注定失败的作业不该占一次写者）
     try:
         query.entity_row(conn, project_id, entity_id)
     except query.QueryError as exc:
         raise _api_error(exc) from exc
-    if not (body.add_tags or body.remove_tags
+    if not (values_requested or body.add_tags or body.remove_tags
             or body.protect_fields or body.unprotect_fields):
         raise ApiError(400, "E_EMPTY_PATCH", "这次 PATCH 什么都没改",
                        hint="至少要给 add_tags / remove_tags / protect_fields / "
@@ -714,21 +721,34 @@ def patch_entity(entity_id: int, body: EntityPatch, request: Request,
     entity_id_, reason = entity_id, body.reason
 
     def task(conn_: sqlite3.Connection) -> dict[str, Any]:
-        from ..core.manual import ManualWriter
-        writer = ManualWriter(conn_, actor="api")
-        for tag in body.add_tags:
-            writer.set_tag(project_id=project_id, entity_id=entity_id_, tag=tag,
-                           reason=reason)
-        for tag in body.remove_tags:
-            writer.remove_tag(project_id=project_id, entity_id=entity_id_, tag=tag,
-                              reason=reason)
-        if body.protect_fields or body.unprotect_fields:
-            writer.set_keys(project_id=project_id, subject_kind="entity",
-                            subject_id=entity_id_,
-                            add=body.protect_fields, remove=body.unprotect_fields)
-        return {"entity_id": entity_id_,
-                "tags": query.tags_of(conn_, project_id, entity_id_),
-                "protected_fields": query.manual_keys(conn_, project_id, entity_id_)}
+        from ..core import store
+        with store.atomic(conn_):
+            from ..core.manual import ManualWriter
+            writer = ManualWriter(conn_, actor="api")
+            values = None
+            if values_requested:
+                from ..core import manual_values, store
+                current = manual_values.read(conn_, project_id, entity_id_, redacted=False)
+                with store.atomic(conn_):
+                    values = writer.set_field_value(project_id=project_id, entity_id=entity_id_,
+                        expected_version=body.expected_version,
+                        display_name=None if body.clear_values else body.display_name if 'display_name' in body.model_fields_set else current['display_name'],
+                        review_status=None if body.clear_values else body.review_status if 'review_status' in body.model_fields_set else current['review_status'],
+                        reason=body.reason)
+            for tag in body.add_tags:
+                writer.set_tag(project_id=project_id, entity_id=entity_id_, tag=tag,
+                               reason=reason)
+            for tag in body.remove_tags:
+                writer.remove_tag(project_id=project_id, entity_id=entity_id_, tag=tag,
+                                  reason=reason)
+            if body.protect_fields or body.unprotect_fields:
+                writer.set_keys(project_id=project_id, subject_kind="entity",
+                                subject_id=entity_id_,
+                                add=body.protect_fields, remove=body.unprotect_fields)
+            return {"entity_id": entity_id_, **({'manual_values':values} if values is not None else {}),
+                    "tags": query.tags_of(conn_, project_id, entity_id_),
+                    "protected_fields": query.manual_keys(conn_, project_id, entity_id_)}
+
 
     return ok(ctx.writer.submit(f"patch entity {entity_id}", task).result(timeout=30),
               project_id=project_id)
@@ -829,6 +849,73 @@ def post_note(body: NoteBody, request: Request, project: str | None = None,
 
     return ok(ctx.writer.submit(f"note {entity_id}", task).result(timeout=120),
               project_id=project_id)
+
+
+class NoteRevisionBody(BaseModel):
+    text: str = Field(...,min_length=1,max_length=10000)
+    expected_version: int = Field(...,ge=0,strict=True)
+    archived: bool = False
+    reason: str = Field(...,min_length=1,max_length=2000)
+    evidence_ids: list[int] = Field(default_factory=list,max_length=20)
+
+
+class ResearchNoteBody(BaseModel):
+    entity_id: int
+    text: str = Field(...,min_length=1,max_length=10000)
+    evidence_ids: list[int] = Field(default_factory=list,max_length=20)
+
+
+@router.get('/workspace/notes',summary='研究笔记、归档和关联查询')
+@_translating
+def list_research_notes(project: str | None = None,q: str = '',archived: str = 'active',
+                        entity_id: int | None = None,evidence_id: int | None = None,
+                        cursor: str | None = None,limit: int = 50,conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import notes
+    return ok(notes.browse(conn,_resolve_project(conn,project),q=q,archived=archived,
+        entity_id=entity_id,evidence_id=evidence_id,cursor=cursor,limit=limit))
+
+
+@router.post('/workspace/notes',summary='经既有贡献通道新建研究笔记并关联证据')
+@_translating
+def create_research_note(body: ResearchNoteBody,request: Request,project: str | None = None,
+                         conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import notes
+    pid = _resolve_project(conn,project)
+    return ok(_ctx(request).writer.submit('research note create',lambda db: notes.create(db,
+        project_id=pid,entity_id=body.entity_id,text=body.text,evidence_ids=body.evidence_ids,actor='api')).result(timeout=120))
+
+
+@router.get('/workspace/notes/{note_id}',summary='原始笔记、当前人工修订和证据引用')
+@_translating
+def research_note(note_id: int,project: str | None = None,conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import notes
+    return ok(notes.detail(conn,_resolve_project(conn,project),note_id))
+
+
+@router.put('/workspace/notes/{note_id}',summary='版本检查后追加人工修订（不改原始事实）')
+@_translating
+def revise_research_note(note_id: int,body: NoteRevisionBody,request: Request,project: str | None = None,
+                         conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import notes
+    pid = _resolve_project(conn,project)
+    return ok(_ctx(request).writer.submit('research note revise',lambda db: notes.revise(db,
+        project_id=pid,note_id=note_id,text=body.text,archived=body.archived,
+        expected_version=body.expected_version,reason=body.reason,evidence_ids=body.evidence_ids,actor='api')).result(timeout=60))
+
+
+@router.get('/workspace/notes/{note_id}/history',summary='有界笔记修订历史')
+@_translating
+def research_note_history(note_id: int,project: str | None = None,cursor: str | None = None,limit: int = 20,
+                           conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import notes
+    return ok(notes.history(conn,_resolve_project(conn,project),note_id,cursor=cursor,limit=limit))
+
+
+@router.get('/workspace/entities/{entity_id}/values',summary='实体原始身份之外的人工名称和审核状态')
+@_translating
+def entity_manual_values(entity_id: int,project: str | None = None,conn: sqlite3.Connection = Depends(get_conn)):
+    from ..core import manual_values
+    return ok(manual_values.read(conn,_resolve_project(conn,project),entity_id))
 
 
 @router.get("/tags", summary="标签词表（项目里已经用过的词 + 计数）")
@@ -1820,19 +1907,51 @@ def _context_markdown(payload: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/search", summary="搜索（§8，尚未实现）")
-def search(q: str = "") -> dict[str, Any]:
-    raise not_implemented(f"搜索（q={q!r}）", plan="计划书 §8（查询与搜索）")
+@router.get("/search", summary="项目字面检索（复用工作区搜索，不解析 DSL）")
+@_translating
+def search(q: str = "", project: str | None = None, limit: int = 5,
+           conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return ok(research.quick_search(conn, _resolve_project(conn,project),q=q,limit=limit))
 
 
-@router.get("/diff", summary="增量 diff（§8，尚未实现）")
-def diff(since: str = "last") -> dict[str, Any]:
-    raise not_implemented(f"增量 diff（since={since!r}）", plan="计划书 §8 的增量 diff")
+@router.get("/diff", summary="按有效贡献与作业归属统计增量（有界分页）")
+@_translating
+def diff(since: str = "last", project: str | None = None, cursor: str | None = None, limit: int = 50,
+         conn: sqlite3.Connection = Depends(get_conn)) -> dict[str, Any]:
+    from ..core import changes
+    return ok(changes.browse(conn,_resolve_project(conn,project),since=since,cursor=cursor,limit=limit))
 
 
-@router.post("/paste", summary="粘贴导入（尚未实现）")
-def paste() -> dict[str, Any]:
-    raise not_implemented("粘贴导入", plan="2.6 的写路径 + 阶段 3 的解析器扩张")
+class TextInputBody(BaseModel):
+    text: str = Field(..., min_length=1, max_length=16*1024*1024)
+    name: str = Field('pasted.txt',min_length=1,max_length=200)
+    resource_url: str | None = None
+    parser: str | None = None
+    project: str | None = None
+    dry_run: bool = False
+    archive: str = 'archived'
+
+
+@router.post('/input-stage', summary='暂存粘贴文本或显式关联 URL 的本地 JS（不写事实）')
+@_translating
+def stage_input(body: TextInputBody, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    from .local_input import stage
+    pid = _resolve_project(conn, body.project)
+    try:
+        result = stage(_ctx(request).data_dir,text=body.text,name=body.name,resource_url=body.resource_url)
+    except (ValueError,NormalizeError) as exc:
+        raise ApiError(400,'E_BAD_INPUT',str(exc)) from exc
+    return ok(result,project_id=pid)
+
+
+@router.post('/paste', status_code=202, summary='有界文本经原生导入队列处理')
+def paste(body: TextInputBody, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    if body.archive not in ('archived','external'):
+        raise ApiError(400,'E_BAD_ARCHIVE','archive 仅支持 archived / external')
+    staged = stage_input(body,request,conn)['data']
+    return post_import(ImportBody(paths=[staged['path']],project=body.project,
+        parser='js-manifest' if body.resource_url is not None else body.parser,
+        dry_run=body.dry_run,archive=body.archive,expected_sha256=staged['sha256']),request,conn)
 
 
 # ---------------------------------------------------------------------------
