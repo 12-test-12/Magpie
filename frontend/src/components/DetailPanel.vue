@@ -763,8 +763,8 @@ watch(detail, () => {
         </div>
         <p v-if="tagError" class="bad small">{{ tagError }}</p>
         <p class="faint small">
-          只能改标签与人工保护标记。**人工写入字段的值**走 2.6 的写路径，
-          目前 `PATCH /entities/{id}` 对它返回 501。
+          此处维护标签与人工保护标记。资产/API 工作区详情可维护人工名称与审核状态，
+          保存须携带版本与修改理由；原始身份和解析观测保留。
         </p>
       </section>
 

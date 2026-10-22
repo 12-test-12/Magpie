@@ -395,7 +395,17 @@ def cmd_show(args, ctx) -> tuple[dict, list[str]]:
 
 
 def cmd_search(args, ctx) -> tuple[dict, list[str]]:
-    raise not_implemented(f"搜索（q={args.query!r}）", plan="计划书 §8（查询与搜索）")
+    from ..core import research
+    conn = ctx.conn()
+    try:
+        result = research.quick_search(conn,resolve_project(conn,args.project),q=args.query)
+    except query.QueryError as exc:
+        raise as_cli_error(exc) from exc
+    human = [result['scope']]
+    for group in result['groups']:
+        human.append(f"{group['category']}: {group['total']}")
+        human.extend(f"  #{r['id']} {r.get('display_key') or r.get('title') or r.get('entity_key')}" for r in group['rows'])
+    return result,human
 
 
 # ---------------------------------------------------------------------------

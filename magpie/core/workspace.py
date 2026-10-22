@@ -141,8 +141,8 @@ def summary(conn, project_id):
     resolved_findings = scalar(
         "SELECT COUNT(*) FROM entities e JOIN finding_triage ft ON ft.finding_id=e.id AND ft.project_id=e.project_id"
         " WHERE e.project_id=? AND e.kind='vuln' AND e.is_current=1 AND e.merged_into IS NULL AND ft.status='resolved'")
-    notes_count = scalar(
-        "SELECT COUNT(*) FROM observations o WHERE o.project_id=? AND o.is_current=1 AND o.semantic_field LIKE 'ai_note:%'")
+    from . import notes
+    notes_count = notes.browse(conn, project_id, limit=1)['total']
     return {
         "kinds": kinds,
         "assets": sum(kinds.get(k, 0) for k in CATEGORIES["assets"]),
@@ -176,6 +176,13 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
     if criticality is not None and criticality not in (1, 2, 3):
         raise query.QueryError("E_UNSUPPORTED_FILTER", "重要度仅支持 Tier 1–3")
     _register(conn)
+    if category == 'notes':
+        from . import notes
+        api_research.filters(conn, category, parameter_name=parameter_name, parameter_location=parameter_location,
+            response_status=response_status, response_mime=response_mime, credential=credential, api_origin=api_origin)
+        if mode != 'list' or host is not None or prefix is not None or method or source or severity or tag or criticality is not None:
+            raise query.QueryError('E_UNSUPPORTED_FILTER', '笔记支持文本搜索和归档状态筛选')
+        return notes.browse(conn, project_id, q=q, archived=status or 'active', cursor=cursor, limit=limit)
     research_where, research_args = api_research.filters(
         conn, category, parameter_name=parameter_name, parameter_location=parameter_location,
         response_status=response_status, response_mime=response_mime,
@@ -244,14 +251,20 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
             where.append("LOWER(COALESCE((SELECT ft.severity FROM finding_triage ft WHERE ft.project_id=e.project_id AND ft.finding_id=e.id), (SELECT o.value FROM observations o WHERE o.project_id=e.project_id AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='severity' ORDER BY o.id DESC LIMIT 1), 'unknown'))=?")
             params.append(severity.lower())
     if q:
-        search = "(k.entity_key LIKE ? ESCAPE '\\' OR ws_display(k.entity_key) LIKE ? ESCAPE '\\'"
-        params.append("%" + _literal(q) + "%")
-        params.append("%" + _literal(q) + "%")
+        kw = "%" + _literal(q) + "%"
+        search = (
+            "(k.entity_key LIKE ? ESCAPE '\\' OR ws_display(k.entity_key) LIKE ? ESCAPE '\\'"
+            " OR EXISTS(SELECT 1 FROM entity_manual_values mv WHERE mv.project_id=e.project_id"
+            " AND mv.entity_id=e.id AND mv.display_name LIKE ? ESCAPE '\\')"
+        )
+        params.extend([kw, kw, kw])
         if category in ("findings", "vuln"):
-            search += (" OR EXISTS (SELECT 1 FROM observations o WHERE o.project_id=e.project_id"
-                       " AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='title'"
-                       " AND o.value LIKE ? ESCAPE '\\')")
-            params.append("%" + _literal(q) + "%")
+            search += (
+                " OR EXISTS (SELECT 1 FROM observations o WHERE o.project_id=e.project_id"
+                " AND o.entity_id=e.id AND o.is_current=1 AND o.semantic_field='title'"
+                " AND o.value LIKE ? ESCAPE '\\')"
+            )
+            params.append(kw)
         where.append(search + ")")
     if host is not None:
         where.append("ws_host(e.kind,k.entity_key)=?")
@@ -301,6 +314,11 @@ def browse(conn, project_id, *, category="assets", mode="host", q="", host=None,
                 " 'js_source_ref','js_static_method') ORDER BY id LIMIT 13", (project_id, row["id"]))]
             row['observed_truncated'] = len(row['observed']) > 10
             row['observed'] = row['observed'][:10]
+            from .manual_values import read as read_manual_values
+            row['manual_values'] = public_value(read_manual_values(conn,project_id,row['id']))
+            if row['manual_values']['display_name']:
+                row['original_display_key'] = row.get('display_key',row['entity_key'])
+                row['display_key'] = row['manual_values']['display_name']
             if category in ("findings", "vuln"):
                 finding = finding_detail(conn, project_id, row["id"], retest_limit=0)
                 row.update(finding["triage"])
@@ -395,7 +413,7 @@ def entity_detail(conn, project_id, entity_id, *, section="observations", cursor
                " ORDER BY c.id LIMIT 1) AS source"
                " FROM observations o"
                " WHERE project_id=? AND entity_id=? AND is_current=1"
-               " AND semantic_field IN ('js_content_version','js_content_status','js_candidate')"
+               " AND semantic_field IN ('js_content_version','js_content_status','js_candidate','js_indicator')"
                " ORDER BY CASE semantic_field WHEN 'js_content_version' THEN 0 WHEN 'js_content_status' THEN 1 ELSE 2 END,id DESC")
         params = [project_id, entity_id]
     elif section in ("samples", "parameters", "js_cross"):

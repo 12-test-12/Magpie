@@ -34,13 +34,15 @@ def generate_report(conn, project_id, format="markdown"):
             "retests": finding["retests"],
         })
 
-    notes = [dict(n) for n in conn.execute(
-        "SELECT o.id, o.value AS text, o.observed_at AS created_at, k.entity_key"
-        " FROM observations o"
-        " JOIN entities e ON e.id=o.entity_id AND e.project_id=o.project_id"
-        " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1"
-        " WHERE o.project_id=? AND o.is_current=1 AND e.is_current=1 AND e.merged_into IS NULL"
-        " AND o.semantic_field LIKE 'ai_note:%' ORDER BY o.id DESC", (project_id,)).fetchall()]
+    from . import notes as note_store
+    notes = []
+    cursor = None
+    while True:
+        page = note_store.browse(conn, project_id, cursor=cursor, limit=100)
+        notes.extend(page['rows'])
+        cursor = page['next_cursor']
+        if not cursor:
+            break
 
     notes = public_value(notes)
     proj_name = public_value(proj_name)
@@ -145,6 +147,9 @@ def generate_report(conn, project_id, format="markdown"):
         for n in notes:
             lines.append(f"- `[{n['created_at']}]`（对象：`{n['entity_key']}`）")
             lines.append(f"  > {str(n['text'])}")
+            lines.append(f"  - 人工修订版本：{n['version']}；原始笔记证据：#{n['evidence_id']}")
+            for ref in n['evidence_links']:
+                lines.append(f"  - 关联研究证据：#{ref['id']} · `{ref['entity_key']}` · `{ref['locator']}` · SHA-256 `{ref['sha256']}`")
             lines.append("")
 
     lines.extend([

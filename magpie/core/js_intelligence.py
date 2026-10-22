@@ -16,7 +16,7 @@ MAX_CANDIDATES = 500
 MAX_CHARS = 8192
 MAX_TOKENS = 200_000
 RULE_ID = "js-literal-call"
-RULE_VERSION = "1"
+RULE_VERSION = "2"
 
 
 def is_js_resource(url: str, mime: str = "") -> bool:
@@ -119,8 +119,17 @@ def extract(text: str, *, max_candidates: int = MAX_CANDIDATES, cancelled=None):
         toks.append(token)
     found = []; unsupported = sum(1 for t in toks if t[0] == "invalid")
     def string_arg(index):
-        if index < len(toks) and toks[index][0] == "string": return toks[index]
-        return None
+        if index >= len(toks) or toks[index][0] != 'string':
+            return None, index
+        start = toks[index]
+        value, end = start[1], index
+        # Evaluate string literals only. Identifiers, templates with interpolation,
+        # operators other than +, and excessive expressions remain unsupported.
+        while end + 2 < len(toks) and toks[end+1][1] == '+' and toks[end+2][0] == 'string':
+            if end - index >= 78 or len(value) > MAX_CHARS:
+                return None, index
+            value += toks[end+2][1]; end += 2
+        return ('string', value, start[2], toks[end][3]), end
     for i, tok in enumerate(toks):
         if tok[0] != "id": continue
         if i and toks[i-1][1] == ".": continue
@@ -135,7 +144,7 @@ def extract(text: str, *, max_candidates: int = MAX_CANDIDATES, cancelled=None):
             if toks[i+2][0] == "id" and name in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
                 method, arg_index = name, i + 4
         if method is None: continue
-        arg = string_arg(arg_index)
+        arg, arg_index = string_arg(arg_index)
         if arg is None:
             unsupported += 1; continue
         if arg[0] != "string" or arg_index + 1 >= len(toks) or toks[arg_index + 1][1] not in (",", ")"):
@@ -183,7 +192,10 @@ def extract(text: str, *, max_candidates: int = MAX_CANDIDATES, cancelled=None):
         full_line = str(normalize.redact_secrets(text[line_start:line_end]))
         full_line = re.sub(r"([?&][^=\s&'\"]+)=([^&\s'\"]*)", r"\1=[redacted]", full_line)
         snippet = full_line[:500]
-        parsed = urlsplit(url)
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            unsupported += 1; continue
         absolute = parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
         dynamic = "${" in url or "}" in url or "{" in url or " + " in url
         if dynamic: unsupported += 1; continue
@@ -204,3 +216,39 @@ def extract(text: str, *, max_candidates: int = MAX_CANDIDATES, cancelled=None):
             "truncated": truncated,
             "reason": "达到候选上限，仅保留前500个候选，扫描已截断" if truncated and max_candidates >= MAX_CANDIDATES else
                       (f"达到候选上限，仅保留前{min(MAX_CANDIDATES, max_candidates)}个候选，扫描已截断" if truncated else None)}
+
+
+def indicators(text, *, cancelled=None):
+    """Bounded references and existing secret-rule hits, with no secret values."""
+    result = []
+    if len(text.encode('utf-8')) > MAX_BYTES:
+        return {'rows':[],'truncated':True}
+    offset = 0
+    for line_number, line in enumerate(text.splitlines(keepends=True), 1):
+        if cancelled and cancelled():
+            return {'rows':result,'truncated':True}
+        for hit in normalize.detect_secrets(line):
+            value = str(hit['value'])
+            pos = line.find(value)
+            result.append({'kind':'secret_candidate','rule_id':str(hit['rule']),'rule_version':RULE_VERSION,
+                'masked':str(hit['masked']),'value_sha256':hashlib.sha256((str(hit['rule'])+':'+value).encode()).hexdigest(),
+                'line':line_number,'start':offset+max(0,pos),'end':offset+max(0,pos)+len(value)})
+            if len(result) >= MAX_CANDIDATES:
+                return {'rows':result,'truncated':True}
+        offset += len(line)
+    for index, token in enumerate(_tokens(text)):
+        if index >= MAX_TOKENS or cancelled and index % 4096 == 0 and cancelled():
+            return {'rows':result,'truncated':True}
+        if token[0] != 'string': continue
+        try:
+            parsed = urlsplit(token[1])
+            if parsed.scheme not in ('http','https') or not parsed.hostname: continue
+            safe = str(normalize.redact_secrets(redact_url(token[1])))
+        except ValueError:
+            continue
+        result.append({'kind':'url_reference','url':safe[:2000],'host':str(normalize.redact_secrets(parsed.hostname)),
+                       'truncated':len(safe)>2000,'rule_id':'js-string-url','rule_version':RULE_VERSION,
+                       'line':text.count('\n',0,token[2])+1,'start':token[2],'end':token[3]})
+        if len(result) >= MAX_CANDIDATES:
+            return {'rows':result,'truncated':True}
+    return {'rows':result,'truncated':False}

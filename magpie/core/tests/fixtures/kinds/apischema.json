@@ -4,7 +4,7 @@
   "identity_rule": "接口契约（apischema）的身份是**这份契约所属的那个起源**：`主机[:非默认端口]`（normalize.apischema_key）。四个来源能共同算出来的只有主机 —— OpenAPI 的 `servers[].url`、Postman 的 `item[].request.url.host`、HAR 的 `entry.request.url`、curl 的目标 URL 都给出它，而标题与版本只有前两个来源有，所以**标题与版本不进身份、只落观测**（否则 HAR 与 curl 永远落不到另外两类身上，而「同一个 API 定义从四个来源进来要认出是同一个」正是本 kind 的全部意义）。**路径不进身份**：`https://api.example.com/v2` 与 `https://api.example.com/openapi.json` 是同一个起源 —— 后者是这份契约被取回来的地址，换个位置不该让它变成另一个实体。端口折的是 {80, 443}（与 endpoint 同一条裁定），8080 / 8443 保留。**代价**：一台主机上并存两份契约时折成同一个 apischema，而「哪些还在用 v1」由 endpoint 那一层回答 —— 路径里的版本号本来就不折。",
   "golden": [
     "curl/2",
-    "har/3",
+    "har/4",
     "openapi/2",
     "postman/2"
   ],

@@ -9,6 +9,7 @@ const research = [
   ['evidence', '▤', '证据', 'Evidence'], ['jobs', '↓', '导入历史', 'Imports'],
   ['notes', '≡', '研究笔记', 'Notes'],
   ['tasks', '☑', '研究任务', 'Tasks'],
+  ['changes', 'Δ', '增量变化', 'Changes'],
 ]
 const advanced = computed(() => {
   const base = [['explore', '攻击面画布'], ['pipeline', '管线编排'], ['inbox', '待确认 Inbox'],

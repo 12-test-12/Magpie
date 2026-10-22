@@ -55,7 +55,8 @@ CACHE_TABLES = (
 )
 # 工作层（D 层）: 人工状态，不可由事实重建
 WORK_TABLES = ("entity_layout", "entity_tags", "manual_fields", "inbox_items",
-               "research_tasks", "research_task_links", "entity_research")
+               "research_tasks", "research_task_links", "entity_research", "note_revisions",
+               "note_evidence_links", "research_task_evidence", "entity_manual_values")
 # 历史口径（INV-13(c)）: 只允许单调增长
 HISTORY_TABLES = FACT_TABLES
 
@@ -353,6 +354,7 @@ ACTION_NAMESPACE = frozenset({
     # 就没法只查其中一件。
     "lifecycle.set", "work.revert", "work.replay",
     "finding.triage", "finding.retest",
+    "research.note.revise",
     "research.task.create", "research.task.update", "research.metadata.set",
 })
 
@@ -1241,13 +1243,16 @@ def _entity_blockers(conn: sqlite3.Connection, sid: int) -> set[str]:
     blockers: set[str] = set()
     # Historical migration verification runs Undo on pre-v18 schemas too.
     research_tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('research_task_links','entity_research')")}
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('research_task_links','entity_research','entity_manual_values')")}
     if 'research_task_links' in research_tables:
         for row in conn.execute("SELECT task_id FROM research_task_links WHERE entity_id=?", (sid,)):
             blockers.add(f"research_task:{row['task_id']}")
     if 'entity_research' in research_tables and conn.execute(
             "SELECT 1 FROM entity_research WHERE entity_id=?", (sid,)).fetchone():
         blockers.add(f"research_metadata:{sid}")
+    if 'entity_manual_values' in research_tables and conn.execute(
+            'SELECT 1 FROM entity_manual_values WHERE entity_id=?', (sid,)).fetchone():
+        blockers.add(f'manual_values:{sid}')
     for row in conn.execute(
         "SELECT id, is_current FROM observations WHERE entity_id=?", (sid,)
     ):

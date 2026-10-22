@@ -172,7 +172,7 @@ def test_v18_upgrade_only_adds_versions_and_is_atomic(monkeypatch, fail):
     conn.execute("INSERT INTO finding_triage(project_id,finding_id,status,disposition_reason,updated_at) VALUES(?,?,'resolved',NULL,'2026-10-17')", (pid, fid))
     before = snapshot(conn)
     old_columns = [r[1] for r in conn.execute('PRAGMA table_info(finding_triage)')]
-    monkeypatch.setattr(migrate, 'MIGRATIONS', all_migrations)
+    monkeypatch.setattr(migrate, 'MIGRATIONS', tuple(m for m in all_migrations if m.version <= 19))
     if fail:
         conn.execute("CREATE TRIGGER fail_version_registry BEFORE INSERT ON schema_migrations WHEN NEW.version=19 BEGIN SELECT RAISE(ABORT,'injected'); END")
         with pytest.raises(migrate.MigrationError):

@@ -7,8 +7,8 @@
     "ffuf/2",
     "gau/2",
     "katana/2",
-    "har/3",
-    "js-manifest/2"
+    "har/4",
+    "js-manifest/3"
   ],
   "examples": [
     {

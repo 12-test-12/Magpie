@@ -10,6 +10,7 @@ import LeftPanel from './components/LeftPanel.vue'
 import WorkspaceNav from './components/WorkspaceNav.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
 import TasksView from './views/TasksView.vue'
+import ChangesView from './views/ChangesView.vue'
 import { workspacePages } from './workspace.js'
 import DetailPanel from './components/DetailPanel.vue'
 import LogDrawer from './components/LogDrawer.vue'
@@ -125,6 +126,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              它已经是对的。 -->
         <PipelineView v-else-if="store.view === 'pipeline'" />
         <TasksView v-else-if="store.view === 'tasks'" />
+        <ChangesView v-else-if="store.view === 'changes'" />
         <WorkspaceView v-else-if="workspacePages[store.view]" :category="store.view" @import="importOpen = true" />
         <!-- 镜头页按 `lensKeys` 动态认领（见 activeLensLabel 的注释）。 -->
         <LensView v-else-if="store.lensKeys.includes(store.view)"

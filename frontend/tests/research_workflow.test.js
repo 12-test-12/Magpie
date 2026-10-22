@@ -124,7 +124,7 @@ it('saves tags as deltas and criticality separately, then reports a stale versio
 it('workspace consumes a search jump to a note and displays its matched text', async () => {
   const Workspace = (await import('../src/views/WorkspaceView.vue')).default
   const note = {id:70,kind:'note',entity_id:12,target_kind:'host',text:'portal 研究线索',target_display:'portal.example.test'}
-  global.fetch = vi.fn(async url => response(url.includes('/workspace/browse')
+  global.fetch = vi.fn(async url => response(url.includes('/workspace/notes/') ? {...note,original_text:note.text,version:0,archived:false,available:true,evidence_links:[]} : url.includes('/workspace/browse')
     ? {rows:[note], total:1, next_cursor:null, limit:50} : {entity:host,rows:[],total:0}))
   store.openWorkspace('notes', note, {q:'portal'})
   const wrapper = mount(Workspace, {props:{category:'notes'}}); await flushPromises()
@@ -138,7 +138,7 @@ it('workspace consumes a search jump to a note and displays its matched text', a
 it('keeps a direct search selection when an existing workspace changes category', async () => {
   const Workspace = (await import('../src/views/WorkspaceView.vue')).default
   const note = {id:70,kind:'note',entity_id:12,target_kind:'host',text:'portal 研究线索',target_display:'portal.example.test'}
-  global.fetch = vi.fn(async url => response(url.includes('/workspace/browse')
+  global.fetch = vi.fn(async url => response(url.includes('/workspace/notes/') ? {...note,original_text:note.text,version:0,archived:false,available:true,evidence_links:[]} : url.includes('/workspace/browse')
     ? {rows:[], total:0, next_cursor:null, limit:50} : {entity:host,rows:[],total:0}))
   const wrapper = mount(Workspace, {props:{category:'evidence'}}); await flushPromises()
   store.openWorkspace('notes', note, {q:'portal'})

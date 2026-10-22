@@ -7,7 +7,7 @@ export const workspacePages = {
   js: { label: 'JS 资源', english: 'JAVASCRIPT RESOURCES', hint: '查看已导入资源内容版本与保守静态调用候选。' },
   findings: { label: '漏洞与发现', english: 'VULNERABILITY FINDINGS', hint: '统一管理扫描器命中与人工安全发现；涵盖处置研判、主重复去重与复测生命周期。' },
   evidence: { label: 'Evidence 证据', english: 'EVIDENCE LIBRARY', hint: '包含历史证据。仅受管归档支持脱敏预览；原始定位与哈希始终可查。' },
-  notes: { label: 'Notes 笔记', english: 'RESEARCH NOTES', hint: '现有 AI 发现通道中的笔记；沿用原有贡献链和撤销机制。' },
+  notes: { label: 'Notes 笔记', english: 'RESEARCH NOTES', hint: '保留原始贡献，维护人工修订、归档与研究证据引用。' },
 }
 
 // Session navigation memory, bounded to the most recent project/page contexts.

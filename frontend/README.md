@@ -29,6 +29,11 @@ npm test             # 前端单测（聚合 / 布局 / 只读断言）
 （`magpie/api/tests/test_web.py`）与 `check.py lint` 的 R7-ASSETS 扫的都是
 `magpie/api/web/` 里那一份，而不是这里。
 
+构建输入必须保存为 **LF**。`npm run build` 会先检查源码、HTML 和 Vite 配置，
+列出 CRLF / 混合行尾文件并停止，避免生成不能在 CI 干净检出后重现的产物。
+`.gitattributes` 的 LF 规则不会自动改写已有工作文件；Git 显示源码无修改，
+也不能证明本地文件字节与检出一致。将提示的文件保存为 LF 后再构建，勿手改产物或跳过一致性门禁。
+
 ## 三条不能破的纪律
 
 1. **零出站**（计划书 §7.6）。没有 CDN、没有外部字体、没有远程图标 ——

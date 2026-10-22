@@ -5,8 +5,8 @@
   "golden": [
     "domainlist/1",
     "httpx/1",
-    "har/3",
-    "js-manifest/2"
+    "har/4",
+    "js-manifest/3"
   ],
   "examples": [
     {

@@ -1,0 +1,1 @@
+{"magpie_js":1,"url":"https://app.example.test/app.js","content":"fetch('https://192.0.2.7/api/items?q=demo'); axios.post('/relative', body);"}

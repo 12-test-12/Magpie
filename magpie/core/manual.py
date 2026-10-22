@@ -125,6 +125,16 @@ class ManualWriter:
                              "added": list(added), "removed": list(removed)})
 
     # -- 公开 API ----------------------------------------------------------
+    def set_field_value(self, *, project_id, entity_id, expected_version,
+                        display_name, review_status, reason):
+        from .manual_values import save
+        with self._lock:
+            result = save(self.conn, project_id=project_id, entity_id=entity_id,
+                          expected_version=expected_version, display_name=display_name,
+                          review_status=review_status, reason=reason, actor=self.actor)
+            self.stats['writes'] += 1
+            return result
+
     def set_keys(self, *, project_id: int, subject_kind: str, subject_id: int,
                  add: Sequence[str] = (), remove: Sequence[str] = ()) -> dict[str, Any]:
         """把 `add` 里的字段名并入该 subject 的人工保护集合（并集，不覆盖）。"""

@@ -331,14 +331,11 @@ def test_show_not_found(loaded_db):
 # ---------------------------------------------------------------------------
 
 
-def test_search_is_loudly_not_implemented(empty_db):
-    """**不能返回空数组。** 空数组对 agent 是一个确定的断言（"这里就是没有"），
-    而事实是"这条命令还不存在"。两者混起来，agent 会基于一个假事实继续走。"""
-    code, payload = envelope("search", "nginx", "--db", str(empty_db), "--json")
-    error = assert_err(payload, "E_NOT_IMPLEMENTED")
-    assert code == EXIT_USAGE
-    assert "data" not in payload and "meta" not in payload
-    assert "§8" in error["plan"]
+def test_search_returns_grouped_literal_matches(loaded_db):
+    code, payload = envelope('search','example','--db',str(loaded_db),'--json')
+    assert code == 0 and payload['ok']
+    assert len(payload['data']['groups']) == 5
+    assert sum(g['total'] for g in payload['data']['groups']) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +901,7 @@ def test_every_registered_command_is_dispatchable(empty_db):
 
     #: 登记了但**故意**还说自己没做的：搜索 DSL 属于计划书 §8。它由下一条
     #: 用例单独钉住 —— 混在这一条里会让"哪几条该通"变成一句含糊的话。
-    not_yet = {"search"}
+    not_yet = set()
 
     for key, args in invocations.items():
         _, payload = envelope(*args, "--db", str(empty_db), "--json")
@@ -916,16 +913,10 @@ def test_every_registered_command_is_dispatchable(empty_db):
             f"{key} 没有被分发：{payload}"
 
 
-def test_search_is_still_loudly_not_implemented(empty_db):
-    """`search` **仍然**是响亮的 501（§8 没落地）—— 它不该被写路径顺手带上。
-
-    这条与上一条是一对：上一条证明"该通的通了"，这一条证明"没做的那条仍然
-    说自己没做"。少了它，`search` 返回一个空列表也会全绿。
-    """
-    code, payload = envelope("search", "x", "--db", str(empty_db), "--json")
-    error = assert_err(payload, "E_NOT_IMPLEMENTED")
-    assert code == EXIT_USAGE
-    assert "§8" in error["plan"]
+def test_search_requires_a_project(empty_db):
+    code, payload = envelope('search','x','--db',str(empty_db),'--json')
+    assert code != 0 and not payload['ok']
+    assert payload['error']['code'] != 'E_NOT_IMPLEMENTED'
 
 
 def test_bad_limit_says_what_is_wrong(empty_db):

@@ -2081,7 +2081,7 @@ def test_apischema_multi_status_from_traffic_opens_no_conflict(db, project,
              "response": {"status": 404}},
         ]}}, ensure_ascii=False))
     report = ingest.ingest_file(db, options(db, project, tmp_path), path)
-    assert report["parser"] == "har@3", report
+    assert report["parser"] == "har@4", report
     assert _obs_values(db, project, "endpoint", normalize.endpoint_key("https://api.example.com/p", method="GET"),
                        "status") == ["200", "404"]
     assert report["counts"]["conflicts"] == 0, report["counts"]

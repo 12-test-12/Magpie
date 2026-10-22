@@ -171,7 +171,7 @@ def test_method_is_identity_and_status_remains_multivalue(db, project, tmp_path)
                          "queryString": []},
              "response": {"status": 201}},
         ]}}, ensure_ascii=False)))
-    assert report["parser"] == "har@3", report
+    assert report["parser"] == "har@4", report
     assert report["counts"]["conflicts"] == 0, report["counts"]
     assert open_conflicts(db, project) == []
 
@@ -271,6 +271,7 @@ def test_the_declaration_is_narrow(db, project, tmp_path):
         ("observation_field", "js_static_method"),
         ("observation_field", "js_static_param"),
         ("observation_field", "js_source_ref"),
+        ("observation_field", "js_indicator"),
     }, sorted(declared)
     # 声明表里每一行都必须带理由 —— 一条说不出理由的声明不该进得来。
     assert not [r for r in db.execute(
