@@ -509,4 +509,6 @@
 
 仅新增迁移 020，旧迁移、原始证据、身份与贡献事实保留。人工修订是既有笔记 Observation 的工作层记录，原作业 Undo/Redo 保留；修订和任务关联不冒称加入通用 job Undo/Redo。完整 AST、跨作用域变量传播和 SourceMap 不在本次有限规则交付中，JS 的不确定状态明确显示。未实施 Agent 或主动测试。
 
+2026-10-22：修复本批最近两个提交的 Frontend CI 产物不一致；确认本地残留 CRLF 输入改变 Vue 作用域哈希。新增 LF 构建前检查并重建资源，保留原流水线门禁。复现、测试与隔离浏览器验收见[修复记录](docs/ci-frontend-reproducibility-fix.md)。
+
 实现、真实测试、截图、运行命令、失败过程和未验证边界统一记录于[本批验收记录](docs/research-materials-verification.md)，避免在历史验收节回写结果。代码和正式静态资源保存在本地；远程推送仍由用户执行，不打包或发布。用户未跟踪的 Agent 方案保持原状。

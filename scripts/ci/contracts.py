@@ -72,8 +72,9 @@ def changes(base):
 
 
 def web():
-    if git('status', '--porcelain', '--untracked-files=all', '--', 'magpie/api/web'):
-        raise ValueError('Frontend build differs from committed files, or contains untracked artifacts')
+    status = git('status', '--porcelain', '--untracked-files=all', '--', 'magpie/api/web')
+    if status:
+        raise ValueError('Frontend build differs from committed files, or contains untracked artifacts:\n' + status)
     print('Frontend build exactly matches committed artifacts')
 
 

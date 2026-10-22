@@ -6,7 +6,7 @@
   "description": "Magpie 的 GUI（2.8 只读探索画布）。构建产物落进 magpie/api/web/，随 Python 包一起走。",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/check-build-inputs.mjs && vite build",
     "test": "vitest run"
   },
   "dependencies": {

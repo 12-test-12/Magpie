@@ -1,5 +1,7 @@
 # Magpie 工程流水线实施与本地验收
 
+后续修复：2026-10-22 对 `32eb965` / `8e2feaa` 的 Frontend 产物不一致完成根因复现、LF 输入预检与资源重建，见[专门记录](ci-frontend-reproducibility-fix.md)。本节以下仍保留 2026-10-20 的历史口径。
+
 日期：2026-10-20。实施分支：`codex/ci-delivery-pipeline`；基线 `10648bc1ce0e33a36341c30290cbbb289e089029`。先完成[方案](ci-delivery-plan.md)，再修改工程文件。应用保持 **0.30.0 / schema v19**，不修改业务源码、解析器、原始证据、Contribution、Undo/Redo 或既有迁移；应用依赖和前端锁文件保持不变。
 
 ## 已实现
