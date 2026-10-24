@@ -52,6 +52,9 @@ def main():
     sys.path.insert(0, str(ROOT))
     from bench.api_research_demo import build
     build(workspace)
+    from bench.research_regression_demo import seed
+    fixture = seed(ROOT / '.magpie-dev' / workspace)
+    (output / 'research-fixture.json').write_text(json.dumps(fixture, ensure_ascii=False, indent=2), encoding='utf-8')
     api_port, web_port = candidate_port(), candidate_port()
     while web_port == api_port:
         web_port = candidate_port()
@@ -74,10 +77,10 @@ def main():
                 raise RuntimeError('dev.py did not start; inspect the private local dev log')
             env = {**os.environ, 'MAGPIE_BROWSER_URL': match[1],
                    'MAGPIE_PRODUCTION_URL': match[1].replace(f':{web_port}/', f':{api_port}/'),
-                   'MAGPIE_BROWSER_OUTPUT': str(output)}
+                   'MAGPIE_BROWSER_OUTPUT': str(output), 'MAGPIE_RESEARCH_FIXTURE': json.dumps(fixture)}
             with (output / 'browser.log').open('w', encoding='utf-8') as browser_log:
                 result = subprocess.run([node, str(ROOT / 'scripts/ci/browser_smoke.cjs')], cwd=ROOT,
-                                        env=env, stdout=browser_log, stderr=subprocess.STDOUT, timeout=180)
+                                        env=env, stdout=browser_log, stderr=subprocess.STDOUT, timeout=300)
             if result.returncode:
                 raise RuntimeError(f'Browser smoke failed; inspect {output / "browser.log"}')
             metadata = {'source_sha': subprocess.check_output(['git','rev-parse','HEAD'], cwd=ROOT, text=True).strip(),

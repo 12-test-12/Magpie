@@ -29,11 +29,16 @@ it('preserves note drafts after stale writes and requires explicit reload', asyn
   wrapper.unmount()
 })
 
-it('allows adopting latest version while preserving user draft', async () => {
+it('requires field choices and preserves newly archived state and evidence while merging a draft', async () => {
   let version = 0
+  let payload
   global.fetch = vi.fn(async (url,opts={}) => {
-    if (opts.method === 'PUT') return response(null,409,'E_STALE_RESEARCH')
-    return response({...note,version,text:version ? '另一窗口内容' : note.text})
+    if (opts.method === 'PUT') {
+      payload = JSON.parse(opts.body)
+      return version === 2 ? response({...note,...payload,version:3}) : response(null,409,'E_STALE_RESEARCH')
+    }
+    return response(url.includes('/history?') ? {rows:[],total:0} : {...note,version,text:version ? '另一窗口内容' : note.text,
+      archived:!!version,evidence_links:version ? [{id:11,kind:'evidence',display_key:'新证据'}] : []})
   })
   const wrapper = mount(Editor,{props:{noteId:70}}); await flushPromises()
   await wrapper.find('[aria-label="编辑笔记正文"]').setValue('我的重要草稿')
@@ -41,9 +46,18 @@ it('allows adopting latest version while preserving user draft', async () => {
   await wrapper.find('form').trigger('submit'); await flushPromises()
   expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined()
   version = 2
-  await wrapper.findAll('button').find(b => b.text() === '保留草稿并同步最新版本').trigger('click'); await flushPromises()
+  await wrapper.findAll('button').find(b => b.text() === '核对最新值与草稿').trigger('click'); await flushPromises()
   expect(wrapper.find('[aria-label="编辑笔记正文"]').element.value).toBe('我的重要草稿')
-  expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined()
+  const apply = () => wrapper.findAll('button').find(b => b.text() === '应用选择到草稿')
+  expect(apply().attributes('disabled')).toBeDefined()
+  expect(wrapper.find('[aria-label="字段选择：归档状态"]').element.value).toBe('latest')
+  expect(wrapper.find('[aria-label="字段选择：关联研究证据"]').element.value).toBe('latest')
+  await wrapper.find('[aria-label="字段选择：笔记正文"]').setValue('draft')
+  await apply().trigger('click'); await flushPromises()
+  expect(wrapper.find('[aria-label="归档笔记"]').element.checked).toBe(true)
+  expect(global.fetch.mock.calls.filter(([,o]) => o.method === 'PUT')).toHaveLength(1)
+  await wrapper.find('form').trigger('submit'); await flushPromises()
+  expect(payload).toMatchObject({text:'我的重要草稿',archived:true,evidence_ids:[11],expected_version:2})
   wrapper.unmount()
 })
 

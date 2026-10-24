@@ -8,6 +8,11 @@ from . import normalize, ops, query, store
 from .finding_queries import public_value
 
 
+def _evidence_value(row):
+    return public_value({**dict(row), 'kind': 'evidence', 'available': True,
+                         'display_key': f"证据 #{row['id']} · {row['entity_key']}"})
+
+
 def evidence_ref(conn, project_id, evidence_id):
     row = conn.execute(
         'SELECT v.id,v.sha256,v.locator,r.locator_uri AS entity_key,r.storage_state'
@@ -15,8 +20,7 @@ def evidence_ref(conn, project_id, evidence_id):
         ' WHERE v.project_id=? AND v.id=?', (project_id, evidence_id)).fetchone()
     if row is None:
         raise query.QueryError('E_BAD_RESEARCH', '证据不存在于当前项目')
-    return public_value({**dict(row), 'kind': 'evidence', 'available': True,
-                         'display_key': f"证据 #{row['id']} · {row['entity_key']}"})
+    return _evidence_value(row)
 
 
 def validate_evidence(conn, project_id, ids):
@@ -25,30 +29,51 @@ def validate_evidence(conn, project_id, ids):
     return [evidence_ref(conn, project_id, eid) for eid in sorted(set(ids))]
 
 
-def detail(conn, project_id, note_id):
-    row = conn.execute(
+def _details(conn, project_id, note_ids):
+    """Read only the bounded page, with the same shape as an individual note."""
+    if not note_ids:
+        return []
+    placeholders = ','.join('?' for _ in note_ids)
+    rows = conn.execute(
         "SELECT o.id,o.value AS original_text,o.entity_id,o.observed_at AS created_at,"
-        " o.is_current,e.is_current AS entity_current,e.merged_into,e.kind AS target_kind,k.entity_key"
+        " o.is_current,e.is_current AS entity_current,e.merged_into,e.kind AS target_kind,k.entity_key,"
+        " COALESCE(n.version,0) AS version,COALESCE(n.text,o.value) AS text,COALESCE(n.archived,0) AS archived,"
+        " (SELECT evidence_id FROM v_active_contributions c WHERE c.project_id=o.project_id"
+        " AND c.subject_kind='observation' AND c.subject_id=o.id ORDER BY c.id LIMIT 1) AS evidence_id"
         " FROM observations o JOIN entities e ON e.id=o.entity_id AND e.project_id=o.project_id"
         " JOIN entity_keys k ON k.entity_id=e.id AND k.project_id=e.project_id AND k.canonical=1"
-        " WHERE o.project_id=? AND o.id=? AND o.semantic_field LIKE 'ai_note:%'", (project_id, note_id)).fetchone()
-    if row is None:
+        " LEFT JOIN note_revisions n ON n.project_id=o.project_id AND n.observation_id=o.id"
+        " AND n.version=(SELECT MAX(n2.version) FROM note_revisions n2"
+        " WHERE n2.project_id=o.project_id AND n2.observation_id=o.id)"
+        " WHERE o.project_id=? AND o.id IN (" + placeholders + ") AND o.semantic_field LIKE 'ai_note:%'",
+        (project_id, *note_ids)).fetchall()
+    links = {}
+    for ref in conn.execute(
+            'SELECT l.observation_id,v.id,v.sha256,v.locator,r.locator_uri AS entity_key,r.storage_state'
+            ' FROM note_evidence_links l JOIN evidence v ON v.id=l.evidence_id AND v.project_id=l.project_id'
+            ' JOIN raw_files r ON r.id=v.raw_file_id AND r.project_id=v.project_id'
+            ' WHERE l.project_id=? AND l.observation_id IN (' + placeholders + ') ORDER BY l.evidence_id',
+            (project_id, *note_ids)):
+        value = dict(ref)
+        note_id = value.pop('observation_id')
+        links.setdefault(note_id, []).append(_evidence_value(value))
+    result = {}
+    for row in rows:
+        refs = links.get(row['id'], [])
+        if len(refs) > 20:
+            raise query.QueryError('E_BAD_RESEARCH', '每项记录最多关联 20 个项目内证据')
+        result[row['id']] = public_value({**dict(row), 'kind': 'note', 'archived': bool(row['archived']),
+            'available': bool(row['is_current'] and row['entity_current'] and row['merged_into'] is None),
+            'target_display': normalize.endpoint_display(row['entity_key']),
+            'display_key': normalize.endpoint_display(row['entity_key']), 'evidence_links': refs})
+    return [result[note_id] for note_id in note_ids if note_id in result]
+
+
+def detail(conn, project_id, note_id):
+    rows = _details(conn, project_id, [note_id])
+    if not rows:
         raise query.QueryError('E_NOTE_NOT_FOUND', '笔记不存在于当前项目')
-    revision = conn.execute('SELECT * FROM note_revisions WHERE project_id=? AND observation_id=?'
-                            ' ORDER BY version DESC LIMIT 1', (project_id, note_id)).fetchone()
-    source = conn.execute("SELECT evidence_id FROM v_active_contributions WHERE project_id=?"
-                          " AND subject_kind='observation' AND subject_id=? ORDER BY id LIMIT 1",
-                          (project_id, note_id)).fetchone()
-    ids = [r[0] for r in conn.execute('SELECT evidence_id FROM note_evidence_links WHERE project_id=?'
-                                     ' AND observation_id=? ORDER BY evidence_id', (project_id, note_id))]
-    return public_value({**dict(row), 'kind': 'note', 'version': revision['version'] if revision else 0,
-                         'text': revision['text'] if revision else row['original_text'],
-                         'archived': bool(revision['archived']) if revision else False,
-                         'available': bool(row['is_current'] and row['entity_current'] and row['merged_into'] is None),
-                         'target_display': normalize.endpoint_display(row['entity_key']),
-                         'display_key': normalize.endpoint_display(row['entity_key']),
-                         'evidence_id': source[0] if source else None,
-                         'evidence_links': validate_evidence(conn, project_id, ids)})
+    return rows[0]
 
 
 def browse(conn, project_id, *, q='', archived='active', entity_id=None, evidence_id=None, cursor=None, limit=50):
@@ -73,7 +98,7 @@ def browse(conn, project_id, *, q='', archived='active', entity_id=None, evidenc
            ' AND n2.observation_id=o.id) WHERE ' + ' AND '.join(where))
     signature = hashlib.sha256(json.dumps([project_id,'notes',q,archived,entity_id,evidence_id]).encode()).hexdigest()[:20]
     page = _page(conn, sql, args, cursor=cursor, signature=signature, limit=limit)
-    page['rows'] = [detail(conn, project_id, row['id']) for row in page['rows']]
+    page['rows'] = _details(conn, project_id, [row['id'] for row in page['rows']])
     return {**page, 'category': 'notes', 'mode': 'list'}
 
 
