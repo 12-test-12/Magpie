@@ -65,6 +65,8 @@ $env:MAGPIE_BROWSER_HEADLESS='0'
 
 每次生成新的 `.magpie-dev/ci-browser-<随机标识>/` 合成库；绝不覆盖已有库。端口使用高位随机候选，由 dev.py 实际监听/strictPort 校验；端口占用会明确失败，可重新运行，不会终止已有服务。测试结束只清理本次启动的服务进程，合成库保留。截图、JSON 和脱敏日志位于 `_scratch/ci-browser/<标识>/`；含一次性 token 的开发日志留在 `_scratch/ci-private/`，不会作为 CI 制品上传。
 
+2026-10-24 起同一新工作区还包含独立研究资料合成项目，自动验收笔记/人工字段逐字段冲突核对、任务证据持久化、本地 JS 导入来源与增量 Undo/Redo、正式页面和窄桌面。各场景必须全部通过，不能因 API 筛选通过而跳过研究资料回归；实际验证见[研究优化验收](research-merge-performance-verification.md)。
+
 CI 的 headless 浏览器不能替代操作者要求的本地可见浏览器验收；两者应分别记录。浏览器结果中的 source SHA 和 tracked_changes 如实表示运行时工作区状态，不自动为未提交修改伪造 SHA 证明。
 
 ## 3. 手动打包与草稿 Release

@@ -26,8 +26,8 @@ const redact = text => String(text).split(token).join('[test-token]');
     }
     return route.continue();
   });
+  context.on('page',target => target.on('pageerror',error => errors.push(redact(error))));
   const page = await context.newPage(); page.setDefaultTimeout(15000);
-  page.on('pageerror',error => errors.push(redact(error)));
   const browse = async action => {
     const [response] = await Promise.all([page.waitForResponse(r=>r.url().includes('/workspace/browse?') && r.request().method()==='GET'),action()]);
     assert.equal(response.status(),200); return (await response.json()).data;
@@ -115,6 +115,7 @@ const redact = text => String(text).split(token).join('[test-token]');
     await page.getByLabel('凭据线索筛选',{exact:true}).selectOption('cookie');
     assert.equal((await apply()).entity_total,1);
     checks.push('backend-served production assets execute the same API filter');
+    await require('./research_smoke.cjs')({context,page,url,production,output,checks});
     assert.deepEqual(errors,[]); assert.deepEqual(external,[]);
     fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({status:'passed',checks,pageerrors:errors,external_requests:external},null,2));
     console.log(JSON.stringify({checks,pageerrors:errors,external_requests:external}));
